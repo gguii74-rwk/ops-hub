@@ -13,7 +13,11 @@
     "prisma:validate": "prisma validate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:seed": "prisma db seed"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -44,6 +48,7 @@
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.1.6",
     "eslint-plugin-boundaries": "^4.2.2",
+    "tsx": "^4.22.4",
     "typescript": "^5.9.3",
     "vitest": "^4.1.9"
   }
