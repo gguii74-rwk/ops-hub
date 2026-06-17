@@ -1,0 +1,511 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SystemRole {
+  OWNER
+  ADMIN
+  MANAGER
+  MEMBER
+}
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  DISABLED
+}
+
+enum EmploymentType {
+  REGULAR
+  CONTRACTOR
+}
+
+enum JobFunction {
+  PM
+  DEVELOPER
+  CONTENT_MANAGER
+  CIVIL_RESPONSE
+}
+
+enum PermissionEffect {
+  ALLOW
+  DENY
+}
+
+enum WorkflowKind {
+  WEEKLY_REPORT
+  BILLING
+  NOTIFICATION_BILLING
+}
+
+enum WorkflowStatus {
+  PENDING
+  GENERATED
+  REVIEWED
+  SENT
+  HQ_REQUESTED
+  FINAL_SENT
+  CANCELLED
+}
+
+enum LeaveType {
+  ANNUAL
+  HALF
+  QUARTER
+}
+
+enum LeaveSubType {
+  MORNING
+  AFTERNOON
+}
+
+enum LeaveRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum AllocationChangeType {
+  INITIAL
+  ADD
+  DEDUCT
+  CARRYOVER
+  ADJUSTMENT
+}
+
+enum CalendarSourceKind {
+  INTERNAL_LEAVE
+  WORKFLOW
+  GOOGLE_CALENDAR
+  HOLIDAY
+  MANUAL
+}
+
+enum CalendarEventKind {
+  WORKFLOW_TASK
+  INTERNAL_LEAVE
+  EXTERNAL_VACATION
+  EXTERNAL_EVENT
+  HOLIDAY
+  PERSONAL_EVENT
+  TEAM_EVENT
+}
+
+enum CalendarVisibility {
+  PRIVATE
+  TEAM
+  INTERNAL
+  PUBLIC
+}
+
+enum CalendarSyncStatus {
+  ACTIVE
+  PAUSED
+  ERROR
+}
+
+enum CalendarDedupStatus {
+  UNIQUE
+  DUPLICATE_OF_INTERNAL
+  DUPLICATE_OF_EXTERNAL
+  IGNORED
+}
+
+model User {
+  id             String         @id @default(cuid())
+  email          String         @unique
+  passwordHash   String
+  name           String
+  department     String?
+  position       String?
+  joinDate       DateTime?
+  employmentType EmploymentType
+  jobFunction    JobFunction
+  systemRole     SystemRole     @default(MEMBER)
+  status         UserStatus     @default(ACTIVE)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  roleAssignments       UserAccessRole[]
+  permissionOverrides   UserPermissionOverride[]
+  workflowTasks         WorkflowTask[]           @relation("WorkflowTaskCreator")
+  mailDeliveries        MailDelivery[]           @relation("MailDeliveryCreator")
+  leaveAllocations      LeaveAllocation[]
+  leaveRequests         LeaveRequest[]           @relation("LeaveRequestUser")
+  reviewedLeaveRequests LeaveRequest[]           @relation("LeaveRequestReviewer")
+  allocationChanges     LeaveAllocationHistory[] @relation("AllocationChangeCreator")
+  ownedCalendarSources  CalendarSource[]         @relation("CalendarSourceOwner")
+  calendarEvents        CalendarEvent[]          @relation("CalendarEventUser")
+  auditLogs             AuditLog[]               @relation("AuditActor")
+
+  @@index([employmentType, jobFunction])
+  @@index([systemRole])
+}
+
+model AccessRole {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  name        String
+  description String?
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       UserAccessRole[]
+  permissions RolePermission[]
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  resource    String
+  action      String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  roles         RolePermission[]
+  userOverrides UserPermissionOverride[]
+  menuItems     NavigationItem[]
+
+  @@unique([resource, action])
+}
+
+model RolePermission {
+  id           String           @id @default(cuid())
+  roleId       String
+  role         AccessRole       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission       @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  effect       PermissionEffect @default(ALLOW)
+  scope        String           @default("all")
+  conditions   Json?
+  createdAt    DateTime         @default(now())
+
+  @@unique([roleId, permissionId, scope])
+  @@index([permissionId])
+}
+
+model UserAccessRole {
+  id        String     @id @default(cuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId    String
+  role      AccessRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  startsAt  DateTime?
+  endsAt    DateTime?
+  createdAt DateTime   @default(now())
+
+  @@unique([userId, roleId])
+  @@index([roleId])
+}
+
+model UserPermissionOverride {
+  id           String           @id @default(cuid())
+  userId       String
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission       @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  effect       PermissionEffect
+  scope        String           @default("all")
+  reason       String?
+  startsAt     DateTime?
+  endsAt       DateTime?
+  createdAt    DateTime         @default(now())
+
+  @@unique([userId, permissionId, scope])
+  @@index([permissionId])
+}
+
+model NavigationItem {
+  id                   String           @id @default(cuid())
+  key                  String           @unique
+  label                String
+  href                 String?
+  parentId             String?
+  parent               NavigationItem?  @relation("NavigationTree", fields: [parentId], references: [id])
+  children             NavigationItem[] @relation("NavigationTree")
+  sortOrder            Int              @default(0)
+  requiredPermissionId String?
+  requiredPermission   Permission?      @relation(fields: [requiredPermissionId], references: [id])
+  isActive             Boolean          @default(true)
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  @@index([parentId, sortOrder])
+  @@index([requiredPermissionId])
+}
+
+model WorkflowType {
+  id                String       @id
+  kind              WorkflowKind @unique
+  name              String
+  description       String?
+  templatePath      String
+  recurrence        String
+  defaultRecipients Json?
+  isActive          Boolean      @default(true)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  tasks WorkflowTask[]
+}
+
+model WorkflowTask {
+  id          String         @id @default(cuid())
+  typeId      String
+  type        WorkflowType   @relation(fields: [typeId], references: [id])
+  scheduledAt DateTime
+  status      WorkflowStatus @default(PENDING)
+  outputPath  String?
+  recipients  Json?
+  createdById String?
+  createdBy   User?          @relation("WorkflowTaskCreator", fields: [createdById], references: [id])
+  generatedAt DateTime?
+  reviewedAt  DateTime?
+  sentAt      DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  files          GeneratedFile[]
+  mailDeliveries MailDelivery[]
+  calendarEvents CalendarEvent[]
+
+  @@index([typeId, scheduledAt])
+  @@index([status])
+}
+
+model GeneratedFile {
+  id          String       @id @default(cuid())
+  taskId      String
+  task        WorkflowTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  path        String
+  displayName String
+  mimeType    String?
+  sizeBytes   BigInt?
+  createdAt   DateTime     @default(now())
+
+  @@index([taskId])
+}
+
+model MailDelivery {
+  id                String        @id @default(cuid())
+  taskId            String?
+  task              WorkflowTask? @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  step              String?
+  recipients        Json
+  subject           String
+  attachmentPaths   Json?
+  providerMessageId String?
+  sentById          String?
+  sentBy            User?         @relation("MailDeliveryCreator", fields: [sentById], references: [id])
+  sentAt            DateTime      @default(now())
+
+  @@index([taskId])
+  @@index([sentAt])
+}
+
+model BillingConfig {
+  id                String   @id @default(cuid())
+  year              Int      @unique
+  projectName       String
+  contractNumber    String
+  contractAmount    BigInt
+  monthlyAmount     BigInt
+  contractAmountKor String   @default("")
+  monthlyAmountKor  String   @default("")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model BillingRoundDate {
+  id         String   @id @default(cuid())
+  year       Int
+  round      Int
+  submitDate DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([year, round])
+  @@index([year])
+}
+
+model Deliverable {
+  id             String   @id @default(cuid())
+  year           Int
+  label          String
+  completionDate String?
+  progress       String?
+  delayReason    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([year, label])
+  @@index([year])
+}
+
+model LeaveAllocation {
+  id                    String    @id @default(cuid())
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  year                  Int
+  allocatedDays         Decimal   @db.Decimal(6, 2)
+  carriedOverDays       Decimal   @default(0) @db.Decimal(6, 2)
+  carriedOverExpiryDate DateTime?
+  usedDays              Decimal   @default(0) @db.Decimal(6, 2)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  history LeaveAllocationHistory[]
+
+  @@unique([userId, year])
+  @@index([year])
+}
+
+model LeaveAllocationHistory {
+  id           String               @id @default(cuid())
+  allocationId String
+  allocation   LeaveAllocation      @relation(fields: [allocationId], references: [id], onDelete: Cascade)
+  userId       String
+  changeType   AllocationChangeType
+  changeDays   Decimal              @db.Decimal(6, 2)
+  reason       String
+  reasonDetail String?
+  beforeDays   Decimal              @db.Decimal(6, 2)
+  afterDays    Decimal              @db.Decimal(6, 2)
+  createdById  String?
+  createdBy    User?                @relation("AllocationChangeCreator", fields: [createdById], references: [id])
+  createdAt    DateTime             @default(now())
+
+  @@index([allocationId])
+  @@index([userId, createdAt])
+}
+
+model LeaveRequest {
+  id                 String             @id @default(cuid())
+  userId             String
+  user               User               @relation("LeaveRequestUser", fields: [userId], references: [id], onDelete: Cascade)
+  leaveType          LeaveType
+  leaveSubType       LeaveSubType?
+  quarterStartTime   String?
+  startDate          DateTime
+  endDate            DateTime
+  days               Decimal            @db.Decimal(6, 2)
+  reason             String?
+  status             LeaveRequestStatus @default(PENDING)
+  appliedAt          DateTime           @default(now())
+  reviewedById       String?
+  reviewedBy         User?              @relation("LeaveRequestReviewer", fields: [reviewedById], references: [id])
+  reviewedAt         DateTime?
+  rejectionReason    String?
+  cancelledAt        DateTime?
+  cancellationReason String?
+  isCarriedOver      Boolean            @default(false)
+  adminActionNote    String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  calendarEvents CalendarEvent[]
+
+  @@index([userId, startDate])
+  @@index([status])
+  @@index([reviewedById])
+}
+
+model CalendarSource {
+  id              String             @id @default(cuid())
+  key             String             @unique
+  kind            CalendarSourceKind
+  name            String
+  provider        String?
+  externalId      String?
+  color           String?
+  ownerUserId     String?
+  ownerUser       User?              @relation("CalendarSourceOwner", fields: [ownerUserId], references: [id])
+  visibility      CalendarVisibility @default(TEAM)
+  syncStatus      CalendarSyncStatus @default(ACTIVE)
+  cacheTtlSeconds Int                @default(900)
+  settings        Json?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  events       CalendarEvent[]
+  cacheEntries CalendarCacheEntry[]
+
+  @@index([kind])
+  @@index([ownerUserId])
+}
+
+model CalendarEvent {
+  id                 String              @id @default(cuid())
+  sourceId           String?
+  source             CalendarSource?     @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  kind               CalendarEventKind
+  title              String
+  redactedTitle      String?
+  description        String?
+  startsAt           DateTime
+  endsAt             DateTime
+  allDay             Boolean             @default(true)
+  userId             String?
+  user               User?               @relation("CalendarEventUser", fields: [userId], references: [id])
+  workflowTaskId     String?
+  workflowTask       WorkflowTask?       @relation(fields: [workflowTaskId], references: [id])
+  leaveRequestId     String?
+  leaveRequest       LeaveRequest?       @relation(fields: [leaveRequestId], references: [id])
+  externalEventId    String?
+  visibility         CalendarVisibility  @default(TEAM)
+  dedupStatus        CalendarDedupStatus @default(UNIQUE)
+  duplicateOfEventId String?
+  metadata           Json?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@unique([sourceId, externalEventId])
+  @@index([startsAt, endsAt])
+  @@index([kind, startsAt])
+  @@index([userId, startsAt])
+  @@index([workflowTaskId])
+  @@index([leaveRequestId])
+}
+
+model CalendarCacheEntry {
+  id           String         @id @default(cuid())
+  sourceId     String
+  source       CalendarSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  rangeStart   DateTime
+  rangeEnd     DateTime
+  payload      Json
+  fetchedAt    DateTime       @default(now())
+  expiresAt    DateTime
+  errorMessage String?
+
+  @@unique([sourceId, rangeStart, rangeEnd])
+  @@index([expiresAt])
+}
+
+model SystemSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation("AuditActor", fields: [actorId], references: [id])
+  entityType String
+  entityId   String?
+  action     String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+}

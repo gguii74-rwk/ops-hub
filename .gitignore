@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+
+node_modules/
+.next/
+dist/
+coverage/
+
+prisma/*.db
+prisma/*.db-journal
+
+output/
+Template/
+keys/
+*.log
+
