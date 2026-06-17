@@ -73,6 +73,22 @@ src/app/{(auth),dashboard,workflows,leave,admin,api}/
 
 연차 상태값과 업무 자동화 상태값은 섞지 않습니다.
 
+## 디렉터리 규약
+
+저장소 최상위는 다음 5개를 표준으로 둡니다:
+
+| 디렉터리 | 용도 | git |
+| --- | --- | --- |
+| `src/` | 애플리케이션 코드 (모듈·커널·앱·lib) | 추적 |
+| `docs/` | 문서 — **비즈니스 진실(SSOT)** | 추적 |
+| `tests/` | 테스트 (`src/` 레이아웃을 미러) | 추적 |
+| `.dev/` | AI 작업 흔적 — 로그·학습·스크래치 (일회성) | **무시** |
+| `out/` | 생성 산출물 (문서/엑셀/PDF 등) | **무시** |
+
+- 도구·관례상 최상위에 함께 두는 예외(5종 규약을 강제하지 않음): `prisma/`(Prisma 기본 경로), `.claude/`(스킬·설정·메모리), `.remember/`(세션 핸드오프), `node_modules/`, 루트 설정 파일(`package.json`, `tsconfig.json`, `next.config.*` 등).
+- `docs/superpowers/`(specs·plans)는 일회성 스크래치가 아니라 **추적되는 설계·계획 기록**이므로 `docs/`에 둡니다(`.dev/` 아님).
+- 배포 시 서버 shared 스토리지(`Template/`, `keys/`, 산출물)는 릴리즈와 분리합니다 — `docs/architecture.md` 배포 섹션. 저장소 기준 산출물 디렉터리 이름은 `out/`로 통일합니다(기존 문서의 `output` 표기는 서버 런타임 경로 맥락).
+
 ## 접근 제어 (이 프로젝트의 핵심 설계 — `docs/architecture/access-control.md`)
 
 단순 `ADMIN/MEMBER` enum이 아니라 **속성 + RBAC 테이블** 조합입니다.
