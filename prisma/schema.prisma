@@ -1,10 +1,12 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  schemas  = ["kernel", "workflows", "leave", "calendar"]
 }
 
 enum SystemRole {
@@ -12,17 +14,23 @@ enum SystemRole {
   ADMIN
   MANAGER
   MEMBER
+
+  @@schema("kernel")
 }
 
 enum UserStatus {
   INVITED
   ACTIVE
   DISABLED
+
+  @@schema("kernel")
 }
 
 enum EmploymentType {
   REGULAR
   CONTRACTOR
+
+  @@schema("kernel")
 }
 
 enum JobFunction {
@@ -30,17 +38,31 @@ enum JobFunction {
   DEVELOPER
   CONTENT_MANAGER
   CIVIL_RESPONSE
+
+  @@schema("kernel")
 }
 
 enum PermissionEffect {
   ALLOW
   DENY
+
+  @@schema("kernel")
+}
+
+enum OutboxStatus {
+  PENDING
+  DONE
+  FAILED
+
+  @@schema("kernel")
 }
 
 enum WorkflowKind {
   WEEKLY_REPORT
   BILLING
   NOTIFICATION_BILLING
+
+  @@schema("workflows")
 }
 
 enum WorkflowStatus {
@@ -51,17 +73,23 @@ enum WorkflowStatus {
   HQ_REQUESTED
   FINAL_SENT
   CANCELLED
+
+  @@schema("workflows")
 }
 
 enum LeaveType {
   ANNUAL
   HALF
   QUARTER
+
+  @@schema("leave")
 }
 
 enum LeaveSubType {
   MORNING
   AFTERNOON
+
+  @@schema("leave")
 }
 
 enum LeaveRequestStatus {
@@ -69,6 +97,8 @@ enum LeaveRequestStatus {
   APPROVED
   REJECTED
   CANCELLED
+
+  @@schema("leave")
 }
 
 enum AllocationChangeType {
@@ -77,6 +107,8 @@ enum AllocationChangeType {
   DEDUCT
   CARRYOVER
   ADJUSTMENT
+
+  @@schema("leave")
 }
 
 enum CalendarSourceKind {
@@ -85,6 +117,8 @@ enum CalendarSourceKind {
   GOOGLE_CALENDAR
   HOLIDAY
   MANUAL
+
+  @@schema("calendar")
 }
 
 enum CalendarEventKind {
@@ -95,6 +129,8 @@ enum CalendarEventKind {
   HOLIDAY
   PERSONAL_EVENT
   TEAM_EVENT
+
+  @@schema("calendar")
 }
 
 enum CalendarVisibility {
@@ -102,12 +138,16 @@ enum CalendarVisibility {
   TEAM
   INTERNAL
   PUBLIC
+
+  @@schema("calendar")
 }
 
 enum CalendarSyncStatus {
   ACTIVE
   PAUSED
   ERROR
+
+  @@schema("calendar")
 }
 
 enum CalendarDedupStatus {
@@ -115,6 +155,8 @@ enum CalendarDedupStatus {
   DUPLICATE_OF_INTERNAL
   DUPLICATE_OF_EXTERNAL
   IGNORED
+
+  @@schema("calendar")
 }
 
 model User {
@@ -132,20 +174,13 @@ model User {
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
-  roleAssignments       UserAccessRole[]
-  permissionOverrides   UserPermissionOverride[]
-  workflowTasks         WorkflowTask[]           @relation("WorkflowTaskCreator")
-  mailDeliveries        MailDelivery[]           @relation("MailDeliveryCreator")
-  leaveAllocations      LeaveAllocation[]
-  leaveRequests         LeaveRequest[]           @relation("LeaveRequestUser")
-  reviewedLeaveRequests LeaveRequest[]           @relation("LeaveRequestReviewer")
-  allocationChanges     LeaveAllocationHistory[] @relation("AllocationChangeCreator")
-  ownedCalendarSources  CalendarSource[]         @relation("CalendarSourceOwner")
-  calendarEvents        CalendarEvent[]          @relation("CalendarEventUser")
-  auditLogs             AuditLog[]               @relation("AuditActor")
+  roleAssignments     UserAccessRole[]
+  permissionOverrides UserPermissionOverride[]
+  auditLogs           AuditLog[]               @relation("AuditActor")
 
   @@index([employmentType, jobFunction])
   @@index([systemRole])
+  @@schema("kernel")
 }
 
 model AccessRole {
@@ -159,6 +194,8 @@ model AccessRole {
 
   users       UserAccessRole[]
   permissions RolePermission[]
+
+  @@schema("kernel")
 }
 
 model Permission {
@@ -174,6 +211,7 @@ model Permission {
   menuItems     NavigationItem[]
 
   @@unique([resource, action])
+  @@schema("kernel")
 }
 
 model RolePermission {
@@ -189,6 +227,7 @@ model RolePermission {
 
   @@unique([roleId, permissionId, scope])
   @@index([permissionId])
+  @@schema("kernel")
 }
 
 model UserAccessRole {
@@ -203,6 +242,7 @@ model UserAccessRole {
 
   @@unique([userId, roleId])
   @@index([roleId])
+  @@schema("kernel")
 }
 
 model UserPermissionOverride {
@@ -220,6 +260,7 @@ model UserPermissionOverride {
 
   @@unique([userId, permissionId, scope])
   @@index([permissionId])
+  @@schema("kernel")
 }
 
 model NavigationItem {
@@ -239,6 +280,45 @@ model NavigationItem {
 
   @@index([parentId, sortOrder])
   @@index([requiredPermissionId])
+  @@schema("kernel")
+}
+
+model OutboxEvent {
+  id          String       @id @default(cuid())
+  type        String
+  payload     Json
+  status      OutboxStatus @default(PENDING)
+  attempts    Int          @default(0)
+  lastError   String?
+  createdAt   DateTime     @default(now())
+  processedAt DateTime?
+
+  @@index([status, createdAt])
+  @@schema("kernel")
+}
+
+model SystemSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@schema("kernel")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation("AuditActor", fields: [actorId], references: [id])
+  entityType String
+  entityId   String?
+  action     String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@schema("kernel")
 }
 
 model WorkflowType {
@@ -254,6 +334,8 @@ model WorkflowType {
   updatedAt         DateTime     @updatedAt
 
   tasks WorkflowTask[]
+
+  @@schema("workflows")
 }
 
 model WorkflowTask {
@@ -265,7 +347,6 @@ model WorkflowTask {
   outputPath  String?
   recipients  Json?
   createdById String?
-  createdBy   User?          @relation("WorkflowTaskCreator", fields: [createdById], references: [id])
   generatedAt DateTime?
   reviewedAt  DateTime?
   sentAt      DateTime?
@@ -274,10 +355,10 @@ model WorkflowTask {
 
   files          GeneratedFile[]
   mailDeliveries MailDelivery[]
-  calendarEvents CalendarEvent[]
 
   @@index([typeId, scheduledAt])
   @@index([status])
+  @@schema("workflows")
 }
 
 model GeneratedFile {
@@ -291,6 +372,7 @@ model GeneratedFile {
   createdAt   DateTime     @default(now())
 
   @@index([taskId])
+  @@schema("workflows")
 }
 
 model MailDelivery {
@@ -303,11 +385,11 @@ model MailDelivery {
   attachmentPaths   Json?
   providerMessageId String?
   sentById          String?
-  sentBy            User?         @relation("MailDeliveryCreator", fields: [sentById], references: [id])
   sentAt            DateTime      @default(now())
 
   @@index([taskId])
   @@index([sentAt])
+  @@schema("workflows")
 }
 
 model BillingConfig {
@@ -321,6 +403,8 @@ model BillingConfig {
   monthlyAmountKor  String   @default("")
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+
+  @@schema("workflows")
 }
 
 model BillingRoundDate {
@@ -333,6 +417,7 @@ model BillingRoundDate {
 
   @@unique([year, round])
   @@index([year])
+  @@schema("workflows")
 }
 
 model Deliverable {
@@ -347,12 +432,12 @@ model Deliverable {
 
   @@unique([year, label])
   @@index([year])
+  @@schema("workflows")
 }
 
 model LeaveAllocation {
   id                    String    @id @default(cuid())
   userId                String
-  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   year                  Int
   allocatedDays         Decimal   @db.Decimal(6, 2)
   carriedOverDays       Decimal   @default(0) @db.Decimal(6, 2)
@@ -365,6 +450,7 @@ model LeaveAllocation {
 
   @@unique([userId, year])
   @@index([year])
+  @@schema("leave")
 }
 
 model LeaveAllocationHistory {
@@ -379,17 +465,16 @@ model LeaveAllocationHistory {
   beforeDays   Decimal              @db.Decimal(6, 2)
   afterDays    Decimal              @db.Decimal(6, 2)
   createdById  String?
-  createdBy    User?                @relation("AllocationChangeCreator", fields: [createdById], references: [id])
   createdAt    DateTime             @default(now())
 
   @@index([allocationId])
   @@index([userId, createdAt])
+  @@schema("leave")
 }
 
 model LeaveRequest {
   id                 String             @id @default(cuid())
   userId             String
-  user               User               @relation("LeaveRequestUser", fields: [userId], references: [id], onDelete: Cascade)
   leaveType          LeaveType
   leaveSubType       LeaveSubType?
   quarterStartTime   String?
@@ -400,7 +485,6 @@ model LeaveRequest {
   status             LeaveRequestStatus @default(PENDING)
   appliedAt          DateTime           @default(now())
   reviewedById       String?
-  reviewedBy         User?              @relation("LeaveRequestReviewer", fields: [reviewedById], references: [id])
   reviewedAt         DateTime?
   rejectionReason    String?
   cancelledAt        DateTime?
@@ -410,11 +494,10 @@ model LeaveRequest {
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
-  calendarEvents CalendarEvent[]
-
   @@index([userId, startDate])
   @@index([status])
   @@index([reviewedById])
+  @@schema("leave")
 }
 
 model CalendarSource {
@@ -426,7 +509,6 @@ model CalendarSource {
   externalId      String?
   color           String?
   ownerUserId     String?
-  ownerUser       User?              @relation("CalendarSourceOwner", fields: [ownerUserId], references: [id])
   visibility      CalendarVisibility @default(TEAM)
   syncStatus      CalendarSyncStatus @default(ACTIVE)
   cacheTtlSeconds Int                @default(900)
@@ -439,6 +521,7 @@ model CalendarSource {
 
   @@index([kind])
   @@index([ownerUserId])
+  @@schema("calendar")
 }
 
 model CalendarEvent {
@@ -453,11 +536,8 @@ model CalendarEvent {
   endsAt             DateTime
   allDay             Boolean             @default(true)
   userId             String?
-  user               User?               @relation("CalendarEventUser", fields: [userId], references: [id])
-  workflowTaskId     String?
-  workflowTask       WorkflowTask?       @relation(fields: [workflowTaskId], references: [id])
-  leaveRequestId     String?
-  leaveRequest       LeaveRequest?       @relation(fields: [leaveRequestId], references: [id])
+  originModule       String?
+  originId           String?
   externalEventId    String?
   visibility         CalendarVisibility  @default(TEAM)
   dedupStatus        CalendarDedupStatus @default(UNIQUE)
@@ -470,8 +550,8 @@ model CalendarEvent {
   @@index([startsAt, endsAt])
   @@index([kind, startsAt])
   @@index([userId, startsAt])
-  @@index([workflowTaskId])
-  @@index([leaveRequestId])
+  @@index([originModule, originId])
+  @@schema("calendar")
 }
 
 model CalendarCacheEntry {
@@ -487,25 +567,5 @@ model CalendarCacheEntry {
 
   @@unique([sourceId, rangeStart, rangeEnd])
   @@index([expiresAt])
-}
-
-model SystemSetting {
-  key       String   @id
-  value     Json
-  updatedAt DateTime @updatedAt
-  createdAt DateTime @default(now())
-}
-
-model AuditLog {
-  id         String   @id @default(cuid())
-  actorId    String?
-  actor      User?    @relation("AuditActor", fields: [actorId], references: [id])
-  entityType String
-  entityId   String?
-  action     String
-  metadata   Json?
-  createdAt  DateTime @default(now())
-
-  @@index([entityType, entityId])
-  @@index([actorId, createdAt])
+  @@schema("calendar")
 }
