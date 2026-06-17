@@ -75,18 +75,19 @@ src/app/{(auth),dashboard,workflows,leave,admin,api}/
 
 ## 디렉터리 규약
 
-저장소 최상위는 다음 5개를 표준으로 둡니다:
+저장소 최상위는 다음 6개를 표준으로 둡니다:
 
 | 디렉터리 | 용도 | git |
 | --- | --- | --- |
 | `src/` | 애플리케이션 코드 (모듈·커널·앱·lib) | 추적 |
 | `docs/` | 문서 — **비즈니스 진실(SSOT)** | 추적 |
 | `tests/` | 테스트 (`src/` 레이아웃을 미러) | 추적 |
+| `scripts/` | 운영·개발 보조 스크립트 (마이그레이션·시드·일회성 도구) | 추적 |
 | `.dev/` | AI 작업 흔적 — 로그·학습·스크래치 (일회성) | **무시** |
 | `out/` | 생성 산출물 (문서/엑셀/PDF 등) | **무시** |
 
 - 도구·관례상 최상위에 함께 두는 예외(5종 규약을 강제하지 않음): `prisma/`(Prisma 기본 경로), `.claude/`(스킬·설정·메모리), `.remember/`(세션 핸드오프), `node_modules/`, 루트 설정 파일(`package.json`, `tsconfig.json`, `next.config.*` 등).
-- `docs/superpowers/`(specs·plans)는 일회성 스크래치가 아니라 **추적되는 설계·계획 기록**이므로 `docs/`에 둡니다(`.dev/` 아님).
+- `docs/` 하위 문서 구획: 설계 스펙은 `docs/specs/`, 구현 계획은 `docs/plans/`, 결정 기록(ADR)은 `docs/adr/`에 둔다. 이들은 일회성 스크래치가 아니라 **추적되는 설계·계획·결정 기록**이므로 `docs/`에 둡니다(`.dev/` 아님). ADR은 파일이 늘면 `docs/adr/`에서 번호순으로 관리한다. (이전 `docs/superpowers/specs|plans` 경로에서 이전됨)
 - 배포 시 서버 shared 스토리지(`Template/`, `keys/`, 산출물)는 릴리즈와 분리합니다 — `docs/architecture.md` 배포 섹션. 저장소 기준 산출물 디렉터리 이름은 `out/`로 통일합니다(기존 문서의 `output` 표기는 서버 런타임 경로 맥락).
 
 ## 접근 제어 (이 프로젝트의 핵심 설계 — `docs/architecture/access-control.md`)
@@ -139,8 +140,8 @@ src/app/{(auth),dashboard,workflows,leave,admin,api}/
 
 전체 계획은 `docs/product/modernization-roadmap.md`의 Phase 0~6. 현재 Phase 0 완료, 다음은 **Phase 1(앱 골격 + 공통 인증/권한/감사 기반)**. 마이그레이션 시 기존 운영 DB는 직접 수정하지 않고(이메일을 사용자 병합 키로 사용) 새 PostgreSQL에 적재 후 병행 검증한다 — `docs/migration/initial-migration-plan.md`.
 
-확장·분리 아키텍처 전략(모듈 경계·이벤트·신원 연동)은 `docs/superpowers/specs/2026-06-17-modular-extensibility-design.md` 참조.
+확장·분리 아키텍처 전략(모듈 경계·이벤트·신원 연동)은 `docs/specs/2026-06-17-modular-extensibility-design.md` 참조.
 
 ## 구현 계획 작성
 
-이 저장소의 다단계 구현 계획은 글로벌 `superpowers:writing-plans` 대신 프로젝트 스킬 **`writing-plans-split`**(`.claude/skills/writing-plans-split/`)으로 작성한다 — 단일 대형 파일이 아니라 얇은 엔트리포인트 `docs/superpowers/plans/<feature>.md` + 태스크별 파일(`<feature>/task-NN-<slug>.md`)로 분할한다. brainstorming의 종착점이 "writing-plans 호출"이어도 이 저장소에서는 이 스킬을 사용한다. 실행은 `superpowers:subagent-driven-development`로 한다.
+이 저장소의 다단계 구현 계획은 글로벌 `superpowers:writing-plans` 대신 프로젝트 스킬 **`writing-plans-split`**(`.claude/skills/writing-plans-split/`)으로 작성한다 — 단일 대형 파일이 아니라 얇은 엔트리포인트 `docs/plans/<feature>.md` + 태스크별 파일(`<feature>/task-NN-<slug>.md`)로 분할한다. brainstorming의 종착점이 "writing-plans 호출"이어도 이 저장소에서는 이 스킬을 사용한다. 실행은 `superpowers:subagent-driven-development`로 한다.

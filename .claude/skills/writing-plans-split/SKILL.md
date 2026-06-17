@@ -23,8 +23,8 @@ This is a fork of `superpowers:writing-plans` adapted for **split output**. Only
 ## Output structure
 
 ```
-docs/superpowers/plans/YYYY-MM-DD-<feature>.md     # thin entrypoint (same path as old single-file plans)
-docs/superpowers/plans/YYYY-MM-DD-<feature>/       # task body directory
+docs/plans/YYYY-MM-DD-<feature>.md     # thin entrypoint (same path as old single-file plans)
+docs/plans/YYYY-MM-DD-<feature>/       # task body directory
 ├── task-01-<slug>.md
 ├── task-02-<slug>.md
 └── task-NN-<slug>.md
