@@ -1,11 +1,12 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-// 디자인 미리보기 데모 — 실제 지표가 아니라 브랜드 팔레트/Playfair 시연용 더미.
+// 디자인 미리보기 데모 — 실제 지표가 아니라 브랜드 팔레트/Playfair 시연용 예시.
+// 라벨은 실제 도메인 용어가 아닌 중립 샘플로 두어 운영 데이터로 오인되지 않게 한다.
 // 향후 실제 대시보드 위젯으로 교체한다.
 const sampleMetrics = [
-  { label: "이번 주 워크플로", value: "24", trend: "+12%", tone: "cyan" as const },
-  { label: "대기 중 결재", value: "7", trend: "-3", tone: "lime" as const },
-  { label: "잔여 연차(팀 평균)", value: "8.5", trend: "+0.5", tone: "cyan" as const },
+  { label: "예시 지표 A", value: "24", trend: "+12%", tone: "cyan" as const },
+  { label: "예시 지표 B", value: "7", trend: "-3", tone: "lime" as const },
+  { label: "예시 지표 C", value: "8.5", trend: "+0.5", tone: "cyan" as const },
 ];
 
 // 파스텔은 소프트 배경(fill)으로만, 텍스트는 다크(text-foreground) — spec §8.
@@ -23,6 +24,9 @@ export default function DashboardPage() {
           디자인 미리보기
         </span>
       </div>
+      <p className="text-sm text-muted-foreground">
+        아래 카드는 브랜드 팔레트·타이포그래피 시연용 예시이며 실제 운영 데이터가 아닙니다.
+      </p>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {sampleMetrics.map((m) => (
           <Card key={m.label}>
