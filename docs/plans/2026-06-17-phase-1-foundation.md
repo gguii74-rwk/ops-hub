@@ -213,15 +213,15 @@ export const NAV = [
 
 | # | title | status | file | deps | outcome |
 |---|-------|--------|------|------|---------|
-| 01 | 툴링·앱 스캐폴드·3계층 경계(eslint-boundaries·vitest) | [ ] | [task-01](2026-06-17-phase-1-foundation/task-01-tooling-and-scaffold.md) | — | |
-| 02 | schema.prisma 재구성(multiSchema·소프트참조·커널정리·outbox) | [ ] | [task-02](2026-06-17-phase-1-foundation/task-02-schema-multischema.md) | — | |
-| 03 | Prisma 클라이언트 싱글톤 + 첫 마이그레이션 | [ ] | [task-03](2026-06-17-phase-1-foundation/task-03-prisma-client-and-migration.md) | 01, 02 | |
-| 04 | 권한 엔진(deny 우선·fail-closed) + requirePermission | [ ] | [task-04](2026-06-17-phase-1-foundation/task-04-permission-engine.md) | 03 | |
-| 05 | 감사 로그 + outbox 발행/디스패처(이벤트 버스 골격) | [ ] | [task-05](2026-06-17-phase-1-foundation/task-05-audit-and-outbox.md) | 03 | |
-| 06 | NextAuth v5 Credentials + 세션 + 로그인 | [ ] | [task-06](2026-06-17-phase-1-foundation/task-06-auth-credentials.md) | 03 | |
-| 07 | 라우트 보호 미들웨어 + federation seam + /api/auth/verify | [ ] | [task-07](2026-06-17-phase-1-foundation/task-07-route-protection-and-federation.md) | 06 | |
-| 08 | 권한 summary API + useCan 훅 + requirePermission 배선 | [ ] | [task-08](2026-06-17-phase-1-foundation/task-08-permission-summary-and-usecan.md) | 04, 06 | |
-| 09 | seed(admin·roles·permission matrix·nav) | [ ] | [task-09](2026-06-17-phase-1-foundation/task-09-seed.md) | 03 | |
-| 10 | 내비게이션 셸 + 보호 placeholder 페이지 | [ ] | [task-10](2026-06-17-phase-1-foundation/task-10-navigation-and-pages.md) | 08, 09 | |
+| 01 | 툴링·앱 스캐폴드·3계층 경계(eslint-boundaries·vitest) | [x] | [task-01](2026-06-17-phase-1-foundation/task-01-tooling-and-scaffold.md) | — | Next 16 앱 스캐폴드, eslint-boundaries 3계층 경계 강제, vitest 설정 완료 |
+| 02 | schema.prisma 재구성(multiSchema·소프트참조·커널정리·outbox) | [x] | [task-02](2026-06-17-phase-1-foundation/task-02-schema-multischema.md) | — | 4 schema multiSchema, CalendarEvent 소프트참조(originModule/Id), OutboxEvent 추가 |
+| 03 | Prisma 클라이언트 싱글톤 + 첫 마이그레이션 | [x] | [task-03](2026-06-17-phase-1-foundation/task-03-prisma-client-and-migration.md) | 01, 02 | PostgreSQL opshub DB, migration 20260617225534_init, prisma singleton |
+| 04 | 권한 엔진(deny 우선·fail-closed) + requirePermission | [x] | [task-04](2026-06-17-phase-1-foundation/task-04-permission-engine.md) | 03 | computeDecision deny-first TDD 9/9, hasPermission/requirePermission/getPermissionSummary |
+| 05 | 감사 로그 + outbox 발행/디스패처(이벤트 버스 골격) | [x] | [task-05](2026-06-17-phase-1-foundation/task-05-audit-and-outbox.md) | 03 | logAuditEvent, publishEvent, processOutbox 골격, 12 TDD 테스트 |
+| 06 | NextAuth v5 Credentials + 세션 + 로그인 | [x] | [task-06](2026-06-17-phase-1-foundation/task-06-auth-credentials.md) | 03 | NextAuth v5 Credentials, JWT 세션, /login 페이지, typecheck/lint/build 0 |
+| 07 | 라우트 보호 미들웨어 + federation seam + /api/auth/verify | [x] | [task-07](2026-06-17-phase-1-foundation/task-07-route-protection-and-federation.md) | 06 | middleware matcher 16 TDD, federation seam, /api/auth/verify 307→/login smoke OK |
+| 08 | 권한 summary API + useCan 훅 + requirePermission 배선 | [x] | [task-08](2026-06-17-phase-1-foundation/task-08-permission-summary-and-usecan.md) | 04, 06 | /api/auth/permissions, useCan 훅, /api/admin/audit requirePermission 배선 |
+| 09 | seed(admin·roles·permission matrix·nav) | [x] | [task-09](2026-06-17-phase-1-foundation/task-09-seed.md) | 03 | 33 권한, 5 역할, 71 RolePermission, 5 nav, admin@uracle.co.kr OWNER 생성 |
+| 10 | 내비게이션 셸 + 보호 placeholder 페이지 | [x] | [task-10](2026-06-17-phase-1-foundation/task-10-navigation-and-pages.md) | 08, 09 | 앱 셸 layout, 권한 필터 nav 5개, 5개 보호 라우트, useCan /admin 데모, typecheck/lint/build 0 |
 
 실행 순서 권장: 01 → 02 → 03 → (04·05·06 병렬 가능) → 07 → 08 → 09 → 10.
