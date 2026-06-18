@@ -121,7 +121,7 @@ describe("getIntegrationStatuses", () => {
     setSettingImpl(async () => { throw new Error("ECONNREFUSED"); });
     const out = await getIntegrationStatuses("u1");
     expect(out.find((s) => s.key === "smtp")!.health).toBe("unknown");
-    expect(spy).toHaveBeenCalled();
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining("smtp"), expect.anything());
     spy.mockRestore();
   });
 
