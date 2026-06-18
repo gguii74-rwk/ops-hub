@@ -90,7 +90,13 @@ describe("PUT /api/admin/settings/[key]", () => {
   });
   it("권한 없음(엔트리 게이트 throw) → 403", async () => {
     requirePermission.mockImplementation(async (_u, r) => { if (r === "integrations.smtp") throw new FakeForbidden(); });
-    expect((await PUT(putReq({ value: "x" }), ctx("integrations.smtp.host"))).status).toBe(403);
+    expect((await PUT(putReq({ value: "x", expectedUpdatedAt: null }), ctx("integrations.smtp.host"))).status).toBe(403);
+  });
+  it("비관리자(admin.settings:configure 없음)는 무효 키도 403(404 아님), setSetting 미호출", async () => {
+    requirePermission.mockImplementation(async (_u, r) => { if (r === "admin.settings") throw new FakeForbidden(); });
+    const res = await PUT(putReq({ value: "x", expectedUpdatedAt: null }), ctx("nope.nope.nope"));
+    expect(res.status).toBe(403);
+    expect(setSetting).not.toHaveBeenCalled();
   });
   it("성공 → 200 + updatedAt, base+entry 게이트 모두 호출", async () => {
     setSetting.mockResolvedValue({ updatedAt: new Date(2026, 0, 2) });
@@ -182,13 +188,22 @@ export async function PUT(req: Request, { params }: { params: Promise<{ key: str
   const { key } = await params;
   const uid = session.user.id;
 
+  // base admin 게이트를 키 조회(getEntry) 전에 — 비관리자가 403/404 차이로 server-only 카탈로그 키(secret.* 포함)를 enumerate하지 못하게(Codex 3차 F5).
+  try {
+    await requirePermission(uid, "admin.settings", "configure");
+  } catch (error) {
+    if (error instanceof ForbiddenError) {
+      return NextResponse.json({ error: error.message }, { status: 403 });
+    }
+    throw error;
+  }
+
   const entry = getEntry(key);
   if (!entry) {
     return NextResponse.json({ error: `unknown setting: ${key}` }, { status: 404 });
   }
 
   try {
-    await requirePermission(uid, "admin.settings", "configure");
     await requirePermission(uid, entry.permission.resource, entry.permission.action);
   } catch (error) {
     if (error instanceof ForbiddenError) {
@@ -243,7 +258,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ key: str
 npm test -- "api/admin/settings"
 ```
 
-기대: GET 3 + PUT 9 = 12 테스트 통과.
+기대: GET 3 + PUT 10 = 13 테스트 통과.
 
 ### 6. typecheck/lint/build
 
@@ -262,7 +277,7 @@ git commit -m "Add settings API: GET list and PUT with admin + entry gates"
 
 ## Acceptance Criteria
 
-- `npm test -- "api/admin/settings"` → 12 PASS.
+- `npm test -- "api/admin/settings"` → 13 PASS.
 - `npm run typecheck` / `npm run lint` / `npm run build` → 에러 0, 두 라우트 빌드.
 - PUT은 `admin.settings:configure`와 엔트리 권한을 **둘 다** 검사(테스트로 호출 인자 확인).
 
@@ -271,5 +286,6 @@ git commit -m "Add settings API: GET list and PUT with admin + entry gates"
 - **Next 16 라우트의 `params`는 Promise — 반드시 `await params`. 이유:** 동기 접근은 타입/런타임 오류.
 - **엔트리 게이트를 빼지 말 것(base 게이트만으로 불충분). 이유:** Codex Finding 3 — 좁은 권한자가 다른 도메인 설정을 못 바꾸게 한다.
 - **`expectedUpdatedAt`를 `null` 또는 유효 ISO로 필수 검증(생략·형식오류→400). 이유:** Codex 2차 리뷰 F3 — 토큰을 생략하면 service의 `undefined`(last-write-wins) 경로로 떨어져 공개 라우트에서 409 동시성 가드가 우회된다. LWW는 service 내부 전용으로만 두고 공개 API는 도달 불가하게 한다.
+- **base `admin.settings:configure` 게이트를 `getEntry` 전에 둘 것. 이유:** Codex 3차 F5 — getEntry 404가 게이트보다 먼저면 비관리자가 403/404 차이로 server-only 카탈로그(`secret.*` 식별자 포함) 키를 enumerate할 수 있다. 엔트리별 게이트만 getEntry 뒤에 남긴다.
 - **응답에 `Cache-Control: no-store`. 이유:** 권한 필터된 설정/상태가 캐시되지 않게(Phase 1 verify 하드닝과 동일 기조).
 - **에러 매핑에서 미식별 에러는 rethrow. 이유:** 예기치 못한 예외를 200/4xx로 삼키지 않는다(silent failure 금지).
