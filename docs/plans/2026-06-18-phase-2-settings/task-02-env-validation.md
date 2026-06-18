@@ -44,6 +44,21 @@ describe("lib/env boot 검증", () => {
     const mod = await import("@/lib/env");
     expect(mod.env.DATABASE_URL).toBe("postgresql://localhost/db");
   });
+
+  it("NEXTAUTH_SECRET 없이 AUTH_SECRET만 있어도 통과(Phase 1 auth 정합)", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost/db";
+    delete process.env.NEXTAUTH_SECRET;
+    process.env.AUTH_SECRET = "secret";
+    const mod = await import("@/lib/env");
+    expect(mod.env.AUTH_SECRET).toBe("secret");
+  });
+
+  it("NEXTAUTH_SECRET·AUTH_SECRET 둘 다 없으면 throw", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost/db";
+    delete process.env.NEXTAUTH_SECRET;
+    delete process.env.AUTH_SECRET;
+    await expect(import("@/lib/env")).rejects.toThrow();
+  });
 });
 
 describe("getSecretStatus (coarse)", () => {
@@ -84,6 +99,16 @@ describe("getSecretStatus (coarse)", () => {
     expect(json).not.toContain("SMTP_PASSWORD");
     expect(Object.keys(out[0]).sort()).toEqual(["health", "id"]);
   });
+
+  it("aliases: 대체 변수(AUTH_SECRET)만 있어도 configured", async () => {
+    delete process.env.NEXTAUTH_SECRET;
+    process.env.AUTH_SECRET = "s";
+    const { getSecretStatus } = await import("@/lib/env");
+    const out = getSecretStatus([
+      { id: "secret.auth", vars: [{ name: "NEXTAUTH_SECRET", kind: "value", aliases: ["AUTH_SECRET"] }] },
+    ]);
+    expect(out[0]).toEqual({ id: "secret.auth", health: "configured" });
+  });
 });
 ```
 
@@ -100,15 +125,22 @@ npm test -- env
 ```ts
 import { z } from "zod";
 
-export const envSchema = z.object({
-  DATABASE_URL: z.string().min(1),
-  NEXTAUTH_SECRET: z.string().min(1),
-  SMTP_PASSWORD: z.string().optional(),
-  GOOGLE_APPLICATION_CREDENTIALS: z.string().optional(),
-  LIBREOFFICE_PATH: z.string().optional(),
-  TEMPLATE_DIR: z.string().optional(),
-  OUTPUT_DIR: z.string().optional(),
-});
+export const envSchema = z
+  .object({
+    DATABASE_URL: z.string().min(1),
+    // NextAuth v5는 AUTH_SECRET을 정식 이름으로 받고, 기존 auth config는 `NEXTAUTH_SECRET ?? AUTH_SECRET`.
+    // 둘 다 optional로 두고 아래 refine으로 "둘 중 하나 필수"를 표현(Codex 3차 F4).
+    NEXTAUTH_SECRET: z.string().min(1).optional(),
+    AUTH_SECRET: z.string().min(1).optional(),
+    SMTP_PASSWORD: z.string().optional(),
+    GOOGLE_APPLICATION_CREDENTIALS: z.string().optional(),
+    LIBREOFFICE_PATH: z.string().optional(),
+    TEMPLATE_DIR: z.string().optional(),
+    OUTPUT_DIR: z.string().optional(),
+  })
+  .refine((d) => Boolean(d.NEXTAUTH_SECRET || d.AUTH_SECRET), {
+    message: "NEXTAUTH_SECRET or AUTH_SECRET is required",
+  });
 
 export type Env = z.infer<typeof envSchema>;
 ```
@@ -123,8 +155,9 @@ import { envSchema, type Env } from "./schema";
 function parseEnv(): Env {
   const result = envSchema.safeParse(process.env);
   if (!result.success) {
-    const missing = result.error.issues.map((i) => i.path.join(".")).join(", ");
-    throw new Error(`Invalid environment configuration: ${missing}`);
+    // refine 이슈는 path가 비어 있으므로 message로 폴백(예: "NEXTAUTH_SECRET or AUTH_SECRET is required").
+    const detail = result.error.issues.map((i) => i.path.join(".") || i.message).join(", ");
+    throw new Error(`Invalid environment configuration: ${detail}`);
   }
   return result.data;
 }
@@ -132,15 +165,17 @@ function parseEnv(): Env {
 export const env: Env = parseEnv();
 
 export type SecretHealth = "configured" | "attention_required";
-export type SecretVar = { name: string; kind: "value" | "filePath" };
+export type SecretVar = { name: string; kind: "value" | "filePath"; aliases?: string[] };
 export interface SecretStatus {
   id: string;
   health: SecretHealth;
 }
 
 function probeVar(v: SecretVar): boolean {
-  const raw = process.env[v.name];
-  if (!raw || raw.trim() === "") return false;
+  // name + aliases 중 하나라도 present면 충족(예: NEXTAUTH_SECRET 또는 AUTH_SECRET).
+  const candidates = [v.name, ...(v.aliases ?? [])];
+  const raw = candidates.map((n) => process.env[n]).find((val) => val !== undefined && val.trim() !== "");
+  if (!raw) return false;
   if (v.kind === "filePath") return existsSync(raw);
   return true;
 }
@@ -159,7 +194,7 @@ export function getSecretStatus(specs: Array<{ id: string; vars: SecretVar[] }>)
 npm test -- env
 ```
 
-기대: 5 테스트 통과(boot 2 + status 3). 기존 `tests/lib/prisma.test.ts` 등 영향 없음.
+기대: 8 테스트 통과(boot 4 + status 4). 기존 `tests/lib/prisma.test.ts` 등 영향 없음.
 
 ### 6. typecheck/lint
 
@@ -176,7 +211,7 @@ git commit -m "Add lib/env: boot-time env validation and coarse secret status"
 
 ## Acceptance Criteria
 
-- `npm test -- env` → 5 PASS.
+- `npm test -- env` → 8 PASS.
 - `getSecretStatus` 반환 객체 키는 `{ id, health }`만(값·변수명·경로 부재).
 - required env 누락 시 `import("@/lib/env")`가 throw.
 - `npm run typecheck` / `npm run lint` → 에러 0.
@@ -185,5 +220,6 @@ git commit -m "Add lib/env: boot-time env validation and coarse secret status"
 
 - **`index.ts` 첫 줄 `import "server-only";` 필수. 이유:** `env`/`getSecretStatus`가 클라이언트로 새면 secret 인벤토리 노출.
 - **`getSecretStatus` 반환에 값·env 변수명·파일 경로·detail을 절대 넣지 말 것. 이유:** Codex Finding 4(토폴로지 누출). coarse 2-상태만.
+- **auth secret을 `NEXTAUTH_SECRET` 단독 필수로 두지 말 것 — `AUTH_SECRET` 대체 허용. 이유:** Codex 3차 F4 — `src/lib/auth/config.ts`가 `NEXTAUTH_SECRET ?? AUTH_SECRET`을 받으므로, schema는 refine으로 "둘 중 하나 필수", 상태는 `aliases`로 "하나라도 present면 configured". AUTH_SECRET-only 배포가 boot fail 하지 않게 한다.
 - **`lib/env`에서 `@/kernel/*`·`@/modules/*` import 금지. 이유:** Phase 1 boundaries(lib→lib만). 카탈로그 연결은 호출자(service)가 spec 주입으로 처리.
 - **테스트는 `vi.resetModules()` + 동적 `import()`로 작성. 이유:** `env`가 모듈 로드 시 1회 parse되므로 정적 import면 process.env 조작 전에 평가된다.

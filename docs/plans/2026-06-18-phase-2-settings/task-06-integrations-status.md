@@ -63,10 +63,11 @@ describe("getIntegrationStatuses", () => {
     ]);
   });
 
-  it("smtp: secret OK + host·from 채워짐 → configured", async () => {
+  it("smtp: secret OK + host·from·port 채워짐 → configured", async () => {
     secretHealth.smtp = "configured";
     settings.set("integrations.smtp.host", "mail.x");
     settings.set("integrations.smtp.fromAddress", "ops@x.com");
+    settings.set("integrations.smtp.port", 587);
     const out = await getIntegrationStatuses("u1");
     expect(out.find((s) => s.key === "smtp")!.health).toBe("configured");
   });
@@ -75,6 +76,18 @@ describe("getIntegrationStatuses", () => {
     secretHealth.smtp = "configured";
     settings.set("integrations.smtp.host", "");
     settings.set("integrations.smtp.fromAddress", "ops@x.com");
+    settings.set("integrations.smtp.port", 587);
+    expect((await getIntegrationStatuses("u1")).find((s) => s.key === "smtp")!.health).toBe("attention_required");
+  });
+
+  it("smtp: secret·host·from OK지만 port 무효(getSetting throw) → attention_required", async () => {
+    secretHealth.smtp = "configured";
+    settings.set("integrations.smtp.host", "mail.x");
+    settings.set("integrations.smtp.fromAddress", "ops@x.com");
+    settings.set("integrations.smtp.port", 587);
+    const map = getSettingImpl;
+    getSettingImpl = async (k) =>
+      k === "integrations.smtp.port" ? Promise.reject(new Error("SettingInvalidError")) : map(k);
     expect((await getIntegrationStatuses("u1")).find((s) => s.key === "smtp")!.health).toBe("attention_required");
   });
 
@@ -142,7 +155,15 @@ async function smtpConfigured(): Promise<boolean> {
   if (!secretOk("smtp", "SMTP_PASSWORD", "value")) return false;
   const host = await getSetting("integrations.smtp.host");
   const from = await getSetting("integrations.smtp.fromAddress");
-  return typeof host === "string" && host.length > 0 && typeof from === "string" && from.length > 0;
+  // port도 운영 필수값(fallbackSafe=false). 무효 row면 getSetting이 throw → safe()가 attention_required로 환원.
+  const port = await getSetting("integrations.smtp.port");
+  return (
+    typeof host === "string" &&
+    host.length > 0 &&
+    typeof from === "string" &&
+    from.length > 0 &&
+    typeof port === "number"
+  );
 }
 
 async function googleConfigured(): Promise<boolean> {
@@ -191,7 +212,7 @@ export type { IntegrationStatus, IntegrationKey, IntegrationHealth } from "./sta
 npm test -- integrations
 ```
 
-기대: 7 테스트 통과. 기존 Phase 1 federation 테스트(`tests/lib/auth/federation.test.ts`)는 영향 없음.
+기대: 8 테스트 통과. 기존 Phase 1 federation 테스트(`tests/lib/auth/federation.test.ts`)는 영향 없음.
 
 ### 6. typecheck/lint
 
@@ -208,7 +229,7 @@ git commit -m "Add integrations status rollup (read-only via settings reader)"
 
 ## Acceptance Criteria
 
-- `npm test -- integrations` → 7 PASS(연동별 view 게이트 포함).
+- `npm test -- integrations` → 8 PASS(연동별 view 게이트 + SMTP port 검증 포함).
 - `npm run typecheck` / `npm run lint` → 에러 0(boundaries 위반 없음 — settings는 reader만, 인가는 kernel/access만).
 
 ## Cautions
@@ -216,4 +237,5 @@ git commit -m "Add integrations status rollup (read-only via settings reader)"
 - **`@/kernel/settings/service`·`index`·`catalog` import 금지. 이유:** 모듈은 read-only `reader`만(Codex Finding 11·경계 seam). write 경로 차단.
 - **연동별 env 변수명은 이 모듈이 소유(secretOk 인자). 이유:** 연동 도메인 지식은 kernel 카탈로그가 아니라 integrations 모듈에 둔다(kernel cross-domain 적재 완화).
 - **getSetting throw를 삼키되 silent로 두지 말 것 — `attention_required`로 환원. 이유:** invalid 저장값(fallbackSafe=false)이 상태 화면을 깨지 않게 하되, "정상"으로 오인되지 않게 한다.
+- **SMTP 완성도는 host·fromAddress뿐 아니라 `integrations.smtp.port`까지 확인. 이유:** Codex 3차 F6 — port도 운영 필수값(fallbackSafe=false)이라, 무효 port row가 있으면 실제 발송은 깨지는데 상태만 "정상"으로 표시되는 괴리를 막는다. port를 읽으면 무효 시 getSetting이 throw→`safe()`가 attention_required로 환원한다.
 - **인가는 `@/kernel/access`의 `hasPermission`만(연동별 view 게이트), `catalog`/`getEntry`로 권한을 끌어오지 말 것. 이유:** 연동 상태도 항목별 권한 필터 대상(Codex 2차 리뷰 F1). 경계 가드(task-09)는 `@/kernel/settings/*`만 제한하므로 `kernel/access` import는 허용되지만 settings는 여전히 reader로만.

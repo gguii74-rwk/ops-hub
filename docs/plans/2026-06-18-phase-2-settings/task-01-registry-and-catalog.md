@@ -164,7 +164,8 @@ export interface RelationalSettingEntry extends SettingEntryBase {
 }
 export interface EnvSecretEntry extends SettingEntryBase {
   kind: "envSecret";
-  envVars: Array<{ name: string; kind: "value" | "filePath" }>;
+  // aliases: 같은 secret을 받는 대체 env 이름(예: NEXTAUTH_SECRET ↔ AUTH_SECRET). 하나라도 present면 충족.
+  envVars: Array<{ name: string; kind: "value" | "filePath"; aliases?: string[] }>;
 }
 export type SettingEntry = SystemSettingEntry | RelationalSettingEntry | EnvSecretEntry;
 
@@ -231,9 +232,9 @@ export const CATALOG: readonly SettingEntry[] = [
     category: "security",
     order: 11,
     title: "인증 secret",
-    description: "NextAuth 세션 서명 secret.",
+    description: "NextAuth 세션 서명 secret(NEXTAUTH_SECRET 또는 AUTH_SECRET).",
     permission: { resource: "admin.settings", action: "view" },
-    envVars: [{ name: "NEXTAUTH_SECRET", kind: "value" }],
+    envVars: [{ name: "NEXTAUTH_SECRET", kind: "value", aliases: ["AUTH_SECRET"] }],
   },
   // --- integrations (envSecret) ---
   {

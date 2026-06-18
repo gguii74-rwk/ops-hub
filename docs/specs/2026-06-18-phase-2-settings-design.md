@@ -188,7 +188,7 @@ permission은 `{ resource, action }`. 표는 `resource:action` 표기로 표시.
 
 | key / envVars | kind | category | permission | audit | fallbackSafe |
 | --- | --- | --- | --- | --- | --- |
-| `DATABASE_URL`, `NEXTAUTH_SECRET` | envSecret | security | `admin.settings:view` | — | — |
+| `DATABASE_URL`, `NEXTAUTH_SECRET`\|`AUTH_SECRET` | envSecret | security | `admin.settings:view` | — | — |
 | `GOOGLE_APPLICATION_CREDENTIALS`(filePath) | envSecret | integrations | `integrations.google:view` | — | — |
 | `SMTP_PASSWORD` | envSecret | integrations | `integrations.smtp:view` | — | — |
 | `LIBREOFFICE_PATH`(filePath) | envSecret | integrations | `integrations.templates:view` | — | — |
@@ -296,7 +296,7 @@ listSettings(userId: string): Promise<SettingsCatalogView>;
 
 ## 6. env/secret 검증 (lib/env) — boot-time + 런타임 (Codex Finding 4)
 
-- `lib/env/schema.ts`: `process.env` Zod 스키마. required(`DATABASE_URL`, `NEXTAUTH_SECRET`) / optional(`SMTP_PASSWORD`, `GOOGLE_APPLICATION_CREDENTIALS`, `LIBREOFFICE_PATH`, template/output dir).
+- `lib/env/schema.ts`: `process.env` Zod 스키마. required(`DATABASE_URL`, 그리고 `NEXTAUTH_SECRET` **또는** `AUTH_SECRET` — 기존 auth가 `NEXTAUTH_SECRET ?? AUTH_SECRET`을 받으므로 둘 다 optional + refine "둘 중 하나 필수", Codex 3차 F4) / optional(`SMTP_PASSWORD`, `GOOGLE_APPLICATION_CREDENTIALS`, `LIBREOFFICE_PATH`, template/output dir). 상태 판정은 `aliases`로 대체 변수(AUTH_SECRET)가 있어도 configured.
 - `lib/env/index.ts`: import 시 1회 parse → `export const env`. required 누락/형식오류 → **boot fail-fast**. **`import "server-only"`로 고정**.
 - `getSecretStatus()`: 선언된 env/파일경로별 **coarse 상태**(`configured` / `attention_required`)만 반환. **값·원 env 변수명·파일 경로 detail은 반환하지 않는다**(secret 인벤토리·파일시스템 존재 노출 차단). `filePath` 항목은 `fs.existsSync`로 존재 확인하되 결과는 coarse 상태로만 환원. 실 API 호출(프로브)은 Phase 4. **server-only**, 호출부(API)는 `admin.settings:view`로 게이트.
 
@@ -321,6 +321,7 @@ listSettings(userId: string): Promise<SettingsCatalogView>;
 - `GET /api/admin/settings` → `requirePermission(uid,"admin.settings","view")` 후 `listSettings(uid)`.
 - `PUT /api/admin/settings/[key]` → `requirePermission(uid,"admin.settings","configure")` **그리고** 엔트리별 `requirePermission(uid, entry.permission.resource, entry.permission.action)` 둘 다 통과해야 write(Finding 3). 이후 `setSetting`.
 - PUT body 검증: `expectedUpdatedAt`는 `null` 또는 유효 ISO 문자열로 **명시 필수**(생략·형식오류→400). 토큰 생략으로 service의 last-write-wins(undefined) 경로에 진입해 동시성 가드를 우회하는 것을 차단(Codex 2차 리뷰 F3).
+- PUT는 base `admin.settings:configure` 게이트를 **키 조회(`getEntry`) 전에** 수행 — 비관리자가 403/404 차이로 server-only 카탈로그 키(특히 `secret.*`)를 enumerate하지 못하게 한다(Codex 3차 F5).
 - 둘 다 server-only.
 
 ---
@@ -416,3 +417,17 @@ listSettings(userId: string): Promise<SettingsCatalogView>;
 - **F1**: `getIntegrationStatuses`는 secret 존재뿐 아니라 systemSetting 완성도까지 합성하므로, `admin.settings:view`만 가진 사용자에게 미보유 연동의 구성 여부가 새던 문제. 데이터 함수가 직접 연동별 `view`를 게이트하도록 이전(UI 의존이 아닌 데이터 계층 강제 → 미래 호출자도 누출 불가). 경계 가드(task-09)는 `@/kernel/settings/*`만 제한하므로 `@/kernel/access` import는 허용 — settings는 여전히 `reader`로만.
 - **F2**: `sha256(JSON) 앞 8자`는 unsalted·결정적이라 동일 수신자 셋을 이력 간 상관·사전공격으로 확정 가능 → summary의 PII 비노출 의도를 잠식. 길이 + `changed`(before≠after; redact가 두 값을 보유하므로 해시 없이 변경 감지)로 대체 — 역추적 0, 변경 감지 유지(HMAC 키 운영 불필요).
 - **F3**: `expectedUpdatedAt` 생략 → service의 `undefined`(last-write-wins) 경로 → 공개 admin API에서 동시성 409 가드 무력화(UI는 항상 토큰을 보내지만 raw 호출자는 생략 가능). 라우트에서 토큰을 `null` 또는 유효 ISO로 필수화하고 생략·형식오류를 400으로 거부 — LWW(undefined)는 service 내부 전용으로만 유지(공개 라우트는 도달 불가). spec §5.7의 LWW opt-out 설계 자체는 유지하되 trust boundary에서 차단.
+
+### 12.2 3차 적대적 리뷰 (2026-06-18, 커밋 HEAD dc1b5c2 대상)
+
+F1~F3 반영 커밋 후 재리뷰 3건. 모두 실제 Phase 1 소스/카탈로그 대조로 검증·수용.
+
+| # | Sev | 판정 | 반영 위치 |
+| --- | --- | --- | --- |
+| F4 env가 유효한 Phase 1 auth(AUTH_SECRET) 거부 | high | 수용 | §4.2·§6·entrypoint SC-2/SC-4/SC-5, task-01(`secret.auth` aliases)·task-02(schema either + getSecretStatus `aliases` 프로브) |
+| F5 PUT가 admin 게이트 전 getEntry로 키 존재 oracle | low-med | 수용 | §7.3, task-07(base 게이트를 키 조회 전으로) |
+| F6 SMTP 상태가 port 무효를 무시하고 configured | med | 수용 | task-06(`smtpConfigured`가 port 읽고 유효 number 요구) |
+
+- **F4**: `src/lib/auth/config.ts:7`은 `NEXTAUTH_SECRET ?? AUTH_SECRET`을 받는데 env schema는 `NEXTAUTH_SECRET`만 필수 → AUTH_SECRET-only 배포가 `@/lib/env` import 시 boot fail. schema를 둘 다 optional + refine("둘 중 하나 필수")로, `SecretVar`/`envVars`에 `aliases`를 도입해 상태도 둘 중 하나면 configured. 범용 OR 그룹 대신 단일 `aliases` 필드로 최소화(YAGNI).
+- **F5**: getEntry 404가 admin 게이트보다 먼저라 비관리자가 403/404로 server-only 카탈로그(`secret.*` 포함) 키를 enumerate. base `admin.settings:configure` 게이트를 키 조회 전으로 이동 → 비관리자는 키 유효성과 무관하게 403.
+- **F6**: `smtpConfigured`가 password/host/fromAddress만 보고 `integrations.smtp.port`(fallbackSafe=false)를 안 읽어, 무효 port row가 있어도 "정상" 표시. port를 읽어 유효 number를 요구(무효면 getSetting throw→`safe()`가 attention_required로 환원).

@@ -67,7 +67,8 @@ export interface RelationalSettingEntry extends SettingEntryBase {
 }
 export interface EnvSecretEntry extends SettingEntryBase {
   kind: "envSecret";
-  envVars: Array<{ name: string; kind: "value" | "filePath" }>;
+  // aliases: 같은 secret을 받는 대체 env 이름(예: NEXTAUTH_SECRET↔AUTH_SECRET). 하나라도 present면 충족.
+  envVars: Array<{ name: string; kind: "value" | "filePath"; aliases?: string[] }>;
 }
 export type SettingEntry = SystemSettingEntry | RelationalSettingEntry | EnvSecretEntry;
 
@@ -110,7 +111,7 @@ export function listSettings(userId: string): Promise<SettingsCatalogItem[]>;
 
 | 식별자 / envVars | kind | category | permission(resource:action) | audit | fallbackSafe |
 | --- | --- | --- | --- | --- | --- |
-| `DATABASE_URL`,`NEXTAUTH_SECRET` | envSecret | security | `admin.settings:view` | — | — |
+| `DATABASE_URL`,`NEXTAUTH_SECRET`\|`AUTH_SECRET` | envSecret | security | `admin.settings:view` | — | — |
 | `GOOGLE_APPLICATION_CREDENTIALS`(filePath) | envSecret | integrations | `integrations.google:view` | — | — |
 | `SMTP_PASSWORD` | envSecret | integrations | `integrations.smtp:view` | — | — |
 | `LIBREOFFICE_PATH`(filePath) | envSecret | integrations | `integrations.templates:view` | — | — |
@@ -127,19 +128,23 @@ Zod 스키마(초안): host=`z.string()`, port=`z.coerce.number().int().min(1).m
 
 ```ts
 // schema.ts
-export const envSchema = z.object({
-  DATABASE_URL: z.string().min(1),
-  NEXTAUTH_SECRET: z.string().min(1),
-  SMTP_PASSWORD: z.string().optional(),
-  GOOGLE_APPLICATION_CREDENTIALS: z.string().optional(),
-  LIBREOFFICE_PATH: z.string().optional(),
-  TEMPLATE_DIR: z.string().optional(),
-  OUTPUT_DIR: z.string().optional(),
-});
+export const envSchema = z
+  .object({
+    DATABASE_URL: z.string().min(1),
+    // NEXTAUTH_SECRET 또는 AUTH_SECRET 중 하나 필수(기존 auth = NEXTAUTH_SECRET ?? AUTH_SECRET, Codex 3차 F4)
+    NEXTAUTH_SECRET: z.string().min(1).optional(),
+    AUTH_SECRET: z.string().min(1).optional(),
+    SMTP_PASSWORD: z.string().optional(),
+    GOOGLE_APPLICATION_CREDENTIALS: z.string().optional(),
+    LIBREOFFICE_PATH: z.string().optional(),
+    TEMPLATE_DIR: z.string().optional(),
+    OUTPUT_DIR: z.string().optional(),
+  })
+  .refine((d) => Boolean(d.NEXTAUTH_SECRET || d.AUTH_SECRET), { message: "NEXTAUTH_SECRET or AUTH_SECRET is required" });
 // index.ts  (lib→lib만 허용 → 카탈로그를 import하지 않는다. 호출자가 spec을 넘긴다)
 export const env: z.infer<typeof envSchema>;             // import 시 parse, required 실패→throw(boot)
 export type SecretHealth = "configured" | "attention_required";
-export type SecretVar = { name: string; kind: "value" | "filePath" };
+export type SecretVar = { name: string; kind: "value" | "filePath"; aliases?: string[] };  // aliases: 대체 env 이름(하나라도 present면 충족)
 export interface SecretStatus { id: string; health: SecretHealth; }  // 값·변수명·경로 미포함
 // 각 spec의 모든 var가 present/valid면 configured, 아니면 attention_required. filePath는 fs.existsSync.
 export function getSecretStatus(specs: Array<{ id: string; vars: SecretVar[] }>): SecretStatus[];
