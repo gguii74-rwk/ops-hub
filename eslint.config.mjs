@@ -45,6 +45,12 @@ const eslintConfig = [
       "no-restricted-imports": [
         2,
         {
+          paths: [
+            {
+              name: "@/kernel/settings",
+              message: "modules must import settings only via @/kernel/settings/reader",
+            },
+          ],
           patterns: [
             {
               group: [
