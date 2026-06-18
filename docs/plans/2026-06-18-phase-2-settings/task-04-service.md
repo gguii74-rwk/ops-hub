@@ -134,11 +134,16 @@ describe("redactForAudit", () => {
   it("redacted → 값 없음", () => {
     expect(redactForAudit("redacted", "a", "b")).toEqual({ changed: true });
   });
-  it("summary 배열 → 원 PII 부재(길이+해시)", () => {
+  it("summary 배열 → 원 PII 부재(길이+changed, 역추적 해시 없음)", () => {
     const out: any = redactForAudit("summary", ["a@x.com"], ["a@x.com", "b@y.com"]);
     expect(JSON.stringify(out)).not.toContain("@x.com");
+    expect(out.before).toMatchObject({ type: "array", length: 1 });
     expect(out.after).toMatchObject({ type: "array", length: 2 });
-    expect(typeof out.after.hash).toBe("string");
+    expect(out.changed).toBe(true);
+    expect("hash" in out.after).toBe(false);
+  });
+  it("summary 동일값 재저장 → changed=false", () => {
+    expect(redactForAudit("summary", ["a@x.com"], ["a@x.com"])).toMatchObject({ changed: false });
   });
 });
 
@@ -191,7 +196,6 @@ npm test -- service
 
 ```ts
 import "server-only";
-import { createHash } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { hasPermission, requirePermission } from "@/kernel/access";
 import { getSecretStatus } from "@/lib/env";
@@ -309,20 +313,22 @@ export async function listSettings(userId: string): Promise<SettingsCatalogItem[
 // --- audit redaction ---
 function summarize(v: unknown): Prisma.InputJsonValue {
   if (Array.isArray(v)) {
-    return { type: "array", length: v.length, hash: hashJson(v) };
+    return { type: "array", length: v.length };
   }
   if (v !== null && typeof v === "object") {
     return { type: "object", keys: Object.keys(v as object).sort() };
   }
   return { type: typeof v };
 }
-function hashJson(v: unknown): string {
-  return createHash("sha256").update(JSON.stringify(v)).digest("hex").slice(0, 8);
-}
 export function redactForAudit(mode: AuditMode, before: unknown, after: unknown): Prisma.InputJsonValue {
   if (mode === "full") return { before: (before ?? null) as Prisma.InputJsonValue, after: after as Prisma.InputJsonValue };
   if (mode === "redacted") return { changed: true };
-  return { before: summarize(before), after: summarize(after) };
+  // summary: 구조 요약 + 변경여부만. 원 PII·역추적 해시 미저장(원값은 비교용으로만 전개, 저장 안 함).
+  return {
+    before: summarize(before),
+    after: summarize(after),
+    changed: JSON.stringify(before) !== JSON.stringify(after),
+  };
 }
 ```
 
@@ -348,7 +354,7 @@ export type { SettingsCatalogItem, SetSettingCtx } from "./service";
 npm test -- service
 ```
 
-기대: getSetting 5 + setSetting 6 + redactForAudit 3 + listSettings 6 = 20 테스트 통과.
+기대: getSetting 5 + setSetting 6 + redactForAudit 4 + listSettings 6 = 21 테스트 통과.
 
 ### 7. typecheck/lint
 
@@ -365,7 +371,7 @@ git commit -m "Add settings service: getSetting/setSetting/listSettings with red
 
 ## Acceptance Criteria
 
-- `npm test -- service` → 20 PASS.
+- `npm test -- service` → 21 PASS.
 - `npm run typecheck` / `npm run lint` → 에러 0.
 - `listSettings`는 `admin.settings:view` 없으면 ForbiddenError, 항목은 `hasPermission`로 필터, secret 항목에 `value` 키 부재.
 - `setSetting`은 systemSetting 키만 허용(envSecret/relational→`SettingNotWritableError`, 미등록→`UnknownSettingError`).
@@ -375,5 +381,5 @@ git commit -m "Add settings service: getSetting/setSetting/listSettings with red
 - **`listSettings` 항목 인가는 `hasPermission`로. `getPermissionSummary` 쓰지 말 것. 이유:** summary는 scope/condition 미인지 UI 최적화라 인가 판단에 부적합(Codex Finding 10).
 - **`listSettings` 응답에 secret 값을 절대 싣지 말 것. 이유:** envSecret 항목은 `value` 없이 coarse status만(Codex Finding 2·4).
 - **`getSetting`은 systemSetting 키 전용(그 외 throw). 이유:** secret은 `lib/env`, relational은 도메인 service가 읽는다. reader로 secret/relational 값을 읽으려는 시도는 버그.
-- **summary redaction에 원값을 넣지 말 것. 이유:** 수신자·캘린더ID는 이메일 PII(Codex Finding 7). 테스트가 원 PII 부재를 강제.
+- **summary redaction에 원값·역추적 해시를 넣지 말 것. 이유:** 수신자·캘린더ID는 이메일 PII(Codex Finding 7). 결정적 해시(sha256 prefix)는 동일 셋을 이력 간 상관·사전공격으로 확정 가능 → 길이+`changed`만(Codex 2차 리뷰 F2). 테스트가 원 PII·해시 부재를 강제.
 - **`index.ts`는 `reader`를 re-export하지 말 것. 이유:** 모듈이 index를 통해 우회 import하면 read-only 격리가 깨진다(가드는 task-09).

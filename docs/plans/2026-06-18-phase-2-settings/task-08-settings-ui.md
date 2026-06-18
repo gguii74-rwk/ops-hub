@@ -15,7 +15,7 @@
 
 ## Deps
 
-- Task 06(`getIntegrationStatuses`), Task 07(PUT API).
+- Task 06(`getIntegrationStatuses(userId)`), Task 07(PUT API).
 
 ## TDD steps
 
@@ -124,24 +124,26 @@ export default async function SettingsPage() {
 
   const [items, integrations] = await Promise.all([
     listSettings(session.user.id),
-    getIntegrationStatuses(),
+    getIntegrationStatuses(session.user.id),
   ]);
 
   return (
     <section style={{ display: "grid", gap: 24 }}>
       <h1>설정</h1>
 
-      <div>
-        <h2 style={{ fontSize: 16 }}>연동 상태</h2>
-        <ul style={{ display: "flex", gap: 16, listStyle: "none", padding: 0 }}>
-          {integrations.map((s) => (
-            <li key={s.key}>
-              {INTEGRATION_LABELS[s.key] ?? s.key}:{" "}
-              <strong>{s.health === "configured" ? "정상" : "설정 필요"}</strong>
-            </li>
-          ))}
-        </ul>
-      </div>
+      {integrations.length > 0 ? (
+        <div>
+          <h2 style={{ fontSize: 16 }}>연동 상태</h2>
+          <ul style={{ display: "flex", gap: 16, listStyle: "none", padding: 0 }}>
+            {integrations.map((s) => (
+              <li key={s.key}>
+                {INTEGRATION_LABELS[s.key] ?? s.key}:{" "}
+                <strong>{s.health === "configured" ? "정상" : "설정 필요"}</strong>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {CATEGORY_ORDER.map((cat) => {
         const group = items.filter((i) => i.category === cat);
@@ -201,6 +203,7 @@ npm run dev
 - SMTP 호스트 편집기에 `"mail.example.com"` 저장 → "저장됨". 재저장 시 토큰 갱신.
 - 동일 항목을 다른 탭에서 먼저 저장 후 이전 탭 저장 → "다른 사용자가 먼저 변경" 메시지(409).
 - `admin.settings:view` 없는 계정 → `/admin/settings`가 `/dashboard`로 redirect.
+- `integrations.google:view` 없는 계정 → "연동 상태"에 Google 항목 미표시(연동별 게이트).
 
 ### 5. 커밋
 
@@ -221,3 +224,4 @@ git commit -m "Add settings home UI with category sections and systemSetting edi
 - **`updatedAt`은 ISO 문자열로 직렬화해 전달. 이유:** RSC→client Date 직렬화 모호성 회피. API는 `new Date(iso)`로 복원해 concurrency 토큰으로 사용(§5.7).
 - **`item.value`는 systemSetting에만 존재. envSecret 분기에서 값 접근 금지. 이유:** secret 값은 응답에 없음(undefined). 상태만 표시.
 - **page는 서버 컴포넌트로 유지(`"use client"` 금지). 이유:** `listSettings`/`getIntegrationStatuses`/`auth`는 server-only. 상호작용만 `settings-editor`(client)로 분리.
+- **`getIntegrationStatuses`에 `session.user.id`를 반드시 전달, 결과가 비면 "연동 상태" 섹션 미렌더. 이유:** 연동 상태도 연동별 `integrations.<key>:view`로 서버에서 게이트(Codex 2차 리뷰 F1). 인자 없이 호출하면 권한 없는 연동 구성 여부가 노출된다.
