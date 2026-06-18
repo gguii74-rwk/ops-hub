@@ -58,6 +58,7 @@ const eslintConfig = [
                 "@/kernel/settings/index",
                 "@/kernel/settings/catalog",
                 "@/kernel/settings/repository",
+                "@/kernel/settings/registry",
               ],
               message: "modules must import settings only via @/kernel/settings/reader",
             },
