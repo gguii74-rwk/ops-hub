@@ -32,10 +32,12 @@ async function loadUserContext(userId: string, now: Date): Promise<UserContext |
     where: { id: userId },
     select: {
       systemRole: true,
+      status: true,
       roleAssignments: { select: { roleId: true, startsAt: true, endsAt: true } },
     },
   });
   if (!user) return null;
+  if (user.status !== "ACTIVE") return null;
   const roleIds = user.roleAssignments
     .filter((a) => withinValidity(a.startsAt, a.endsAt, now))
     .map((a) => a.roleId);

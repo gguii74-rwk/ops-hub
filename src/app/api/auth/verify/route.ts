@@ -10,5 +10,6 @@ export async function GET() {
   res.headers.set("X-Auth-Sub", identity.sub);
   res.headers.set("X-Auth-Email", identity.email);
   res.headers.set("X-Auth-Groups", identity.groups.join(","));
+  res.headers.set("Cache-Control", "no-store");
   return res;
 }
