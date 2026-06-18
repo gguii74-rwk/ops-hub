@@ -11,18 +11,27 @@
   --color-popover-foreground: oklch(0.145 0 0);
   --color-primary: oklch(0.205 0 0);
   --color-primary-foreground: oklch(0.985 0 0);
-  --color-secondary: oklch(0.97 0 0);
+  --color-secondary: #F1EEF8;
   --color-secondary-foreground: oklch(0.205 0 0);
-  --color-muted: oklch(0.97 0 0);
-  --color-muted-foreground: oklch(0.556 0 0);
-  --color-accent: oklch(0.97 0 0);
-  --color-accent-foreground: oklch(0.205 0 0);
+  --color-muted: #F1EEF8;
+  --color-muted-foreground: #6B6878;
+  --color-accent: #ECE3FF;
+  --color-accent-foreground: #5B3D9E;
   --color-destructive: oklch(0.577 0.245 27.325);
   --color-destructive-foreground: oklch(0.985 0 0);
-  --color-border: oklch(0.922 0 0);
-  --color-input: oklch(0.922 0 0);
-  --color-ring: oklch(0.708 0 0);
-  --color-page: oklch(0.985 0 0);
+  --color-border: #E9E5F2;
+  --color-input: #E9E5F2;
+  --color-ring: #7C3AED;
+  --color-page: #F6F3FC;
+
+  /* 신규 브랜드 토큰 (라이트·다크 공통 hue). 향후 도메인 화면이 소비.
+     chart-cyan·point-lime은 매우 밝아 텍스트색으로 쓰지 않고 칩/소프트 배경으로만 쓴다. */
+  --color-brand: #BA8DFF;
+  --color-brand-foreground: #2A1A4A;
+  --color-brand-2: #FBC6F2;
+  --color-brand-2-foreground: #7A2E66;
+  --color-chart-cyan: #24D0FE;
+  --color-point-lime: #EAFF00;
 
   --radius-sm: 0.25rem;
   --radius-md: 0.5rem;
@@ -36,25 +45,25 @@
 
 @layer base {
   [data-theme="dark"] {
-    --color-background: #0a0a0a;
-    --color-foreground: #fafafa;
-    --color-card: #171717;
-    --color-card-foreground: #fafafa;
-    --color-popover: #171717;
-    --color-popover-foreground: #fafafa;
-    --color-primary: #fafafa;
-    --color-primary-foreground: #0a0a0a;
-    --color-secondary: #262626;
-    --color-secondary-foreground: #fafafa;
-    --color-muted: #262626;
-    --color-muted-foreground: #a3a3a3;
-    --color-accent: #262626;
-    --color-accent-foreground: #fafafa;
+    --color-background: #0C0B11;
+    --color-foreground: #F4F2F8;
+    --color-card: #16141C;
+    --color-card-foreground: #F4F2F8;
+    --color-popover: #16141C;
+    --color-popover-foreground: #F4F2F8;
+    --color-primary: #F4F2F8;
+    --color-primary-foreground: #16141C;
+    --color-secondary: #221F2B;
+    --color-secondary-foreground: #F4F2F8;
+    --color-muted: #221F2B;
+    --color-muted-foreground: #9A95A8;
+    --color-accent: #241E33;
+    --color-accent-foreground: #D9C9FF;
     --color-destructive: #ef4444;
-    --color-destructive-foreground: #fafafa;
-    --color-border: #262626;
-    --color-input: #262626;
-    --color-ring: #d4d4d4;
-    --color-page: #0a0a0a;
+    --color-destructive-foreground: #F4F2F8;
+    --color-border: #2A2733;
+    --color-input: #2A2733;
+    --color-ring: #C9A8FF;
+    --color-page: #0C0B11;
   }
 }
