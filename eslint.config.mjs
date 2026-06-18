@@ -17,6 +17,7 @@ const eslintConfig = [
         { type: "app", pattern: "src/app", mode: "folder" },
         // 미들웨어는 src 루트 파일이라 별도 분류(edge). 미분류면 no-unknown이 잡는다.
         { type: "edge", pattern: "src/middleware.ts", mode: "file" },
+        { type: "ui", pattern: "src/components", mode: "folder" },
       ],
     },
     rules: {
@@ -30,7 +31,8 @@ const eslintConfig = [
             { from: ["lib"], allow: ["lib"] },
             { from: ["kernel"], allow: ["kernel", "lib"] },
             { from: ["module"], allow: ["kernel", "lib", ["module", { module: "${from.module}" }]] },
-            { from: ["app"], allow: ["app", "kernel", "lib", "module"] },
+            { from: ["app"], allow: ["app", "kernel", "lib", "module", "ui"] },
+            { from: ["ui"], allow: ["ui", "lib"] },
             // 미들웨어(edge)는 lib만 — 단, lib/auth/index(node) import 금지는 element 단위로는
             // 강제 못 한다(SC-7). 그 한 줄은 authConfig 분리 + Next 빌드가 막는다.
             { from: ["edge"], allow: ["lib"] },
