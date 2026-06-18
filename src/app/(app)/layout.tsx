@@ -4,6 +4,8 @@ import { auth, signOut } from "@/lib/auth";
 import { getPermissionSummary } from "@/kernel/access";
 import { loadNavigation } from "@/kernel/navigation";
 import { PermissionProvider } from "@/lib/auth/permissions-client";
+import { Button } from "@/components/ui/button";
+import { ThemeSwitcher } from "@/components/theme-switcher";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
@@ -19,22 +21,31 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <PermissionProvider keys={summary.keys}>
-      <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", minHeight: "100vh" }}>
-        <aside style={{ borderRight: "1px solid var(--border)", padding: 16 }}>
-          <strong>ops-hub</strong>
-          <nav style={{ display: "grid", gap: 8, marginTop: 16 }}>
+      <div className="grid min-h-screen grid-cols-[200px_1fr]">
+        <aside className="flex flex-col gap-4 border-r border-border bg-card p-4">
+          <strong className="text-sm font-semibold">ops-hub</strong>
+          <nav className="grid gap-1">
             {nav.map((node) => (
-              <Link key={node.key} href={node.href ?? "#"}>
+              <Link
+                key={node.key}
+                href={node.href ?? "#"}
+                className="rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
                 {node.label}
               </Link>
             ))}
           </nav>
-          <form action={logout} style={{ marginTop: 24 }}>
-            <button type="submit">로그아웃</button>
-          </form>
+          <div className="mt-auto flex items-center justify-between">
+            <form action={logout}>
+              <Button type="submit" variant="ghost" size="sm">
+                로그아웃
+              </Button>
+            </form>
+            <ThemeSwitcher />
+          </div>
         </aside>
-        <main style={{ padding: 24 }}>
-          <p style={{ color: "var(--muted)", marginTop: 0 }}>
+        <main className="p-6">
+          <p className="mb-4 text-sm text-muted-foreground">
             {session.user.name} · {session.user.systemRole}
           </p>
           {children}
