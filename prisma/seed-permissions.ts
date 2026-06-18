@@ -1,0 +1,16 @@
+// 설정 도메인 등 view 외 권한 정의. side-effect 없음(seed·test 공유).
+export const EXTRA_PERMISSIONS: Array<[string, string]> = [
+  ["workflows.weekly", "create"], ["workflows.weekly", "generate"], ["workflows.weekly", "send"],
+  ["workflows.weekly", "configure"],
+  ["workflows.billing", "create"], ["workflows.billing", "send"],
+  ["workflows.billing", "configure"],
+  ["workflows.notification", "create"], ["workflows.notification", "send"],
+  ["leave.request", "create"],
+  ["leave.approval", "approve"],
+  ["leave.allocation", "configure"],
+  ["admin.users", "update"],
+  ["admin.settings", "configure"],
+  ["integrations.google", "configure"],
+  ["integrations.smtp", "configure"],
+  ["integrations.templates", "configure"],
+];
