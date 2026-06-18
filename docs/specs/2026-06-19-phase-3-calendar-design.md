@@ -50,7 +50,7 @@
 | `WorkflowTask` | 업무 일정 기준 | 캐시 없이 직접 조회 |
 | Google Calendar | 외부/전환기 보조 | service account fetch → DB 캐시 |
 | 공휴일(Google holiday cal) | 외부 기준 | fetch → DB 캐시(24h) |
-| 수동 일정 | 보조 | `CalendarEvent`(MANUAL/PERSONAL/TEAM) 직접 조회 |
+| 수동 일정 | 보조 | `CalendarSourceKind.MANUAL` 소스의 `CalendarEvent`(`PERSONAL_EVENT`/`TEAM_EVENT`) 직접 조회 |
 
 원칙은 `calendar-design.md`를 따른다: 내부 승인 휴가가 Google 휴가성 일정과 겹치면 **내부 우선**, 외부는 `DUPLICATE_OF_INTERNAL`로 접는다.
 
@@ -129,7 +129,7 @@ interface CalendarSourceProvider {
 
 - `internalLeave` / `workflowTask`: calendar repository로 권위 테이블 직접 조회 → `RawEvent` 매핑. 조회 실패는 해당 출처 `failed`로 격리(다른 출처에 영향 없음).
 - `google` / `holiday`: **cache-first**(§12). 만료 시 인라인 재fetch, 실패 시 last-good 또는 빈 결과 + failed.
-- `manual`: `CalendarEvent`(수동 kind) 직접 조회.
+- `manual`: `CalendarSourceKind.MANUAL` 소스에 속한 `CalendarEvent`(`PERSONAL_EVENT`/`TEAM_EVENT`) 직접 조회.
 
 `RawEvent`는 마스킹/ dedup 이전의 원본 필드를 보존한다(마스킹은 feed 합성 단계에서 적용).
 
@@ -156,6 +156,13 @@ interface CalendarSourceProvider {
 | admin | calendar.admin | `calendar.admin:view` | API만(후속) |
 
 API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requirePermission(...)`). 메뉴 숨김은 UX일 뿐, feed API도 같은 키를 검사한다.
+
+### 8.1 외주 역할 권한 보정(Phase 3 포함)
+
+현재 seed(`prisma/seed.ts` `ROLE_ALLOW`)는 `regular-developer`에만 `calendar.leave:view`를 부여하고 외주 역할(`contractor-developer`/`contractor-content`/`contractor-civil-response`)에는 없다. 그러나 §16대로 cutover 주 사용자가 외주 인력이고, 이들은 이미 `leave.request:view`/`leave.request:create`를 가진 **휴가 신청 당사자**다. 권한이 없으면 휴가 탭을 못 보거나 feed API가 403을 반환한다.
+
+- **수정**: Phase 3는 세 외주 역할에 `calendar.leave:view`를 부여한다(seed `ROLE_ALLOW` 보정 — 스키마 변경 아님). 타인 휴가 상세는 §9 마스킹으로 가린다.
+- **추가 방어**: UI는 서버 `getPermissionSummary` 기반으로 **권한 있는 탭만 노출**한다. 권한 부여(접근 가능)와 탭 노출(권한 없으면 숨김)을 함께 적용해, 권한 없는 사용자가 탭에서 403을 받는 경로를 없앤다.
 
 ## 9. 권한 마스킹 정책
 
@@ -189,7 +196,7 @@ API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requireP
 ### 12.2 캐시 키 / range 정규화
 
 - **Google 캘린더 1개 = `CalendarSource` 1행**(`externalId = calendarId`, `kind = GOOGLE_CALENDAR`). 공휴일도 별도 `CalendarSource`(`kind = HOLIDAY`). → calendarId 차원이 `sourceId`(PK)에 내포된다.
-- provider 호출 전 요청 range를 **정규화**한다: 캘린더 grid 기준 **6주 창**(월 그리드 패딩 포함) 또는 월 경계. 임의 range로 캐시가 단편화되는 것을 막고 인접 월 prefetch와 정합한다.
+- provider 호출 전 요청 range를 **캘린더 grid 기준 6주 창**(월 그리드 패딩 포함)으로 **고정 정규화**한다(provider마다 다르게 잡아 캐시가 다시 단편화되는 것을 차단; 월 그리드 UI 확정이므로 6주 창으로 단일화). 주 시작 요일은 UI 그리드 설정의 단일 출처를 따른다. 인접 월 prefetch와도 정합한다.
 - 최종 캐시 키 = `(sourceId=per-calendar) + 정규화 range`.
 
 ### 12.3 만료 정책(표준 — 확정)
@@ -209,10 +216,20 @@ API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requireP
 
 ## 13. UI(커스텀 경량)
 
-- `/calendar`: 뷰 탭(업무·휴가·개인) + **커스텀 월 그리드** + 월 이동(인접 월 prefetch) + 수동 새로고침 + 소스별 로딩/실패 배지 + **이전 데이터 유지**(React Query `keepPreviousData`).
+- `/calendar`: 뷰 탭(업무·휴가·개인, §8.1대로 권한 있는 탭만) + **커스텀 월 그리드** + 월 이동(인접 월 prefetch) + 수동 새로고침 + 소스별 로딩/실패 배지 + **이전 데이터 유지**.
 - 디자인 시스템(Tailwind v4 + 기존 ui 프리미티브 + 브랜드 팔레트) 기반. 제3자 캘린더 라이브러리 미사용.
 - 종일 이벤트 칩 중심, `kind`별 브랜드 팔레트 색, 마스킹된 건은 요약 칩(`masked`).
-- 데이터 페칭은 React Query, feed API 호출. 클라이언트는 마스킹된 응답만 받는다.
+- 클라이언트는 마스킹된 feed 응답만 받는다.
+
+### 13.1 React Query 도입(확정)
+
+- **의존성 추가**: `@tanstack/react-query`(package.json).
+- **Provider 배치**: `'use client'` `QueryProvider`(`QueryClientProvider`)를 `src/app/(app)/providers.tsx`로 만들고 `src/app/(app)/layout.tsx`(서버 컴포넌트)에서 children을 감싼다. QueryClient는 모듈 스코프가 아니라 Provider 안에서 생성(요청 간 캐시 누수 방지).
+- **client boundary**: 캘린더 페이지/뷰 컴포넌트(`'use client'`)가 `useQuery`로 feed API 호출.
+- **keepPreviousData**: React Query v5 API `placeholderData: keepPreviousData`로 월 이동 시 이전 월 데이터를 유지(빈 화면 깜빡임 방지).
+- **prefetch**: 현재 월 표시 시 인접 월(±1)을 `queryClient.prefetchQuery`로 미리 가져온다(정규화된 6주 창 키 기준).
+- **staleTime**: 외부 소스 캐시 TTL과 정합하게 설정(서버 캐시가 1차, 클라이언트 staleTime이 2차).
+- SSR hydration(`HydrationBoundary`)은 초기 범위에서 도입하지 않는다(클라이언트 페칭으로 단순화). 필요성 검증 후 후속.
 
 ## 14. 테스트 전략(vitest, DB·외부 없이)
 
@@ -242,8 +259,8 @@ ops-hub의 cutover 대상은 현재 annual-leave가 서비스 중인 `http://172
 4. 출처 provider 5종(internalLeave·workflowTask·google·holiday·manual).
 5. dedup + masking.
 6. feed service + `GET /api/calendar/feed` + `POST /api/calendar/refresh`.
-7. seed: CalendarSource(Google 캘린더별 + 공휴일), 샘플 LeaveRequest/WorkflowTask.
-8. UI(월 그리드 + 뷰 탭 3종 + 새로고침/상태 배지).
+7. seed: CalendarSource(Google 캘린더별 + 공휴일), 샘플 LeaveRequest/WorkflowTask, **외주 역할 `calendar.leave:view` 부여**(§8.1).
+8. UI: `@tanstack/react-query` 도입 + `(app)` QueryProvider(§13.1), 커스텀 월 그리드 + 뷰 탭 3종(권한 있는 탭만) + 새로고침/상태 배지.
 9. 테스트(§14) 전반 + boundaries 통과.
 
 ## 18. 미해결 / 후속
