@@ -13,7 +13,7 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="ko" suppressHydrationWarning>
-      <body className="min-h-screen bg-page text-foreground antialiased">
+      <body className="min-h-screen bg-page text-foreground antialiased font-sans">
         <ThemeProvider>
           {children}
           <ThemedToaster />
