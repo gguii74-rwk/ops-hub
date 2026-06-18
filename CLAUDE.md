@@ -4,35 +4,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 현재 상태 (중요)
 
-이 저장소는 **아직 실행 앱이 스캐폴드되지 않은 설계 기준선**입니다. Phase 0(실사·스키마·마이그레이션 계획)이 끝난 상태이며, 존재하는 것은 다음뿐입니다.
+앱이 **스캐폴드되어 동작하는 상태**입니다. Phase 0~2(실사·기준선 / 앱 골격·공통 기반 / 설정 체계)와 **디자인 시스템 기반** 패스가 `main`에 머지됐고, **브랜드 팔레트 패스**가 리뷰 중입니다. 다음 도메인 단계는 Phase 3(통합 캘린더와 캐시)입니다.
 
-- `docs/` — 아키텍처/ADR/discovery/마이그레이션/로드맵 문서
-- `prisma/schema.prisma` — 도메인 모델 초안 (migration 없음)
-- `package.json` — 의존성과 스크립트 정의
+이미 존재하는 것:
 
-`src/`, `app/`, `tsconfig.json`, `next.config.*`, `prisma/migrations/`는 **아직 없습니다.** 따라서:
+- `src/` — 동작하는 Next.js App Router 앱: `app/`(라우트·`api`), `kernel/`(access·navigation·settings·events 등 공통), `lib/`(auth·prisma 등), `components/`(`ui/` 프리미티브·테마), `modules/`, `middleware.ts`
+- `prisma/` — `schema.prisma` + **마이그레이션**(`migrations/`) + `seed.ts`/`seed-permissions.ts`
+- `tests/` — vitest 스위트(`src/` 레이아웃 미러)
+- `docs/` — 아키텍처/ADR/spec/plan/discovery/마이그레이션/로드맵 문서
+- 루트 설정: `tsconfig.json`, `next.config.ts`, `eslint.config.mjs`(boundaries), `vitest.config.ts`, `package.json`
 
-- 지금 동작하는 검증: `npm run prisma:validate`
-- 앱 스캐폴드(`src/`, `tsconfig.json`, `next.config`) 생성 전까지 `npm run lint` / `typecheck` / `dev` / `build`는 실패합니다.
-
-새 작업을 시작할 때 "이미 코드가 있다"고 가정하지 말고, 위 상태를 전제로 판단하세요.
+따라서 `npm run lint` / `typecheck` / `build` / `test`가 **모두 동작**합니다(아래 명령어). "코드가 아직 없다"고 가정하지 마세요.
 
 ## 명령어
 
 ```bash
 npm install
-npm run prisma:validate     # 스키마 검증 — 현재 유일하게 의미 있는 검증
+
+# 개발·검증 (모두 동작)
+npm run dev                 # next dev (Turbopack)
+npm run build               # 프로덕션 빌드
+npm run lint                # eslint src (boundaries 포함)
+npm run typecheck           # tsc --noEmit
+npm test                    # vitest run
+
+# Prisma
+npm run prisma:validate     # 스키마 검증
 npm run prisma:generate     # Prisma Client 생성
 npm run prisma:migrate      # prisma migrate dev (PostgreSQL 필요)
 npm run prisma:studio
-
-# 앱 스캐폴드 이후에만 동작:
-npm run dev / build / start
-npm run lint                # eslint src
-npm run typecheck           # tsc --noEmit
+npm run db:seed             # prisma db seed (prisma/seed.ts)
 ```
 
-DB는 PostgreSQL입니다(SQLite 아님). 로컬 연결 문자열 등 환경변수는 `.env.example` 참고.
+DB는 PostgreSQL입니다(SQLite 아님). 로컬 연결 문자열 등 환경변수는 `.env.example` 참고. `lint`/`typecheck`/`build`/`test`는 DB 없이 동작하고, `dev`/`db:seed`/`prisma:migrate`는 DB(로컬 또는 터널) 연결이 필요합니다.
 
 ## 이 프로젝트가 무엇인가
 
@@ -138,7 +142,7 @@ src/app/{(auth),dashboard,workflows,leave,admin,api}/
 
 ## 작업 진행 맥락
 
-전체 계획은 `docs/product/modernization-roadmap.md`의 Phase 0~6. 현재 Phase 0 완료, 다음은 **Phase 1(앱 골격 + 공통 인증/권한/감사 기반)**. 마이그레이션 시 기존 운영 DB는 직접 수정하지 않고(이메일을 사용자 병합 키로 사용) 새 PostgreSQL에 적재 후 병행 검증한다 — `docs/migration/initial-migration-plan.md`.
+전체 계획은 `docs/product/modernization-roadmap.md`의 Phase 0~6. **Phase 0~2 완료**(실사·기준선 / 앱 골격·공통 기반 / 설정 체계)에 더해 **디자인 시스템 기반**이 머지되고 **브랜드 팔레트 패스**가 리뷰 중이며, 다음 도메인 단계는 **Phase 3(통합 캘린더와 캐시)**입니다. 마이그레이션 시 기존 운영 DB는 직접 수정하지 않고(이메일을 사용자 병합 키로 사용) 새 PostgreSQL에 적재 후 병행 검증한다 — `docs/migration/initial-migration-plan.md`.
 
 확장·분리 아키텍처 전략(모듈 경계·이벤트·신원 연동)은 `docs/specs/2026-06-17-modular-extensibility-design.md` 참조.
 
