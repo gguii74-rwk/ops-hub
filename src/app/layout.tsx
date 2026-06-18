@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { ThemeProvider } from "@/components/theme-provider";
+import { ThemedToaster } from "@/components/themed-toaster";
 
 export const metadata: Metadata = {
   title: "ops-hub",
@@ -10,8 +12,13 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="ko">
-      <body>{children}</body>
+    <html lang="ko" suppressHydrationWarning>
+      <body className="min-h-screen bg-page text-foreground antialiased">
+        <ThemeProvider>
+          {children}
+          <ThemedToaster />
+        </ThemeProvider>
+      </body>
     </html>
   );
 }
