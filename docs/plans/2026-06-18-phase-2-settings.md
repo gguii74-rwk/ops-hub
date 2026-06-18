@@ -24,12 +24,12 @@ src/kernel/settings/reader.ts     ← server-only: 모듈용 read-only facade(ge
 src/kernel/settings/index.ts      ← app facade(service 재노출, reader 제외).
 src/lib/env/schema.ts             ← process.env zod 스키마.
 src/lib/env/index.ts              ← server-only: env(boot fail-fast) + getSecretStatus().
-src/modules/integrations/status.ts, index.ts  ← 연동 상태(reader+env로 read-only).
+src/modules/integrations/status.ts, index.ts  ← 연동 상태(reader+env로 read-only, userId별 integrations.*:view 게이트).
 src/app/(app)/admin/settings/*    ← 설정 홈/카드/편집기.
 src/app/api/admin/settings/route.ts, [key]/route.ts  ← GET/PUT.
 ```
 
-- 의존: `kernel/settings`→`kernel/*`(access·audit)+`lib/*`(prisma)만, 모듈 import 금지. `modules/integrations`→`kernel/settings/reader`+`lib/env`만(`service`/`setSetting` import 금지). `app`→전부.
+- 의존: `kernel/settings`→`kernel/*`(access·audit)+`lib/*`(prisma)만, 모듈 import 금지. `modules/integrations`→`kernel/settings/reader`+`lib/env`+`kernel/access`(`hasPermission`)만(`service`/`setSetting`/`catalog` import 금지). `app`→전부.
 - `catalog.ts`·`repository.ts`·`service.ts`·`reader.ts`·`lib/env/index.ts`는 첫 줄 `import "server-only";`.
 
 ### SC-2. registry 타입·에러 (`src/kernel/settings/registry.ts`)
@@ -149,12 +149,12 @@ export function getSecretStatus(specs: Array<{ id: string; vars: SecretVar[] }>)
 
 - `setSetting` write는 `prisma.$transaction([upsert SystemSetting, create AuditLog])` 단일 트랜잭션.
 - AuditLog: `entityType="SystemSetting"`, `entityId=key`, `action="settings.update"`, `actorId=ctx.actorId`(비-null 강제), `metadata`=redaction(SC: full/redacted/summary, 기본 summary).
-- redaction 헬퍼 `redactForAudit(mode, before, after)`: summary=배열 길이+`sha256(JSON)` 앞 8자/객체 키 목록; redacted=`{changed:true}`; full=원값.
+- redaction 헬퍼 `redactForAudit(mode, before, after)`: summary=배열 길이+`changed`(before≠after) / 객체 키 목록; redacted=`{changed:true}`; full=원값. **summary에 역추적 가능한 결정적 해시 금지**(Codex 2차 리뷰 F2).
 
 ### SC-7. 권한/seed 계약
 
 - 인가는 **`hasPermission(userId, resource, action)`**(Phase 1 SC-5) — summary로 판단 금지.
-- API 게이트: GET=`requirePermission(uid,"admin.settings","view")`; PUT=`requirePermission(uid,"admin.settings","configure")` **그리고** `requirePermission(uid, entry.permission.resource, entry.permission.action)`.
+- API 게이트: GET=`requirePermission(uid,"admin.settings","view")`; PUT=`requirePermission(uid,"admin.settings","configure")` **그리고** `requirePermission(uid, entry.permission.resource, entry.permission.action)`. PUT body는 `expectedUpdatedAt`(null|ISO) **필수** — 생략·형식오류 400(동시성 토큰 우회 차단, Codex 2차 F3).
 - **seed 보강 필요(검증됨)**: `prisma/seed.ts`의 `EXTRA_PERMISSIONS`에 현재 `workflows.weekly:configure`·`workflows.billing:configure` 없음 → 추가. `admin.settings:view`는 base seed 존재 확인(catalog RESOURCES 기반). 적절 role 매핑.
 
 ### SC-8. 검증 명령

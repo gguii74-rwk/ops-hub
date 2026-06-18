@@ -10,7 +10,7 @@
 
 ## Prep
 
-- spec §7.3·§8, entrypoint §SC-3·§SC-7. Phase 1 패턴: `auth()`→`session.user.id`, 401(미인증)/403(`ForbiddenError`).
+- spec §5.7·§7.3·§8, entrypoint §SC-3·§SC-7. Phase 1 패턴: `auth()`→`session.user.id`, 401(미인증)/403(`ForbiddenError`).
 - `listSettings`는 내부에서 `requirePermission(uid,"admin.settings","view")`(base 게이트) → `ForbiddenError`.
 
 ## Deps
@@ -102,7 +102,7 @@ describe("PUT /api/admin/settings/[key]", () => {
   });
   it("Zod 실패 → 422", async () => {
     setSetting.mockRejectedValue(new SettingValidationError("integrations.smtp.host", "bad"));
-    expect((await PUT(putReq({ value: 1 }), ctx("integrations.smtp.host"))).status).toBe(422);
+    expect((await PUT(putReq({ value: 1, expectedUpdatedAt: null }), ctx("integrations.smtp.host"))).status).toBe(422);
   });
   it("concurrency → 409", async () => {
     setSetting.mockRejectedValue(new SettingConcurrencyError("integrations.smtp.host"));
@@ -110,7 +110,17 @@ describe("PUT /api/admin/settings/[key]", () => {
   });
   it("not writable → 400", async () => {
     setSetting.mockRejectedValue(new SettingNotWritableError("integrations.smtp.host"));
-    expect((await PUT(putReq({ value: "x" }), ctx("integrations.smtp.host"))).status).toBe(400);
+    expect((await PUT(putReq({ value: "x", expectedUpdatedAt: null }), ctx("integrations.smtp.host"))).status).toBe(400);
+  });
+  it("expectedUpdatedAt 생략 → 400(LWW 우회 차단), setSetting 미호출", async () => {
+    const res = await PUT(putReq({ value: "x" }), ctx("integrations.smtp.host"));
+    expect(res.status).toBe(400);
+    expect(setSetting).not.toHaveBeenCalled();
+  });
+  it("expectedUpdatedAt 형식 오류 → 400", async () => {
+    const res = await PUT(putReq({ value: "x", expectedUpdatedAt: "not-a-date" }), ctx("integrations.smtp.host"));
+    expect(res.status).toBe(400);
+    expect(setSetting).not.toHaveBeenCalled();
   });
 });
 ```
@@ -187,17 +197,34 @@ export async function PUT(req: Request, { params }: { params: Promise<{ key: str
     throw error;
   }
 
-  let body: { value: unknown; expectedUpdatedAt?: string | null };
+  let body: unknown;
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "invalid json" }, { status: 400 });
   }
-  const expectedUpdatedAt =
-    body.expectedUpdatedAt === null ? null : body.expectedUpdatedAt ? new Date(body.expectedUpdatedAt) : undefined;
+  if (body === null || typeof body !== "object") {
+    return NextResponse.json({ error: "invalid body" }, { status: 400 });
+  }
+  const { value, expectedUpdatedAt: rawToken } = body as { value: unknown; expectedUpdatedAt?: unknown };
+
+  // 동시성 토큰은 공개 라우트에서 필수: 명시적 null(최초 생성) 또는 유효 ISO 문자열만 허용.
+  // 생략(undefined)은 service의 last-write-wins 경로로 떨어져 409 가드를 우회하므로 400으로 거부(Codex 2차 리뷰 F3).
+  let expectedUpdatedAt: Date | null;
+  if (rawToken === null) {
+    expectedUpdatedAt = null;
+  } else if (typeof rawToken === "string") {
+    const parsed = new Date(rawToken);
+    if (Number.isNaN(parsed.getTime())) {
+      return NextResponse.json({ error: "invalid expectedUpdatedAt" }, { status: 400 });
+    }
+    expectedUpdatedAt = parsed;
+  } else {
+    return NextResponse.json({ error: "expectedUpdatedAt required (null or ISO string)" }, { status: 400 });
+  }
 
   try {
-    const result = await setSetting(key, body.value, { actorId: uid, expectedUpdatedAt });
+    const result = await setSetting(key, value, { actorId: uid, expectedUpdatedAt });
     return NextResponse.json({ updatedAt: result.updatedAt }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof UnknownSettingError) return NextResponse.json({ error: error.message }, { status: 404 });
@@ -216,7 +243,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ key: str
 npm test -- "api/admin/settings"
 ```
 
-기대: GET 3 + PUT 8 = 11 테스트 통과.
+기대: GET 3 + PUT 9 = 12 테스트 통과.
 
 ### 6. typecheck/lint/build
 
@@ -235,7 +262,7 @@ git commit -m "Add settings API: GET list and PUT with admin + entry gates"
 
 ## Acceptance Criteria
 
-- `npm test -- "api/admin/settings"` → 11 PASS.
+- `npm test -- "api/admin/settings"` → 12 PASS.
 - `npm run typecheck` / `npm run lint` / `npm run build` → 에러 0, 두 라우트 빌드.
 - PUT은 `admin.settings:configure`와 엔트리 권한을 **둘 다** 검사(테스트로 호출 인자 확인).
 
@@ -243,5 +270,6 @@ git commit -m "Add settings API: GET list and PUT with admin + entry gates"
 
 - **Next 16 라우트의 `params`는 Promise — 반드시 `await params`. 이유:** 동기 접근은 타입/런타임 오류.
 - **엔트리 게이트를 빼지 말 것(base 게이트만으로 불충분). 이유:** Codex Finding 3 — 좁은 권한자가 다른 도메인 설정을 못 바꾸게 한다.
+- **`expectedUpdatedAt`를 `null` 또는 유효 ISO로 필수 검증(생략·형식오류→400). 이유:** Codex 2차 리뷰 F3 — 토큰을 생략하면 service의 `undefined`(last-write-wins) 경로로 떨어져 공개 라우트에서 409 동시성 가드가 우회된다. LWW는 service 내부 전용으로만 두고 공개 API는 도달 불가하게 한다.
 - **응답에 `Cache-Control: no-store`. 이유:** 권한 필터된 설정/상태가 캐시되지 않게(Phase 1 verify 하드닝과 동일 기조).
 - **에러 매핑에서 미식별 에러는 rethrow. 이유:** 예기치 못한 예외를 200/4xx로 삼키지 않는다(silent failure 금지).
