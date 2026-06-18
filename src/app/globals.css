@@ -41,6 +41,8 @@
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Apple SD Gothic Neo",
     "Malgun Gothic", sans-serif;
+
+  --font-display: var(--font-playfair), Georgia, "Times New Roman", serif;
 }
 
 @layer base {
