@@ -47,12 +47,19 @@ describe("경계 가드", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("SystemSetting 직접 write는 repository.ts에서만", () => {
+  it("SystemSetting 직접 write는 repository.ts에서만 (createMany·raw SQL 포함)", () => {
     const offenders: string[] = [];
-    const writeRe = /systemSetting\s*\.\s*(create|update|updateMany|upsert|delete|deleteMany)\b/;
+    // Prisma client write 멤버 — createMany까지 명시. (`create\b`는 'create'와 'Many' 사이에
+    // 단어경계가 없어 createMany를 매치하지 못하므로 별도 alternation으로 넣는다.)
+    const writeRe = /systemSetting\s*\.\s*(create|createMany|update|updateMany|upsert|delete|deleteMany)\b/;
+    // raw SQL 우회 차단: $executeRaw*가 SystemSetting을 건드리거나, SQL write 키워드가 테이블을 직접 대상으로.
+    // ({0,400}는 catastrophic backtracking·파일 전역 오탐 방지용 상한.)
+    const rawWriteRe =
+      /\$executeRaw(?:Unsafe)?\b[\s\S]{0,400}?SystemSetting|(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"?SystemSetting"?/i;
     for (const file of filesUnder("src")) {
       if (file.replace(/\\/g, "/").endsWith("kernel/settings/repository.ts")) continue;
-      if (writeRe.test(readFileSync(file, "utf8"))) offenders.push(file);
+      const src = readFileSync(file, "utf8");
+      if (writeRe.test(src) || rawWriteRe.test(src)) offenders.push(file);
     }
     expect(offenders).toEqual([]);
   });
@@ -153,5 +160,6 @@ git commit -m "Add settings boundary guards: reader-only, no direct write, serve
 
 - **5단계의 위반 심기 변경을 커밋하지 말 것. 이유:** 가드 실효성 확인용 임시 변경. 반드시 원복 후 커밋.
 - **구조 스캔에서 `repository.ts`만 예외. 이유:** write 경로의 유일 소유자. 다른 곳에서 `systemSetting.*` write가 생기면 감사·concurrency 우회(§5.5).
+- **write 정규식에 `createMany`를 반드시 포함하고 raw SQL(`$executeRaw*`·`INSERT/UPDATE/DELETE … SystemSetting`)도 스캔. 이유:** 적대적 리뷰 Finding 2 — `create\b`는 `createMany`를 매치하지 못하고, raw SQL write는 멤버 접근 정규식을 통째로 우회한다. 둘 다 감사·concurrency 없이 SystemSetting 행을 바꿀 수 있어 "유일 감사 write 경로" 보장이 무너진다. (AST 기반 가드는 정적 스캔 테스트에 과해 도입하지 않음 — eslint reader-only import 가드와 이중으로 경계를 묶는다.)
 - **eslint group에 `@/kernel/settings/reader`를 넣지 말 것. 이유:** reader는 모듈의 유일 허용 진입점.
 - **테스트는 정적 파일 스캔이라 DB·빌드 불필요. 이유:** CI에서 빠르고 결정적으로 경계 회귀를 잡기 위함.

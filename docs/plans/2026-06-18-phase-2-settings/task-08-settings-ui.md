@@ -114,6 +114,12 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 const CATEGORY_ORDER = ["security", "integrations", "workflows", "general"] as const;
 const INTEGRATION_LABELS: Record<string, string> = { smtp: "메일(SMTP)", google: "Google", templates: "문서/템플릿" };
+// 연동 상태 3-state: configured/attention_required/unknown(인프라 장애 — 설정 누락과 구분, task-06).
+const INTEGRATION_HEALTH_LABELS: Record<string, string> = {
+  configured: "정상",
+  attention_required: "설정 필요",
+  unknown: "확인 불가(일시 오류)",
+};
 
 export default async function SettingsPage() {
   const session = await auth();
@@ -138,7 +144,7 @@ export default async function SettingsPage() {
             {integrations.map((s) => (
               <li key={s.key}>
                 {INTEGRATION_LABELS[s.key] ?? s.key}:{" "}
-                <strong>{s.health === "configured" ? "정상" : "설정 필요"}</strong>
+                <strong>{INTEGRATION_HEALTH_LABELS[s.health] ?? s.health}</strong>
               </li>
             ))}
           </ul>
