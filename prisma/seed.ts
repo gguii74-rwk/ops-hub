@@ -3,25 +3,12 @@ import bcrypt from "bcryptjs";
 // SC-9 단일 출처(catalog.ts)에서 import — 재정의 금지(드리프트 방지).
 // 상대경로: tsx의 tsconfig paths(@ alias) 해석 의존을 피한다.
 import { ACCESS_ROLE_KEYS, NAV as NAV_CATALOG, RESOURCES } from "../src/kernel/access/catalog";
+import { EXTRA_PERMISSIONS } from "./seed-permissions";
 
 const prisma = new PrismaClient();
 
 // view는 전 resource에 부여. resource 목록은 catalog가 단일 출처.
 const VIEW_RESOURCES = [...RESOURCES];
-
-const EXTRA_PERMISSIONS: Array<[string, string]> = [
-  ["workflows.weekly", "create"], ["workflows.weekly", "generate"], ["workflows.weekly", "send"],
-  ["workflows.billing", "create"], ["workflows.billing", "send"],
-  ["workflows.notification", "create"], ["workflows.notification", "send"],
-  ["leave.request", "create"],
-  ["leave.approval", "approve"],
-  ["leave.allocation", "configure"],
-  ["admin.users", "update"],
-  ["admin.settings", "configure"],
-  ["integrations.google", "configure"],
-  ["integrations.smtp", "configure"],
-  ["integrations.templates", "configure"],
-];
 
 // 역할 키는 catalog(ACCESS_ROLE_KEYS)가 단일 출처. 표시명만 seed-local.
 const ROLE_NAMES: Record<string, string> = {
