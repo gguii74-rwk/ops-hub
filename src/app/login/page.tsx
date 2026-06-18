@@ -34,9 +34,14 @@ export default async function LoginPage({
 
   return (
     <main className="mx-auto mt-[10vh] w-full max-w-sm px-6">
+      <div className="mb-6 flex flex-col items-center gap-2">
+        <span className="font-display text-3xl font-semibold tracking-tight">ops-hub</span>
+        <span className="h-1 w-10 rounded-full bg-brand" aria-hidden />
+        <p className="text-sm text-muted-foreground">내부 업무 운영 허브</p>
+      </div>
       <Card>
         <CardHeader>
-          <CardTitle>ops-hub 로그인</CardTitle>
+          <CardTitle>로그인</CardTitle>
         </CardHeader>
         <CardContent>
           {error ? (
