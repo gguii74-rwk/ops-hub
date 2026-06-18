@@ -10,8 +10,8 @@ export default async function AdminPage() {
     redirect("/dashboard");
   }
   return (
-    <section>
-      <h1>관리</h1>
+    <section className="grid gap-4">
+      <h1 className="text-xl font-semibold">관리</h1>
       <AdminLinks />
     </section>
   );

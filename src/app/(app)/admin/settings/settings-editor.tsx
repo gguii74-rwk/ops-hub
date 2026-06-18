@@ -1,6 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { toast } from "sonner";
+
+import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/components/ui/button";
 
 export function SettingEditor({
   settingKey,
@@ -13,7 +17,6 @@ export function SettingEditor({
 }) {
   const [text, setText] = useState(() => JSON.stringify(initialValue, null, 2));
   const [token, setToken] = useState<string | null>(updatedAt);
-  const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
 
   async function save() {
@@ -22,11 +25,10 @@ export function SettingEditor({
     try {
       parsed = JSON.parse(text);
     } catch {
-      setMessage("형식 오류: 올바른 JSON이 아닙니다.");
+      toast.error("형식 오류: 올바른 JSON이 아닙니다.");
       return;
     }
     setSaving(true);
-    setMessage("");
     const res = await fetch(`/api/admin/settings/${encodeURIComponent(settingKey)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -34,35 +36,34 @@ export function SettingEditor({
     });
     setSaving(false);
     if (res.status === 409) {
-      setMessage("다른 사용자가 먼저 변경했습니다. 새로고침 후 다시 시도하세요.");
+      toast.error("다른 사용자가 먼저 변경했습니다. 새로고침 후 다시 시도하세요.");
       return;
     }
     if (res.status === 422) {
-      setMessage("검증 실패: 값 형식을 확인하세요.");
+      toast.error("검증 실패: 값 형식을 확인하세요.");
       return;
     }
     if (!res.ok) {
-      setMessage("저장 실패.");
+      toast.error("저장에 실패했습니다.");
       return;
     }
     const body = (await res.json()) as { updatedAt: string };
     setToken(body.updatedAt);
-    setMessage("저장됨.");
+    toast.success("저장되었습니다.");
   }
 
   return (
-    <div style={{ display: "grid", gap: 4 }}>
-      <textarea
+    <div className="grid gap-1.5">
+      <Textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
         rows={3}
-        style={{ fontFamily: "monospace", width: "100%" }}
+        className="font-mono"
       />
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <button type="button" onClick={save} disabled={saving}>
+      <div>
+        <Button type="button" size="sm" onClick={save} disabled={saving}>
           {saving ? "저장 중…" : "저장"}
-        </button>
-        {message ? <span style={{ color: "var(--muted)" }}>{message}</span> : null}
+        </Button>
       </div>
     </div>
   );
