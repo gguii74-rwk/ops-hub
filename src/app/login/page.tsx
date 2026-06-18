@@ -1,6 +1,10 @@
 import { redirect } from "next/navigation";
 import { AuthError } from "next-auth";
 import { auth, signIn } from "@/lib/auth";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
 
 export default async function LoginPage({
   searchParams,
@@ -29,22 +33,42 @@ export default async function LoginPage({
   }
 
   return (
-    <main style={{ maxWidth: 360, margin: "10vh auto", padding: 24 }}>
-      <h1>ops-hub 로그인</h1>
-      {error ? (
-        <p style={{ color: "#b91c1c" }}>이메일 또는 비밀번호가 올바르지 않습니다.</p>
-      ) : null}
-      <form action={login} style={{ display: "grid", gap: 12 }}>
-        <label>
-          이메일
-          <input name="email" type="email" required autoComplete="username" style={{ width: "100%" }} />
-        </label>
-        <label>
-          비밀번호
-          <input name="password" type="password" required autoComplete="current-password" style={{ width: "100%" }} />
-        </label>
-        <button type="submit">로그인</button>
-      </form>
+    <main className="mx-auto mt-[10vh] w-full max-w-sm px-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>ops-hub 로그인</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {error ? (
+            <p className="mb-3 text-sm text-destructive">
+              이메일 또는 비밀번호가 올바르지 않습니다.
+            </p>
+          ) : null}
+          <form action={login} className="grid gap-3">
+            <div className="grid gap-1.5">
+              <Label htmlFor="email">이메일</Label>
+              <Input
+                id="email"
+                name="email"
+                type="email"
+                required
+                autoComplete="username"
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="password">비밀번호</Label>
+              <Input
+                id="password"
+                name="password"
+                type="password"
+                required
+                autoComplete="current-password"
+              />
+            </div>
+            <Button type="submit">로그인</Button>
+          </form>
+        </CardContent>
+      </Card>
     </main>
   );
 }
