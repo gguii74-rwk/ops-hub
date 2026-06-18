@@ -39,6 +39,27 @@ const eslintConfig = [
       ],
     },
   },
+  {
+    files: ["src/modules/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-imports": [
+        2,
+        {
+          patterns: [
+            {
+              group: [
+                "@/kernel/settings/service",
+                "@/kernel/settings/index",
+                "@/kernel/settings/catalog",
+                "@/kernel/settings/repository",
+              ],
+              message: "modules must import settings only via @/kernel/settings/reader",
+            },
+          ],
+        },
+      ],
+    },
+  },
 ];
 
 export default eslintConfig;
