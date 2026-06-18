@@ -4,6 +4,9 @@ import { auth } from "@/lib/auth";
 import { hasPermission } from "@/kernel/access";
 import { listSettings } from "@/kernel/settings";
 import { getIntegrationStatuses } from "@/modules/integrations";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
 import { SettingEditor } from "./settings-editor";
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -20,6 +23,11 @@ const INTEGRATION_HEALTH_LABELS: Record<string, string> = {
   attention_required: "설정 필요",
   unknown: "확인 불가(일시 오류)",
 };
+const HEALTH_VARIANT: Record<string, "secondary" | "destructive" | "outline"> = {
+  configured: "secondary",
+  attention_required: "destructive",
+  unknown: "outline",
+};
 
 export default async function SettingsPage() {
   const session = await auth();
@@ -34,38 +42,45 @@ export default async function SettingsPage() {
   ]);
 
   return (
-    <section style={{ display: "grid", gap: 24 }}>
-      <h1>설정</h1>
+    <section className="grid gap-6">
+      <h1 className="text-xl font-semibold">설정</h1>
 
       {integrations.length > 0 ? (
-        <div>
-          <h2 style={{ fontSize: 16 }}>연동 상태</h2>
-          <ul style={{ display: "flex", gap: 16, listStyle: "none", padding: 0 }}>
+        <Card>
+          <CardHeader>
+            <CardTitle>연동 상태</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-wrap gap-3">
             {integrations.map((s) => (
-              <li key={s.key}>
-                {INTEGRATION_LABELS[s.key] ?? s.key}:{" "}
-                <strong>{INTEGRATION_HEALTH_LABELS[s.health] ?? s.health}</strong>
-              </li>
+              <span key={s.key} className="flex items-center gap-1.5 text-sm">
+                {INTEGRATION_LABELS[s.key] ?? s.key}:
+                <Badge variant={HEALTH_VARIANT[s.health] ?? "outline"}>
+                  {INTEGRATION_HEALTH_LABELS[s.health] ?? s.health}
+                </Badge>
+              </span>
             ))}
-          </ul>
-        </div>
+          </CardContent>
+        </Card>
       ) : null}
 
       {CATEGORY_ORDER.map((cat) => {
         const group = items.filter((i) => i.category === cat);
         if (group.length === 0) return null;
         return (
-          <div key={cat}>
-            <h2 style={{ fontSize: 16 }}>{CATEGORY_LABELS[cat]}</h2>
-            <ul style={{ display: "grid", gap: 12, listStyle: "none", padding: 0 }}>
-              {group.map((item) => (
-                <li key={item.key} style={{ borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
-                  <div style={{ fontWeight: 600 }}>{item.title}</div>
-                  <div style={{ color: "var(--muted)", fontSize: 13 }}>{item.description}</div>
-                  {item.kind === "systemSetting" ? (
-                    item.status === "INVALID" ? (
-                      <div style={{ color: "crimson", fontSize: 13 }}>저장된 값이 올바르지 않습니다 — 다시 저장하세요.</div>
-                    ) : null
+          <Card key={cat}>
+            <CardHeader>
+              <CardTitle>{CATEGORY_LABELS[cat]}</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-4">
+              {group.map((item, idx) => (
+                <div key={item.key} className="grid gap-1.5">
+                  {idx > 0 ? <Separator className="mb-2" /> : null}
+                  <div className="font-medium">{item.title}</div>
+                  <div className="text-sm text-muted-foreground">{item.description}</div>
+                  {item.kind === "systemSetting" && item.status === "INVALID" ? (
+                    <div className="text-sm text-destructive">
+                      저장된 값이 올바르지 않습니다 — 다시 저장하세요.
+                    </div>
                   ) : null}
                   {item.kind === "systemSetting" ? (
                     <SettingEditor
@@ -74,16 +89,24 @@ export default async function SettingsPage() {
                       updatedAt={item.updatedAt ? new Date(item.updatedAt).toISOString() : null}
                     />
                   ) : item.kind === "envSecret" ? (
-                    <div style={{ fontSize: 13 }}>
-                      상태: <strong>{item.status === "configured" ? "정상" : "설정 필요"}</strong>
+                    <div className="text-sm">
+                      상태:{" "}
+                      <Badge variant={item.status === "configured" ? "secondary" : "outline"}>
+                        {item.status === "configured" ? "정상" : "설정 필요"}
+                      </Badge>
                     </div>
                   ) : (
-                    <Link href={item.manageHref ?? "#"}>관리 →</Link>
+                    <Link
+                      href={item.manageHref ?? "#"}
+                      className="text-sm text-primary underline-offset-4 hover:underline"
+                    >
+                      관리 →
+                    </Link>
                   )}
-                </li>
+                </div>
               ))}
-            </ul>
-          </div>
+            </CardContent>
+          </Card>
         );
       })}
     </section>
