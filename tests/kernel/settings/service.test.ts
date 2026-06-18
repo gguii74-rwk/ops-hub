@@ -92,19 +92,19 @@ describe("getSetting", () => {
 
 describe("setSetting", () => {
   it("actorId 누락 → SettingActorRequiredError", async () => {
-    await expect(setSetting("integrations.smtp.host", "x", { actorId: "" })).rejects.toBeInstanceOf(SettingActorRequiredError);
+    await expect(setSetting("integrations.smtp.host", "x", { actorId: "", expectedUpdatedAt: null })).rejects.toBeInstanceOf(SettingActorRequiredError);
   });
   it("미등록 key → UnknownSettingError", async () => {
-    await expect(setSetting("nope.nope.nope", "x", { actorId: "u1" })).rejects.toBeInstanceOf(UnknownSettingError);
+    await expect(setSetting("nope.nope.nope", "x", { actorId: "u1", expectedUpdatedAt: null })).rejects.toBeInstanceOf(UnknownSettingError);
   });
   it("envSecret key → SettingNotWritableError", async () => {
-    await expect(setSetting("secret.smtp", "x", { actorId: "u1" })).rejects.toBeInstanceOf(SettingNotWritableError);
+    await expect(setSetting("secret.smtp", "x", { actorId: "u1", expectedUpdatedAt: null })).rejects.toBeInstanceOf(SettingNotWritableError);
   });
   it("relational key → SettingNotWritableError", async () => {
-    await expect(setSetting("workflows.billing.config", {}, { actorId: "u1" })).rejects.toBeInstanceOf(SettingNotWritableError);
+    await expect(setSetting("workflows.billing.config", {}, { actorId: "u1", expectedUpdatedAt: null })).rejects.toBeInstanceOf(SettingNotWritableError);
   });
   it("Zod 실패 → SettingValidationError", async () => {
-    await expect(setSetting("integrations.smtp.fromAddress", "not-email", { actorId: "u1" })).rejects.toBeInstanceOf(SettingValidationError);
+    await expect(setSetting("integrations.smtp.fromAddress", "not-email", { actorId: "u1", expectedUpdatedAt: null })).rejects.toBeInstanceOf(SettingValidationError);
   });
   it("성공 → writeWithAudit 호출(검증된 값·actorId·expectedUpdatedAt·redact 전달)", async () => {
     const at = new Date(2026, 0, 1);
