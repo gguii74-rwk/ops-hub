@@ -14,6 +14,7 @@ prisma/*.db-journal
 # AI 작업 흔적·생성 산출물 (디렉터리 규약: CLAUDE.md 참조)
 .dev/
 out/
+.claude/worktrees/
 
 # 배포 shared 스토리지가 로컬에 존재할 때
 Template/
