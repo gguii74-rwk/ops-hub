@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { issueClaims, toGroups } from "@/lib/auth/federation/claims";
 import type { SessionUser } from "@/lib/auth/types";
+
+const { mockAuth, mockFindUnique } = vi.hoisted(() => ({
+  mockAuth: vi.fn(),
+  mockFindUnique: vi.fn(),
+}));
+vi.mock("@/lib/auth", () => ({ auth: mockAuth }));
+vi.mock("@/lib/prisma", () => ({ prisma: { user: { findUnique: mockFindUnique } } }));
 
 const base: SessionUser = {
   id: "u1",
@@ -27,5 +34,48 @@ describe("federation claims", () => {
 
   it("issueClaims exposes only sub/email/groups", () => {
     expect(issueClaims(base)).toEqual({ sub: "u1", email: "a@b.com", groups: ["kgs-user"] });
+  });
+});
+
+describe("verifySession (fail-closed against live DB, not the JWT snapshot)", () => {
+  beforeEach(() => {
+    mockAuth.mockReset();
+    mockFindUnique.mockReset();
+  });
+
+  it("returns null when there is no session, without touching the DB", async () => {
+    const { verifySession } = await import("@/lib/auth/federation");
+    mockAuth.mockResolvedValue(null);
+    expect(await verifySession()).toBeNull();
+    expect(mockFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("returns null when the session user no longer exists in the DB", async () => {
+    const { verifySession } = await import("@/lib/auth/federation");
+    mockAuth.mockResolvedValue({ user: { id: "u1" } });
+    mockFindUnique.mockResolvedValue(null);
+    expect(await verifySession()).toBeNull();
+  });
+
+  it("returns null for a disabled user even when the session is still valid", async () => {
+    const { verifySession } = await import("@/lib/auth/federation");
+    mockAuth.mockResolvedValue({ user: { id: "u1", systemRole: "ADMIN" } });
+    mockFindUnique.mockResolvedValue({ id: "u1", email: "a@b.com", systemRole: "ADMIN", status: "DISABLED" });
+    expect(await verifySession()).toBeNull();
+  });
+
+  it("builds claims from current DB role, not the stale JWT (post-login demotion drops ops-admin)", async () => {
+    const { verifySession } = await import("@/lib/auth/federation");
+    // JWT snapshot still says ADMIN with a stale email; DB is the source of truth.
+    mockAuth.mockResolvedValue({ user: { id: "u1", email: "stale@b.com", systemRole: "ADMIN" } });
+    mockFindUnique.mockResolvedValue({ id: "u1", email: "a@b.com", systemRole: "MEMBER", status: "ACTIVE" });
+    expect(await verifySession()).toEqual({ sub: "u1", email: "a@b.com", groups: ["kgs-user"] });
+  });
+
+  it("grants ops-admin for an active OWNER from the DB", async () => {
+    const { verifySession } = await import("@/lib/auth/federation");
+    mockAuth.mockResolvedValue({ user: { id: "u1" } });
+    mockFindUnique.mockResolvedValue({ id: "u1", email: "owner@b.com", systemRole: "OWNER", status: "ACTIVE" });
+    expect(await verifySession()).toEqual({ sub: "u1", email: "owner@b.com", groups: ["kgs-user", "ops-admin"] });
   });
 });

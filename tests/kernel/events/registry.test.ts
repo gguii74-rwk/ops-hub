@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { clearHandlers, dispatch, handlersFor, registerHandler } from "@/kernel/events";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { clearHandlers, dispatch, handlersFor, processOutbox, registerHandler } from "@/kernel/events";
 
 describe("event registry", () => {
   beforeEach(() => clearHandlers());
@@ -22,5 +22,15 @@ describe("event registry", () => {
 
   it("dispatch with no handlers is a no-op (Phase 1 state)", async () => {
     await expect(dispatch({ type: "nothing.registered.yet", payload: {} })).resolves.toBeUndefined();
+  });
+});
+
+describe("processOutbox guard (skeleton, not production-ready)", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("refuses to run in production without explicit opt-in (no DB touched)", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("OPS_HUB_ALLOW_OUTBOX_RUNNER", undefined);
+    await expect(processOutbox()).rejects.toThrow(/skeleton|dispatcher|production/i);
   });
 });

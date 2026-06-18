@@ -6,8 +6,11 @@ export interface Identity {
   groups: string[];
 }
 
+/** claims 생성에 필요한 최소 필드. 세션·DB row 어느 쪽이든 충족하면 된다. */
+export type ClaimsSource = Pick<SessionUser, "id" | "email" | "systemRole">;
+
 /** coarse groups 매핑(spec §8). 모든 인증 사용자 + systemRole별 가산. */
-export function toGroups(user: SessionUser): string[] {
+export function toGroups(user: ClaimsSource): string[] {
   const groups = ["kgs-user"];
   if (user.systemRole === "OWNER" || user.systemRole === "ADMIN") groups.push("ops-admin");
   if (user.systemRole === "MANAGER") groups.push("ops-manager");
@@ -15,6 +18,6 @@ export function toGroups(user: SessionUser): string[] {
 }
 
 /** 외부에 넘기는 "최소 신원". 출력 모양(sub/email/groups)이 A→B 전환의 안정 계약. */
-export function issueClaims(user: SessionUser): Identity {
+export function issueClaims(user: ClaimsSource): Identity {
   return { sub: user.id, email: user.email, groups: toGroups(user) };
 }

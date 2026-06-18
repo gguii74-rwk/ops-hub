@@ -63,8 +63,18 @@ export async function publishEvent(tx: PrismaTx, event: DomainEvent): Promise<vo
  * ⚠️ 동시 실행 금지. 프로덕션급 디스패처(원자적 claim + lease/복구 + 제한 재시도·백오프 + 멱등키)는
  * 서로 맞물리는 한 덩어리라, 실제 워커가 생기는 **디스패처 플랜에서 통째로** 설계·테스트한다.
  * 골격에 절반만 끼워 넣지 않는다 — 예: PROCESSING 중간 상태만 두면 복구 경로 없이 행이 고착된다.
+ *
+ * 우발적 운영 사용을 막는 가드: 디스패처 플랜 전까지 프로덕션에서 호출하면 던진다.
+ * (멱등·재시도·동시성 보장이 없어 중복 발송/고착을 일으킬 수 있으므로 opt-in 없이는 못 돈다.)
  */
 export async function processOutbox(limit = 50): Promise<{ processed: number; failed: number }> {
+  if (process.env.NODE_ENV === "production" && process.env.OPS_HUB_ALLOW_OUTBOX_RUNNER !== "1") {
+    throw new Error(
+      "processOutbox is a non-production skeleton (no atomic claim/retry/idempotency); " +
+        "build the dispatcher plan or set OPS_HUB_ALLOW_OUTBOX_RUNNER=1 to override.",
+    );
+  }
+
   const pending = await prisma.outboxEvent.findMany({
     where: { status: "PENDING" },
     orderBy: { createdAt: "asc" },
