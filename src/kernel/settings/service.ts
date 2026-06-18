@@ -34,7 +34,10 @@ export interface SettingsCatalogItem {
 
 export interface SetSettingCtx {
   actorId: string;
-  expectedUpdatedAt?: Date | null;
+  // 필수: null=최초 생성, Date=낙관적 잠금. 생략(undefined)을 허용하면 repository의
+  // last-write-wins upsert로 떨어져 호출자가 토큰을 잊는 것만으로 동시성 가드를 조용히
+  // 우회할 수 있으므로 필수로 둔다(컴파일 타임 차단).
+  expectedUpdatedAt: Date | null;
 }
 
 // --- READ(운영) ---
@@ -53,6 +56,9 @@ export async function getSetting(key: string): Promise<unknown> {
 }
 
 // --- WRITE(fail-closed) ---
+// 권한 게이트(admin.settings:configure + 항목 권한)는 라우트 층에서 강제한다(열거 방지를
+// 위해 base 게이트를 getEntry보다 먼저 검사 — route.ts 참조). 이 프리미티브를 직접 호출하는
+// 신규 server-side 호출자는 동일 게이트를 복제해야 한다.
 export async function setSetting(key: string, value: unknown, ctx: SetSettingCtx): Promise<{ updatedAt: Date }> {
   if (!ctx.actorId || ctx.actorId.trim() === "") throw new SettingActorRequiredError();
   const e = getEntry(key);
