@@ -58,4 +58,12 @@ describe("settings catalog 정합성", () => {
     expect(getEntry("integrations.smtp.host")?.kind).toBe("systemSetting");
     expect(getEntry("nope.nope.nope")).toBeUndefined();
   });
+
+  it("카탈로그 항목 수 고정 (5 systemSetting, 5 envSecret, 1 relational)", () => {
+    const byKind = (k: string) => CATALOG.filter((e) => e.kind === k).length;
+    expect(byKind("systemSetting")).toBe(5);
+    expect(byKind("envSecret")).toBe(5);
+    expect(byKind("relational")).toBe(1);
+    expect(CATALOG.length).toBe(11);
+  });
 });
