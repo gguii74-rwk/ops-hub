@@ -44,7 +44,7 @@
 
 **(a) 기존 시맨틱 토큰 retint** — 프리미티브가 변경 없이 자동 수신
 - `page` → 옅은 라벤더 틴트(셸 배경)
-- `ring` → 라벤더(모든 포커스 ring이 브랜드화)
+- `ring` → 접근성 충족 딥 바이올렛(`#7C3AED`, 브랜드 계열이되 장식용 `brand` 라벤더와 **분리** — §8). 모든 포커스 ring을 구동
 - `accent`/`accent-foreground` → 라벤더 틴트 / 딥퍼플(hover·활성 nav pill 표면)
 - `secondary`·`muted` → 옅은 라벤더-그레이(보조 버튼·nav hover)
 - `muted-foreground` → 살짝 퍼플 그레이
@@ -67,7 +67,7 @@
 | 토큰 | 현재 | 신규 |
 | --- | --- | --- |
 | `--color-page` | oklch(0.985 0 0) | `#F6F3FC` |
-| `--color-ring` | oklch(0.708 0 0) | `#BA8DFF` |
+| `--color-ring` | oklch(0.708 0 0) | `#7C3AED` |
 | `--color-accent` | oklch(0.97 0 0) | `#ECE3FF` |
 | `--color-accent-foreground` | oklch(0.205 0 0) | `#5B3D9E` |
 | `--color-secondary` | oklch(0.97 0 0) | `#F1EEF8` |
@@ -77,6 +77,8 @@
 | `--color-input` | oklch(0.922 0 0) | `#E9E5F2` |
 
 유지(변경 없음): `background` `foreground` `card(+fg)` `popover(+fg)` `primary(+fg)` `secondary-foreground` `destructive(+fg)`.
+
+> `ring`(`#7C3AED`)은 의도적으로 `brand` 라벤더(`#BA8DFF`)와 다른 값이다. 라벤더는 흰 배경 대비 ≈2.5:1로 포커스 표시에 쓰기엔 WCAG 미달이므로, 포커스 ring만 대비를 만족하는 딥 바이올렛으로 분리한다(§8). 라벤더는 장식(pill·액센트·badge)에만.
 
 ### 신규 브랜드 토큰 (@theme, 라이트·다크 공통 hue)
 | 토큰 | 값 |
@@ -147,12 +149,13 @@
 ## 8. 접근성(WCAG)
 
 - **파스텔을 텍스트색으로 쓰지 않는다.** 파스텔은 fill/액센트로만 쓰고, 그 위 텍스트는 항상 다크(예: 라벤더 pill 위 `accent-foreground` 딥퍼플, 대시보드 칩은 소프트 파스텔 배경 + 다크 텍스트). 블랙-온-파스텔/다크-온-파스텔은 충분한 대비 확보.
-- **포커스 ring**: 라벤더(`#BA8DFF`)는 흰 배경 대비 비텍스트 대비(약 1.8:1)가 WCAG 비텍스트 3:1에 못 미칠 수 있다. 프리미티브는 ring과 함께 `focus-visible:border-ring`로 **border 색 변화 + ring**을 동시에 적용하므로 가시성은 조합으로 확보된다. 수동 스모크에서 라이트/다크 모두 포커스 가시성을 확인하고, 부족하면 라이트 `ring`을 한 단계 진한 라벤더로 조정한다.
-- 다크모드 `ring`(`#C9A8FF`)은 어두운 배경 대비가 충분하다.
+- **포커스 ring(설계로 보장, 완화책에 의존하지 않음)**: 장식용 라벤더(`#BA8DFF`)는 흰 배경 대비 비텍스트 대비가 **약 2.5:1로 WCAG 1.4.11(3:1) 미달**이다. 따라서 `--color-ring`(라이트)은 라벤더를 그대로 쓰지 않고 **딥 바이올렛 `#7C3AED`** 로 분리한다 — 흰 배경 대비 **≈5.7:1**, `background`·`page`·`card`·`input` 표면 모두 3:1을 초과한다. `brand` 라벤더는 pill·액센트·badge 등 장식에만 쓴다. 이로써 가시성이 `focus-visible:border-ring` border 변화나 수동 스모크에 **의존하지 않고 토큰 값 자체로 보장**된다(border+ring 조합은 추가 보강일 뿐).
+- 다크모드 `ring`(`#C9A8FF`)은 어두운 배경(`#0C0B11`/`#16141C`) 대비가 3:1을 크게 상회한다.
 
 ## 9. 검증
 
 - 자동 게이트: `npm run typecheck` · `npm run lint`(boundaries 포함) · `npm run build` 통과
+- **대비 게이트(필수 — 수동 스모크로 대체·면제 불가)**: 라이트 `--color-ring`이 `background`·`page`·`card`·`input` 표면 각각에 대해 ≥3:1(WCAG 1.4.11)임을 구현 시 수치로 확인한다(현 값 `#7C3AED` 충족). 미달이면 머지 차단. 향후 `ring` 값을 바꿀 때도 동일 게이트 적용.
 - 기존 테스트 회귀 없음(순수 프레젠테이션 변경 — 로직/권한 테스트에 영향 없을 것)
 - 수동 스모크(라이트·다크 각각): page 틴트 표면, 활성 nav pill, 라벤더 포커스 ring, 워드마크 Playfair 렌더, login 화면, 대시보드 샘플 카드(Playfair 숫자 + 시안/라임 칩), 테마 토글 시 토큰 전환, 하이드레이션 경고 없음
 - Playwright 스크린샷으로 라이트/다크 캡처(기존 디자인 시스템 검증과 동일 방식)
