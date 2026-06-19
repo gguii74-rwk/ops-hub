@@ -134,7 +134,7 @@ export const STAMP_FOR_STATUS: Partial<Record<WorkflowStatus, "generatedAt" | "r
 Prisma 직접 접근은 `repositories/`에서만(boundaries). 모든 함수는 `@/lib/prisma`를 쓴다.
 
 ```ts
-import type { WorkflowKind, WorkflowStatus, MailDelivery } from "@prisma/client";
+import type { WorkflowKind, WorkflowStatus, MailDeliveryStatus } from "@prisma/client";
 import type { GeneratorResult } from "../types";
 
 export interface TaskListRow { id: string; kind: WorkflowKind; typeName: string; scheduledAt: Date; status: WorkflowStatus; }
