@@ -179,6 +179,7 @@ API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requireP
 - 마스킹 매트릭스는 view + 대상 이벤트의 소유자/種별로 결정한다(본인 이벤트는 항상 상세, 타인은 권한에 따라).
 - **마스킹은 안전망이 아니다(중요).** 마스킹은 title/description만 가리고 `userId`·시작/종료 시각은 응답에 남는다. 따라서 **노출 자체를 막아야 하는 데이터는 조회/합성 단계에서 차단**한다: ① 타인 PERSONAL_EVENT은 manual provider가 `ctx`로 애초에 조회하지 않고(§6), ② 타인 tentative(미승인) 일정은 feed가 `events`에서 제외한다(§7-4). (적대적 리뷰 Finding 1·3)
 - **확장 지점(경계 부채)**: 현재 PERSONAL_EVENT 공개 정책은 "본인만 / admin 전체"가 기본이다. 추후 팀 멤버십·세부 권한 단위 공개(예: `calendar.personal.team:view`)는 provider가 받는 동일한 `ctx`(userId+permissionKeys)에서 분기하면 되며, **시그니처 변경 없이 비파괴로 확장**된다.
+- **personal 뷰 = 본인 소유 + 공휴일만(Finding 2).** feed가 personal 뷰에서 `userId === 본인 || kind === HOLIDAY`이 아닌 이벤트를 **제외**한다(마스킹 아님 → 타인 userId·시각이 응답에 없음). 팀 휴가/일정 free/busy는 **work/leave 뷰에서만** 노출(거기선 의도된 기능 — 누가 언제 부재인지 공유). 이 게이트는 `VIEW_SOURCES.personal` 목록과 무관한 하드 게이트라 personal에 소스가 추가돼도 안전하다. `VIEW_SOURCES.personal`에서 `workflowTask`는 제외(사용자 귀속 없는 조직 일정).
 
 ## 10. 중복 제거(비파괴)
 
@@ -262,6 +263,8 @@ API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requireP
 
 ops-hub의 cutover 대상은 현재 annual-leave가 서비스 중인 `http://172.21.10.27:3000/`(개발서버 kgs-dev). 이 IP:포트는 방화벽이 개방돼 **외주 인력이 재택근무로 접속하는 현재 유일한 경로**다(상세 SSOT: workspace-env `INVENTORY.md` §1.5). 즉 캘린더·연차의 실사용자가 원격 외주 인력이므로 **권한 마스킹과 원격 성능·캐시가 실사용 조건**이다. cutover 절차는 `docs/migration/initial-migration-plan.md` §7.
 
+- **cutover 시 데모 시드 금지(Finding 1)**: 데모 `LeaveRequest`/`WorkflowTask`는 메인 `db:seed`에서 분리해 dev 전용 `prisma/seed-demo.ts`(`db:seed:demo`)로만 둔다. 메인 seed는 roles/permissions/CalendarSource/config만 부트스트랩 — production/cutover 재시드가 가짜 승인 휴가(캘린더 이벤트·dedup 앵커·연차 입력 오염)를 만들지 않게 한다.
+
 ## 17. 구현 순서(개요 — 구현 계획으로 분해)
 
 1. 공통 타입 + calendar repository(권위 테이블·CalendarEvent·CacheEntry 조회/기록) + range 정규화·KST 유틸.
@@ -270,7 +273,7 @@ ops-hub의 cutover 대상은 현재 annual-leave가 서비스 중인 `http://172
 4. 출처 provider 5종(internalLeave·workflowTask·google·holiday·manual).
 5. dedup + masking.
 6. feed service + `GET /api/calendar/feed` + `POST /api/calendar/refresh`.
-7. seed: CalendarSource(Google 캘린더별 + 공휴일), 샘플 LeaveRequest/WorkflowTask, **외주 역할 `calendar.leave:view` 부여**(§8.1).
+7. seed: CalendarSource(Google 캘린더별 + 공휴일) + **외주 역할 `calendar.leave:view` 부여**(§8.1). 샘플 LeaveRequest/WorkflowTask는 **dev 전용 `seed-demo.ts`로 분리**(메인 seed 제외 — Finding 1).
 8. UI: `@tanstack/react-query` 도입 + `(app)` QueryProvider(§13.1), 커스텀 월 그리드 + 뷰 탭 3종(권한 있는 탭만) + 새로고침/상태 배지.
 9. 테스트(§14) 전반 + boundaries 통과.
 

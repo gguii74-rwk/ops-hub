@@ -120,7 +120,7 @@ export const UI_VIEWS: ViewKey[] = ["work", "leave", "personal"];
 export const VIEW_SOURCES: Record<ViewKey, string[]> = {
   work: ["workflowTask", "internalLeave", "holiday"],
   leave: ["internalLeave", "google", "holiday"],
-  personal: ["internalLeave", "workflowTask", "manual", "google", "holiday"],
+  personal: ["internalLeave", "manual", "google", "holiday"], // workflowTask 제외(사용자 귀속 없는 조직 일정). feed가 본인 소유+공휴일만 통과(§9 personal 스코프)
   team: ["workflowTask", "internalLeave", "holiday"],
   admin: ["internalLeave", "workflowTask", "manual", "google", "holiday"],
 };
@@ -176,7 +176,7 @@ export function getCachedPayload<T>(args: {
 export function applyDedup(events: RawEvent[]): RawEvent[];                       // src/modules/calendar/dedup/index.ts
 // masking: 권한·소유자에 따라 제목/사유 마스킹. 본인 이벤트는 항상 상세. tentative 플래그는 그대로 통과(가시성 판단은 feed). (view는 마스킹과 무관)
 export function maskEvent(raw: RawEvent, ctx: FeedContext): CalEvent; // src/modules/calendar/masking/index.ts
-// feed: provider 선택 → allSettled → dedup → 기본 뷰는 DUPLICATE_OF_INTERNAL 접기 → tentative 가시성 필터(본인/admin만) → mask → 조립
+// feed: provider 선택 → allSettled → dedup → 기본 뷰는 DUPLICATE_OF_INTERNAL 접기 → tentative 가시성 필터(본인/admin만) → personal 뷰 본인 소유+공휴일 한정 → mask → 조립
 export function buildFeed(view: ViewKey, range: NormalizedRange, ctx: FeedContext, providers: Record<string, CalendarSourceProvider>): Promise<FeedResponse>; // src/modules/calendar/feed/index.ts
 ```
 
