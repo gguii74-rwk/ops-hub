@@ -123,7 +123,8 @@ interface FeedResponse {
 ```ts
 interface CalendarSourceProvider {
   key: string;
-  fetchEvents(range: NormalizedRange, ctx: FeedContext): Promise<{ events: RawEvent[]; status: SourceStatus }>;
+  // google/holiday는 내부에 N개 캘린더가 있어 출처별 statuses가 여러 개일 수 있다.
+  fetchEvents(range: NormalizedRange, ctx: FeedContext): Promise<{ events: RawEvent[]; statuses: SourceStatus[] }>;
 }
 ```
 
@@ -135,13 +136,17 @@ interface CalendarSourceProvider {
 
 ## 7. feed 합성 흐름
 
-`GET /api/calendar/feed?view=work|leave|personal&start&end[&teamId]`
+`GET /api/calendar/feed?view=work|leave|personal&start[&teamId]`
+
+`start`는 **앵커**(보려는 달의 임의 시각)다. 서버는 이를 포함하는 **정규화된 6주 그리드 창**을 계산해 응답한다. 임의 `(start,end)` 범위는 Phase 3 계약에서 제외한다 — 월 그리드 UI만 지원하며, 자유 범위는 §12.2 캐시 단편화를 되살리기 때문이다(필요 시 후속에서 별도 범위 API).
 
 1. 인증 + `requirePermission(userId, "calendar.{view}", "view")`.
 2. view에 필요한 provider 집합을 `Promise.allSettled`로 **병렬 호출**(부분 실패 허용 — rejected는 해당 출처 failed로 환원).
 3. **dedup**(§10): 내부 APPROVED 휴가와 겹치는 외부 휴가성 이벤트를 `DUPLICATE_OF_INTERNAL`로 마킹.
 4. **masking**(§9): 권한 없는 필드를 서버에서 제거/치환(응답에 민감정보 미포함).
 5. `FeedResponse { events, sources, staleSources, failedSources }` 반환.
+
+`SourceStatus.error`는 **클라이언트엔 일반 메시지로만** 내보내고(예: "일정을 불러오지 못했습니다"), 원본 예외는 **서버 로그**에만 남긴다(DB·외부 API 내부 정보 유출 방지 — 적대적 리뷰 #7). 상세 진단은 admin 뷰(후속)에서.
 
 `teamId`는 team 뷰용 예약 파라미터(UI 후속). 엔진은 수용하되 Phase 3 UI는 사용하지 않는다.
 
@@ -173,7 +178,7 @@ API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requireP
 
 ## 10. 중복 제거(비파괴)
 
-- 판정 기준(시작점): 동일 userId로 매핑된 Google 이벤트 ∩ 내부 APPROVED `LeaveRequest`와 **KST 날짜 겹침** + 휴가성 키워드(`휴가|연차|반차|오전반차|오후반차`) + all-day(또는 근무시간 대부분).
+- 판정 기준: **`CalendarSource.ownerUserId`로 매핑된** Google 이벤트 ∩ 내부 APPROVED `LeaveRequest`와 **KST 날짜 겹침** + 휴가성 키워드(`휴가|연차|반차|오전반차|오후반차`) + **all-day**. **Phase 3는 all-day 외부 휴가만 dedup**한다 — "근무시간 대부분을 차지하는 timed 이벤트"는 임계 휴리스틱이 모호해 후속으로 미룬다. `ownerUserId`가 없는 공유 캘린더(예: 팀 공용) 이벤트는 사용자 attribution이 불가하므로 dedup하지 않고 `EXTERNAL_VACATION`으로만 표시한다.
 - 처리: 외부 이벤트를 **삭제하지 않는다.** `DUPLICATE_OF_INTERNAL`로 마킹하고 **응답 합성 단계에서만 접는다**(기본 뷰 미표시). 원본은 캐시에 남아 후속 admin 뷰에서 진단 가능.
 - 사용자 매핑이 안 된 외부 휴가 → `EXTERNAL_VACATION`(상세 제한).
 - 키워드 기반 휴리스틱이라 false positive 가능 → 비파괴 원칙이 안전판이다.
@@ -211,7 +216,8 @@ API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requireP
 `POST /api/calendar/refresh`
 
 - `requirePermission(userId, "calendar.{view}", "view")` — 사용자가 이미 보는 데이터의 재검증이므로 view 권한 재사용. **별도 refresh 권한 키는 신설하지 않음(YAGNI).**
-- **(view, start, end) 범위로만** 캐시 무효화·재fetch. 전역 Google 캐시 강제 갱신(admin 성격)은 admin 뷰와 함께 후속.
+- **(view, start) → 정규화된 6주 창 범위로만** 캐시 무효화·재fetch. 전역 Google 캐시 강제 갱신(admin 성격)은 admin 뷰와 함께 후속.
+- **cold-cache(최초 fetch 실패로 last-good 없음) 실패도 마커로 기록**(짧은 만료 + errorMessage)해, 직후 강제 새로고침이 min-interval 가드에 걸리게 한다. 안 그러면 엔트리가 없어 가드가 우회되어 Google을 연타한다(적대적 리뷰 #6).
 - **min-refresh-interval**: 최근 일정 시간(기본 30초, 상수로 정의) 내 재검증된 소스는 refresh를 무시해 Google 해머링/비용 폭주를 차단.
 
 ## 13. UI(커스텀 경량)

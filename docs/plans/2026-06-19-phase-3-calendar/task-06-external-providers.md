@@ -51,8 +51,8 @@ beforeEach(() => {
 });
 
 describe("createGoogleProvider", () => {
-  it("GOOGLE_CALENDAR source별 fetch→cache→EXTERNAL_EVENT RawEvent 매핑", async () => {
-    h.sources.mockResolvedValue([{ id: "s1", key: "google-team", externalId: "team@group", name: "팀", cacheTtlSeconds: 900 }]);
+  it("개인 Google 캘린더(ownerUserId) → event.userId로 전파(dedup attribution)", async () => {
+    h.sources.mockResolvedValue([{ id: "s1", key: "google-u9", externalId: "u9@group", name: "u9 캘린더", cacheTtlSeconds: 900, ownerUserId: "u9" }]);
     h.getClient.mockReturnValue({
       listEvents: async () => [
         { id: "e1", summary: "회의", description: null, start: new Date("2026-06-12T01:00:00Z"), end: new Date("2026-06-12T02:00:00Z"), allDay: false },
@@ -63,24 +63,32 @@ describe("createGoogleProvider", () => {
     const out = await createGoogleProvider().fetchEvents(range, ctx);
     expect(h.sources).toHaveBeenCalledWith(["GOOGLE_CALENDAR"]);
     expect(out.events[0]).toEqual({
-      id: "google-team:e1",
+      id: "google-u9:e1",
       kind: "EXTERNAL_EVENT",
       title: "회의",
       description: null,
       start: new Date("2026-06-12T01:00:00Z"),
       end: new Date("2026-06-12T02:00:00Z"),
       allDay: false,
-      userId: null,
-      sourceKey: "google-team",
+      userId: "u9", // ← ownerUserId에서 전파(하드코딩 null 아님)
+      sourceKey: "google-u9",
       externalId: "e1",
       dedupStatus: "UNIQUE",
       duplicateOfId: null,
     });
-    expect(out.statuses[0]).toEqual({ key: "google-team", state: "ok", lastFetchedAt: "2026-06-19T00:00:00.000Z", error: null });
+    expect(out.statuses[0]).toEqual({ key: "google-u9", state: "ok", lastFetchedAt: "2026-06-19T00:00:00.000Z", error: null });
+  });
+
+  it("공유 캘린더(ownerUserId=null) → event.userId=null", async () => {
+    h.sources.mockResolvedValue([{ id: "s1", key: "google-team", externalId: "team@group", name: "팀", cacheTtlSeconds: 900, ownerUserId: null }]);
+    h.getClient.mockReturnValue({ listEvents: async () => [{ id: "e9", summary: "회의", description: null, start: new Date("2026-06-12T01:00:00Z"), end: new Date("2026-06-12T02:00:00Z"), allDay: false }] });
+    cacheRunsFetcher();
+    const out = await createGoogleProvider().fetchEvents(range, ctx);
+    expect(out.events[0].userId).toBeNull();
   });
 
   it("summary 없으면 title='외부 일정'", async () => {
-    h.sources.mockResolvedValue([{ id: "s1", key: "google-team", externalId: "team@group", name: "팀", cacheTtlSeconds: 900 }]);
+    h.sources.mockResolvedValue([{ id: "s1", key: "google-team", externalId: "team@group", name: "팀", cacheTtlSeconds: 900, ownerUserId: null }]);
     h.getClient.mockReturnValue({ listEvents: async () => [{ id: "e2", summary: null, description: null, start: new Date("2026-06-12T01:00:00Z"), end: new Date("2026-06-12T02:00:00Z"), allDay: false }] });
     cacheRunsFetcher();
     const out = await createGoogleProvider().fetchEvents(range, ctx);
@@ -88,7 +96,7 @@ describe("createGoogleProvider", () => {
   });
 
   it("cache failed → events 없음 + failed status", async () => {
-    h.sources.mockResolvedValue([{ id: "s1", key: "google-team", externalId: "team@group", name: "팀", cacheTtlSeconds: 900 }]);
+    h.sources.mockResolvedValue([{ id: "s1", key: "google-team", externalId: "team@group", name: "팀", cacheTtlSeconds: 900, ownerUserId: null }]);
     h.cache.mockResolvedValue({ data: null, state: "failed", fetchedAt: null, error: "google 500" });
     const out = await createGoogleProvider().fetchEvents(range, ctx);
     expect(out.events).toEqual([]);
@@ -96,7 +104,7 @@ describe("createGoogleProvider", () => {
   });
 
   it("forceRefresh가 getCachedPayload로 전달", async () => {
-    h.sources.mockResolvedValue([{ id: "s1", key: "google-team", externalId: "team@group", name: "팀", cacheTtlSeconds: 900 }]);
+    h.sources.mockResolvedValue([{ id: "s1", key: "google-team", externalId: "team@group", name: "팀", cacheTtlSeconds: 900, ownerUserId: null }]);
     h.getClient.mockReturnValue({ listEvents: async () => [] });
     cacheRunsFetcher();
     await createGoogleProvider({ forceRefresh: true }).fetchEvents(range, ctx);
@@ -104,7 +112,7 @@ describe("createGoogleProvider", () => {
   });
 
   it("externalId 없는 source → failed status, fetch 안 함", async () => {
-    h.sources.mockResolvedValue([{ id: "s1", key: "google-broken", externalId: null, name: "x", cacheTtlSeconds: 900 }]);
+    h.sources.mockResolvedValue([{ id: "s1", key: "google-broken", externalId: null, name: "x", cacheTtlSeconds: 900, ownerUserId: null }]);
     const out = await createGoogleProvider().fetchEvents(range, ctx);
     expect(out.statuses[0].state).toBe("failed");
     expect(h.cache).not.toHaveBeenCalled();
@@ -112,13 +120,13 @@ describe("createGoogleProvider", () => {
 });
 
 describe("createHolidayProvider", () => {
-  it("HOLIDAY source → HOLIDAY kind, summary→title", async () => {
-    h.sources.mockResolvedValue([{ id: "h1", key: "holiday-kr", externalId: "ko@holiday", name: "대한민국 공휴일", cacheTtlSeconds: 86400 }]);
+  it("HOLIDAY source → HOLIDAY kind, summary→title, userId=null", async () => {
+    h.sources.mockResolvedValue([{ id: "h1", key: "holiday-kr", externalId: "ko@holiday", name: "대한민국 공휴일", cacheTtlSeconds: 86400, ownerUserId: null }]);
     h.getClient.mockReturnValue({ listEvents: async () => [{ id: "n1", summary: "신정", description: null, start: new Date("2026-01-01T00:00:00+09:00"), end: new Date("2026-01-02T00:00:00+09:00"), allDay: true }] });
     cacheRunsFetcher();
     const out = await createHolidayProvider().fetchEvents(range, ctx);
     expect(h.sources).toHaveBeenCalledWith(["HOLIDAY"]);
-    expect(out.events[0]).toMatchObject({ id: "holiday-kr:n1", kind: "HOLIDAY", title: "신정", allDay: true, sourceKey: "holiday-kr" });
+    expect(out.events[0]).toMatchObject({ id: "holiday-kr:n1", kind: "HOLIDAY", title: "신정", allDay: true, sourceKey: "holiday-kr", userId: null });
   });
 });
 ```
@@ -148,7 +156,7 @@ export function toCached(n: NormalizedGoogleEvent): CachedGoogleEvent {
   return { id: n.id, summary: n.summary, description: n.description, start: n.start.toISOString(), end: n.end.toISOString(), allDay: n.allDay };
 }
 
-export function cachedToRawEvent(c: CachedGoogleEvent, sourceKey: string, kind: CalendarEventKind): RawEvent {
+export function cachedToRawEvent(c: CachedGoogleEvent, sourceKey: string, kind: CalendarEventKind, userId: string | null): RawEvent {
   const fallbackTitle = kind === "HOLIDAY" ? "공휴일" : "외부 일정";
   return {
     id: `${sourceKey}:${c.id}`,
@@ -158,7 +166,7 @@ export function cachedToRawEvent(c: CachedGoogleEvent, sourceKey: string, kind: 
     start: new Date(c.start),
     end: new Date(c.end),
     allDay: c.allDay,
-    userId: null,
+    userId, // CalendarSource.ownerUserId에서 전파 — dedup attribution(§10). 공유 캘린더면 null.
     sourceKey,
     externalId: c.id,
     dedupStatus: "UNIQUE",
@@ -205,7 +213,7 @@ export function createGoogleProvider(opts: ExternalProviderOpts = {}): CalendarS
             return evs.map(toCached);
           },
         });
-        for (const c of outcome.data ?? []) events.push(cachedToRawEvent(c, s.key, "EXTERNAL_EVENT"));
+        for (const c of outcome.data ?? []) events.push(cachedToRawEvent(c, s.key, "EXTERNAL_EVENT", s.ownerUserId));
         statuses.push({ key: s.key, state: outcome.state, lastFetchedAt: outcome.fetchedAt ? outcome.fetchedAt.toISOString() : null, error: outcome.error });
       }
       return { events, statuses };
@@ -252,7 +260,7 @@ export function createHolidayProvider(opts: ExternalProviderOpts = {}): Calendar
             return evs.map(toCached);
           },
         });
-        for (const c of outcome.data ?? []) events.push(cachedToRawEvent(c, s.key, "HOLIDAY"));
+        for (const c of outcome.data ?? []) events.push(cachedToRawEvent(c, s.key, "HOLIDAY", null));
         statuses.push({ key: s.key, state: outcome.state, lastFetchedAt: outcome.fetchedAt ? outcome.fetchedAt.toISOString() : null, error: outcome.error });
       }
       return { events, statuses };

@@ -121,11 +121,12 @@ describe("findManualEventsInRange", () => {
 
 describe("findSourcesByKind", () => {
   it("kind in + ACTIVE만 조회", async () => {
-    rows.sources = [{ id: "s1", key: "google-team", externalId: "abc@group", name: "팀 캘린더", cacheTtlSeconds: 900 }];
+    rows.sources = [{ id: "s1", key: "google-team", externalId: "abc@group", name: "팀 캘린더", cacheTtlSeconds: 900, ownerUserId: null }];
     const out = await findSourcesByKind(["GOOGLE_CALENDAR"]);
     expect(out).toEqual(rows.sources);
     expect(calls.sources.where.kind).toEqual({ in: ["GOOGLE_CALENDAR"] });
     expect(calls.sources.where.syncStatus).toBe("ACTIVE");
+    expect(calls.sources.select.ownerUserId).toBe(true);
   });
 });
 
@@ -186,6 +187,7 @@ export interface SourceRow {
   externalId: string | null;
   name: string;
   cacheTtlSeconds: number;
+  ownerUserId: string | null; // dedup용 사용자 attribution(§10). 공유 캘린더면 null.
 }
 export interface CacheRow {
   payload: unknown;
@@ -234,7 +236,7 @@ export async function findManualEventsInRange(range: NormalizedRange): Promise<M
 export async function findSourcesByKind(kinds: Array<"GOOGLE_CALENDAR" | "HOLIDAY">): Promise<SourceRow[]> {
   return prisma.calendarSource.findMany({
     where: { kind: { in: kinds }, syncStatus: "ACTIVE" },
-    select: { id: true, key: true, externalId: true, name: true, cacheTtlSeconds: true },
+    select: { id: true, key: true, externalId: true, name: true, cacheTtlSeconds: true, ownerUserId: true },
   });
 }
 
