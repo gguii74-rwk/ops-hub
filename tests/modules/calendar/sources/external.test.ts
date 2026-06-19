@@ -7,6 +7,7 @@ vi.mock("@/lib/integrations/google", () => ({ getGoogleCalendarClient: h.getClie
 
 import { createGoogleProvider } from "@/modules/calendar/sources/google";
 import { createHolidayProvider } from "@/modules/calendar/sources/holiday";
+import { EXTERNAL_FETCH_TIMEOUT_MS } from "@/modules/calendar/constants";
 
 const range = { start: new Date("2026-05-30T15:00:00Z"), end: new Date("2026-07-11T15:00:00Z") };
 const ctx = { userId: "u1", isOwner: false, permissionKeys: new Set<string>() };
@@ -132,6 +133,29 @@ describe("createGoogleProvider", () => {
     const out = await createGoogleProvider({ view: "leave" }).fetchEvents(range, ctx);
     expect(h.cache).toHaveBeenCalledTimes(2);
     expect(out.statuses.map((s) => s.key).sort()).toEqual(["google:mine", "google:other"]);
+  });
+
+  it("listEvents가 멈춰도 타임아웃 후 failed로 환원 — provider가 행되지 않는다(feed 블로킹 방지, 적대적 리뷰)", { timeout: 2000 }, async () => {
+    vi.useFakeTimers();
+    try {
+      h.sources.mockResolvedValue([{ id: "s1", key: "google-x", externalId: "x@cal", name: "x", cacheTtlSeconds: 900, ownerUserId: null }]);
+      h.getClient.mockReturnValue({ listEvents: () => new Promise<never[]>(() => {}) }); // 영원히 미해결(멈춘 의존성)
+      // 실제 getCachedPayload의 catch 동작 모사 — fetcher가 throw하면 failed로 환원.
+      h.cache.mockImplementation(async ({ fetcher }: any) => {
+        try {
+          return { data: await fetcher(), state: "ok", fetchedAt: FETCHED, error: null };
+        } catch (e: any) {
+          return { data: null, state: "failed", fetchedAt: null, error: e.message };
+        }
+      });
+      const promise = createGoogleProvider().fetchEvents(range, ctx);
+      await vi.advanceTimersByTimeAsync(EXTERNAL_FETCH_TIMEOUT_MS + 100);
+      const out = await promise;
+      expect(out.events).toEqual([]);
+      expect(out.statuses[0].state).toBe("failed");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

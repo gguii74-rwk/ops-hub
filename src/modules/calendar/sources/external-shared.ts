@@ -2,7 +2,20 @@ import type { CalendarEventKind } from "@prisma/client";
 import { getGoogleCalendarClient, type GoogleCalendarClient, type NormalizedGoogleEvent } from "@/lib/integrations/google";
 import { findSourcesByKind, type SourceRow } from "../repositories";
 import { getCachedPayload } from "../cache";
+import { EXTERNAL_FETCH_TIMEOUT_MS } from "../constants";
 import type { CalendarSourceProvider, FeedContext, NormalizedRange, RawEvent, SourceResult, SourceStatus, ViewKey } from "../types";
+
+// 외부 fetch 1건의 상한 — 멈춘 Google 호출이 feed 전체를 막지 않게 한다(적대적 리뷰). 초과 시 reject →
+// getCachedPayload의 catch가 stale/failed로 환원. p는 취소되지 않지만(orphan), feed 반환은 보장된다(gaxios timeout이 HTTP 계층 백스톱).
+function fetchWithTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`외부 소스 응답 시간 초과(${ms}ms): ${label}`)), ms);
+    p.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))); },
+    );
+  });
+}
 
 // 캐시에 저장하는 직렬화 가능한 형태(Date → ISO).
 export interface CachedGoogleEvent {
@@ -64,27 +77,40 @@ export function createExternalProvider(opts: ExternalProviderOpts, cfg: External
       const sources = cfg.ownerScoped && opts.view === "personal"
         ? all.filter((s) => s.ownerUserId === ctx.userId)
         : all;
+      // 소스별 병렬 fetch — 한 캘린더가 느리거나 멈춰도 다른 소스를 직렬로 막지 않는다(N×timeout 방지, 적대적 리뷰).
+      // 각 소스는 자기 결과로 격리: 예기치 못한 throw도 allSettled가 그 소스만 failed로 환원(provider 전체는 살아남음).
+      const settled = await Promise.allSettled(
+        sources.map(async (s): Promise<{ events: RawEvent[]; status: SourceStatus }> => {
+          if (!s.externalId) {
+            return { events: [], status: { key: s.key, state: "failed", lastFetchedAt: null, error: "calendarId(externalId) 없음" } };
+          }
+          const outcome = await getCachedPayload<CachedGoogleEvent[]>({
+            source: { id: s.id, cacheTtlSeconds: s.cacheTtlSeconds },
+            range,
+            forceRefresh: opts.forceRefresh,
+            now: opts.now,
+            fetcher: async () => {
+              const client = opts.client ?? getGoogleCalendarClient();
+              // 멈춘 Google 호출이 feed 전체를 막지 않도록 소스별 타임아웃 — 초과 시 reject → getCachedPayload가 stale/failed로 환원.
+              const evs = await fetchWithTimeout(client.listEvents(s.externalId!, range.start, range.end), EXTERNAL_FETCH_TIMEOUT_MS, s.key);
+              return evs.map(toCached);
+            },
+          });
+          const events = (outcome.data ?? []).map((c) => cachedToRawEvent(c, s.key, cfg.eventKind, cfg.ownerOf(s)));
+          return { events, status: { key: s.key, state: outcome.state, lastFetchedAt: outcome.fetchedAt ? outcome.fetchedAt.toISOString() : null, error: outcome.error } };
+        }),
+      );
       const events: RawEvent[] = [];
       const statuses: SourceStatus[] = [];
-      for (const s of sources) {
-        if (!s.externalId) {
-          statuses.push({ key: s.key, state: "failed", lastFetchedAt: null, error: "calendarId(externalId) 없음" });
-          continue;
+      settled.forEach((r, i) => {
+        if (r.status === "fulfilled") {
+          events.push(...r.value.events);
+          statuses.push(r.value.status);
+        } else {
+          // getCachedPayload가 catch 못 한 예외(예: DB 읽기 실패) — 그 소스만 failed로 환원, 나머지는 유지.
+          statuses.push({ key: sources[i].key, state: "failed", lastFetchedAt: null, error: r.reason instanceof Error ? r.reason.message : String(r.reason) });
         }
-        const outcome = await getCachedPayload<CachedGoogleEvent[]>({
-          source: { id: s.id, cacheTtlSeconds: s.cacheTtlSeconds },
-          range,
-          forceRefresh: opts.forceRefresh,
-          now: opts.now,
-          fetcher: async () => {
-            const client = opts.client ?? getGoogleCalendarClient();
-            const evs = await client.listEvents(s.externalId!, range.start, range.end);
-            return evs.map(toCached);
-          },
-        });
-        for (const c of outcome.data ?? []) events.push(cachedToRawEvent(c, s.key, cfg.eventKind, cfg.ownerOf(s)));
-        statuses.push({ key: s.key, state: outcome.state, lastFetchedAt: outcome.fetchedAt ? outcome.fetchedAt.toISOString() : null, error: outcome.error });
-      }
+      });
       return { events, statuses };
     },
   };
