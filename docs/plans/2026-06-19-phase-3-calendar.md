@@ -48,6 +48,7 @@ export interface RawEvent {
   externalId: string | null;
   dedupStatus: CalendarDedupStatus;
   duplicateOfId: string | null;
+  tentative: boolean;        // 미승인(PENDING) 휴가 등 잠정 일정. 본인·admin만 노출, dedup 앵커 제외(§10).
 }
 
 // 마스킹 끝난 직렬화 형태(클라이언트로 나가는 형태)
@@ -63,6 +64,7 @@ export interface CalEvent {
   sourceKey: string;
   dedupStatus: CalendarDedupStatus;
   masked: boolean;
+  tentative: boolean;        // 잠정(미승인) 일정 — UI가 별도 스타일로 표시
 }
 
 export interface SourceStatus {
@@ -146,7 +148,7 @@ export interface CacheRow { payload: unknown; fetchedAt: Date; expiresAt: Date; 
 
 export function findLeaveInRange(range: NormalizedRange, statuses: LeaveRequestStatus[]): Promise<LeaveRow[]>;
 export function findWorkflowTasksInRange(range: NormalizedRange): Promise<WorkflowRow[]>;
-export function findManualEventsInRange(range: NormalizedRange): Promise<ManualRow[]>;
+export function findManualEventsInRange(range: NormalizedRange, viewer: { userId: string; includeAllPersonal: boolean }): Promise<ManualRow[]>; // PERSONAL은 viewer 본인만(includeAllPersonal=admin이면 전체), TEAM은 전체
 export function findSourcesByKind(kinds: Array<"GOOGLE_CALENDAR" | "HOLIDAY">): Promise<SourceRow[]>;
 export function readCacheEntry(sourceId: string, range: NormalizedRange): Promise<CacheRow | null>;
 export function writeCacheEntry(sourceId: string, range: NormalizedRange, payload: unknown, expiresAt: Date, errorMessage: string | null): Promise<void>;
@@ -156,7 +158,8 @@ export function writeCacheEntry(sourceId: string, range: NormalizedRange, payloa
 
 ```ts
 export interface CacheOutcome<T> { data: T | null; state: "ok" | "stale" | "failed"; fetchedAt: Date | null; error: string | null; }
-// expired면 fetcher 호출(인라인 재검증). 실패 시 last-good 있으면 stale, 없으면 failed. forceRefresh는 min-interval 가드.
+// expired면 fetcher 호출(인라인 재검증). 실패 시 last-good 있으면 stale, 없으면 failed.
+// 실패(warm/cold 모두)는 짧은 backoff(MIN_REFRESH_INTERVAL)를 expiresAt에 기록 → 장애 지속 시 매 요청 재fetch 방지. forceRefresh도 min-interval 가드.
 export function getCachedPayload<T>(args: {
   source: { id: string; cacheTtlSeconds: number };
   range: NormalizedRange;
@@ -169,11 +172,11 @@ export function getCachedPayload<T>(args: {
 ### dedup / masking / feed 시그니처 — Task 07/08
 
 ```ts
-// dedup: 외부 휴가성 이벤트를 내부 APPROVED 휴가와 겹치면 DUPLICATE_OF_INTERNAL로 마킹(비파괴).
+// dedup: 외부 휴가성 이벤트를 내부 APPROVED(=非tentative) 휴가와 겹치면 DUPLICATE_OF_INTERNAL로 마킹(비파괴). PENDING 휴가는 앵커가 아니다.
 export function applyDedup(events: RawEvent[]): RawEvent[];                       // src/modules/calendar/dedup/index.ts
-// masking: 권한·소유자에 따라 제목/사유 마스킹. 본인 이벤트는 항상 상세. (view는 마스킹과 무관 → 미사용)
+// masking: 권한·소유자에 따라 제목/사유 마스킹. 본인 이벤트는 항상 상세. tentative 플래그는 그대로 통과(가시성 판단은 feed). (view는 마스킹과 무관)
 export function maskEvent(raw: RawEvent, ctx: FeedContext): CalEvent; // src/modules/calendar/masking/index.ts
-// feed: provider 선택 → allSettled → dedup → 기본 뷰는 DUPLICATE_OF_INTERNAL 접기 → mask → 조립
+// feed: provider 선택 → allSettled → dedup → 기본 뷰는 DUPLICATE_OF_INTERNAL 접기 → tentative 가시성 필터(본인/admin만) → mask → 조립
 export function buildFeed(view: ViewKey, range: NormalizedRange, ctx: FeedContext, providers: Record<string, CalendarSourceProvider>): Promise<FeedResponse>; // src/modules/calendar/feed/index.ts
 ```
 

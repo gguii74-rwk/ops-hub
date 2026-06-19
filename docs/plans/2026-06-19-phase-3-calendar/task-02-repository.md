@@ -103,18 +103,33 @@ describe("findWorkflowTasksInRange", () => {
 });
 
 describe("findManualEventsInRange", () => {
-  it("PERSONAL/TEAM kind + 겹침 조회, source.key → sourceKey", async () => {
+  const viewer = { userId: "u1", includeAllPersonal: false };
+
+  it("TEAM은 전체, PERSONAL은 본인만 + 겹침 조회, source.key → sourceKey", async () => {
     rows.manual = [
       { id: "m1", kind: "TEAM_EVENT", title: "팀 공지", description: null, startsAt: new Date("2026-06-12"), endsAt: new Date("2026-06-12T10:00:00Z"), allDay: false, userId: null, source: { key: "manual-team" } },
     ];
-    const out = await findManualEventsInRange(range);
+    const out = await findManualEventsInRange(range, viewer);
     expect(out[0]).toEqual({ id: "m1", kind: "TEAM_EVENT", title: "팀 공지", description: null, startsAt: new Date("2026-06-12"), endsAt: new Date("2026-06-12T10:00:00Z"), allDay: false, userId: null, sourceKey: "manual-team" });
-    expect(calls.manual.where.kind).toEqual({ in: ["PERSONAL_EVENT", "TEAM_EVENT"] });
+    // 비-admin: PERSONAL은 본인(u1)으로 필터, TEAM은 전체 → 타인 개인 일정은 애초에 조회되지 않음
+    expect(calls.manual.where.OR).toEqual([
+      { kind: "TEAM_EVENT" },
+      { kind: "PERSONAL_EVENT", userId: "u1" },
+    ]);
+  });
+
+  it("includeAllPersonal(admin) → PERSONAL도 전체 조회", async () => {
+    rows.manual = [];
+    await findManualEventsInRange(range, { userId: "u1", includeAllPersonal: true });
+    expect(calls.manual.where.OR).toEqual([
+      { kind: "TEAM_EVENT" },
+      { kind: "PERSONAL_EVENT" },
+    ]);
   });
 
   it("source 없는 행은 sourceKey='manual' 폴백", async () => {
     rows.manual = [{ id: "m2", kind: "PERSONAL_EVENT", title: "개인", description: null, startsAt: new Date("2026-06-12"), endsAt: new Date("2026-06-13"), allDay: true, userId: "u1", source: null }];
-    const out = await findManualEventsInRange(range);
+    const out = await findManualEventsInRange(range, viewer);
     expect(out[0].sourceKey).toBe("manual");
   });
 });
@@ -151,7 +166,8 @@ describe("cache round-trip", () => {
 `src/modules/calendar/repositories/index.ts`:
 
 ```ts
-import type { Prisma, LeaveRequestStatus } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import type { LeaveRequestStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { NormalizedRange } from "../types";
 
@@ -214,9 +230,20 @@ export async function findWorkflowTasksInRange(range: NormalizedRange): Promise<
   return rows.map((r) => ({ id: r.id, title: r.type.name, scheduledAt: r.scheduledAt, status: String(r.status) }));
 }
 
-export async function findManualEventsInRange(range: NormalizedRange): Promise<ManualRow[]> {
+export async function findManualEventsInRange(
+  range: NormalizedRange,
+  viewer: { userId: string; includeAllPersonal: boolean },
+): Promise<ManualRow[]> {
   const rows = await prisma.calendarEvent.findMany({
-    where: { kind: { in: ["PERSONAL_EVENT", "TEAM_EVENT"] }, startsAt: { lt: range.end }, endsAt: { gt: range.start } },
+    where: {
+      startsAt: { lt: range.end },
+      endsAt: { gt: range.start },
+      // TEAM_EVENT은 전원 공개. PERSONAL_EVENT은 본인만(admin이면 전체) — 마스킹 이전 단계에서 차단(타인 일정 시각·신원 유출 방지).
+      OR: [
+        { kind: "TEAM_EVENT" },
+        viewer.includeAllPersonal ? { kind: "PERSONAL_EVENT" } : { kind: "PERSONAL_EVENT", userId: viewer.userId },
+      ],
+    },
     select: { id: true, kind: true, title: true, description: true, startsAt: true, endsAt: true, allDay: true, userId: true, source: { select: { key: true } } },
     orderBy: { startsAt: "asc" },
   });
@@ -254,10 +281,12 @@ export async function writeCacheEntry(
   expiresAt: Date,
   errorMessage: string | null,
 ): Promise<void> {
+  // cold 실패 마커는 payload=null(JSON null)로 기록 → 읽기 시 warm(last-good 보존, stale) vs cold(failed) 구분(§Task 03).
+  const json = payload === null ? Prisma.JsonNull : (payload as Prisma.InputJsonValue);
   await prisma.calendarCacheEntry.upsert({
     where: { sourceId_rangeStart_rangeEnd: { sourceId, rangeStart: range.start, rangeEnd: range.end } },
-    create: { sourceId, rangeStart: range.start, rangeEnd: range.end, payload: payload as Prisma.InputJsonValue, expiresAt, errorMessage },
-    update: { payload: payload as Prisma.InputJsonValue, expiresAt, errorMessage, fetchedAt: new Date() },
+    create: { sourceId, rangeStart: range.start, rangeEnd: range.end, payload: json, expiresAt, errorMessage },
+    update: { payload: json, expiresAt, errorMessage, fetchedAt: new Date() },
   });
 }
 ```
@@ -282,3 +311,5 @@ git commit -m "calendar: add repository (leave/workflow/manual/source/cache read
 - **provider가 직접 prisma를 import하게 두지 말 것.** 이유: §4.1 계층 규약. 모든 DB 접근은 이 repository를 경유한다.
 - **leave 겹침 조건을 `startDate >= range.start AND endDate <= range.end`로 쓰지 말 것.** 이유: 창에 걸친(부분 겹침) 휴가가 누락된다. 반열림 겹침은 `startDate < end && endDate >= start`다.
 - **cache 키에 원본 요청 range를 넣지 말 것.** 이유: Task 06이 호출 전 `normalizeToGridWindow`로 정규화한 range만 넘긴다(단편화 차단). repository는 받은 range를 그대로 키로 쓴다.
+- **`findManualEventsInRange`에서 PERSONAL_EVENT를 viewer로 필터하지 않고 마스킹에만 의존하지 말 것.** 이유: 마스킹은 title/description만 가리고 `userId`·시작/종료 시각은 응답에 그대로 남는다 → 타인 개인 일정의 신원+일정이 유출된다(적대적 리뷰 Finding 1). 권한 차단은 **조회 단계**에서 한다. TEAM_EVENT은 팀 공지 성격이라 전원 공개가 기본이고, 추후 팀 멤버십/세부 권한 분기는 provider가 받는 `ctx`에서 확장한다(비파괴).
+- **cold 실패 마커 payload를 `[]`로 쓰지 말 것.** 이유: Task 03이 읽을 때 warm(last-good 보존 → stale) vs cold(데이터 없음 → failed)를 `payload === null`로 구분한다. cold는 반드시 `null`(→ `Prisma.JsonNull`), 정상 빈 결과는 `[]`.

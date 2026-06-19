@@ -75,6 +75,7 @@ describe("createGoogleProvider", () => {
       externalId: "e1",
       dedupStatus: "UNIQUE",
       duplicateOfId: null,
+      tentative: false,
     });
     expect(out.statuses[0]).toEqual({ key: "google-u9", state: "ok", lastFetchedAt: "2026-06-19T00:00:00.000Z", error: null });
   });
@@ -171,6 +172,7 @@ export function cachedToRawEvent(c: CachedGoogleEvent, sourceKey: string, kind: 
     externalId: c.id,
     dedupStatus: "UNIQUE",
     duplicateOfId: null,
+    tentative: false, // 외부 일정은 잠정 개념 없음
   };
 }
 ```
