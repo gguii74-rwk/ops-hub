@@ -78,11 +78,21 @@ describe("getCachedPayload", () => {
     expect(h.write).not.toHaveBeenCalled();
   });
 
-  it("엔트리 없음 + fetcher 실패 → failed(data null)", async () => {
+  it("엔트리 없음 + fetcher 실패 → failed(data null) + cold 실패 마커 기록", async () => {
     h.read.mockResolvedValue(null);
     const fetcher = vi.fn(async () => { throw new Error("auth fail"); });
     const out = await getCachedPayload({ source, range, fetcher, now });
     expect(out).toMatchObject({ state: "failed", data: null, error: "auth fail", fetchedAt: null });
+    // 실패 마커: payload [], 즉시 만료(=current), errorMessage 세팅 → 직후 forceRefresh가 throttle됨
+    expect(h.write).toHaveBeenCalledWith("s1", range, [], CURRENT, "auth fail");
+  });
+
+  it("cold 실패 마커 후 forceRefresh가 min-interval 내면 재요청 안 함(failed 유지)", async () => {
+    h.read.mockResolvedValue({ payload: [], fetchedAt: new Date(CURRENT.getTime() - 10_000), expiresAt: CURRENT, errorMessage: "auth fail" });
+    const fetcher = vi.fn();
+    const out = await getCachedPayload({ source, range, fetcher, now, forceRefresh: true });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ state: "failed", data: null });
   });
 
   it("엔트리 없음 + fetcher 성공 → write + ok", async () => {
@@ -142,11 +152,12 @@ export async function getCachedPayload<T>(args: {
 
   const entry = await readCacheEntry(source.id, range);
 
-  // 해머링 차단: 강제 새로고침이라도 최근 재검증분이 있으면 그대로 제공.
+  // 해머링 차단: 강제 새로고침이라도 최근 재검증분(성공이든 실패 마커든)이 있으면 그대로 제공.
+  // errorMessage가 있으면 cold 실패 마커 → failed로 환원(stale 아님: 진짜 데이터가 없다).
   if (forceRefresh && entry && current.getTime() - entry.fetchedAt.getTime() < MIN_REFRESH_INTERVAL_SEC * 1000) {
     return {
-      data: entry.payload as T,
-      state: entry.errorMessage ? "stale" : "ok",
+      data: entry.errorMessage ? null : (entry.payload as T),
+      state: entry.errorMessage ? "failed" : "ok",
       fetchedAt: entry.fetchedAt,
       error: entry.errorMessage,
     };
@@ -166,9 +177,12 @@ export async function getCachedPayload<T>(args: {
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     if (entry) {
-      // last-good 유지(덮어쓰지 않음) → stale 반환.
+      // warm: last-good 유지(덮어쓰지 않음) → stale 반환.
       return { data: entry.payload as T, state: "stale", fetchedAt: entry.fetchedAt, error };
     }
+    // cold: last-good이 없다 → 실패 마커를 기록(즉시 만료 + errorMessage)한다.
+    // 안 그러면 엔트리가 없어 직후 forceRefresh가 min-interval 가드를 우회해 Google을 연타한다(적대적 리뷰 #6).
+    await writeCacheEntry(source.id, range, [], current, error);
     return { data: null, state: "failed", fetchedAt: null, error };
   }
 }
@@ -190,6 +204,6 @@ git commit -m "calendar: add cache layer (inline-revalidate, stale fallback, min
 
 ## Cautions
 
-- **fetcher 실패 시 last-good payload를 error 행으로 덮어쓰지 말 것.** 이유: 마지막 정상 캐시를 잃으면 stale-serving이 불가능해진다. 실패는 반환값으로만 표현하고 기록은 건드리지 않는다.
+- **warm 실패(last-good 존재) 시 last-good payload를 덮어쓰지 말 것.** 이유: 마지막 정상 캐시를 잃으면 stale-serving이 불가능해진다. warm 실패는 반환값(stale)으로만 표현하고 기록은 건드리지 않는다. (cold 실패는 last-good이 없으므로 throttle용 실패 마커를 기록한다 — 별개 경로.)
 - **백그라운드 비동기 재검증(서버에서 fire-and-forget) 추가 금지.** 이유: 워커 없는 serverless에서 응답 후 실행이 보장되지 않는다(§12.3). Phase 3는 인라인 재검증만.
 - **`Date.now()`를 직접 부르지 말 것.** 이유: 테스트 결정성. 항상 주입된 `now()`를 쓴다.

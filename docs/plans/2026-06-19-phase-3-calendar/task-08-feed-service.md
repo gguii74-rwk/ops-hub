@@ -23,7 +23,7 @@
 `tests/modules/calendar/feed.test.ts`:
 
 ```ts
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { buildFeed } from "@/modules/calendar/feed";
 import type { CalendarSourceProvider, RawEvent, SourceStatus, FeedContext } from "@/modules/calendar/types";
 
@@ -87,15 +87,22 @@ describe("buildFeed", () => {
     expect(res.events.find((e) => e.id === "google:g1")!.dedupStatus).toBe("DUPLICATE_OF_INTERNAL");
   });
 
-  it("stale/failed status 집계", async () => {
+  it("stale/failed status 집계 + 원본 에러 sanitize(서버 로그만)", async () => {
     const providers = {
       workflowTask: provider("workflowTask", [], [ok("workflowTask")]),
-      internalLeave: provider("internalLeave", [], [{ key: "internalLeave", state: "failed", lastFetchedAt: null, error: "db" }]),
+      internalLeave: provider("internalLeave", [], [{ key: "internalLeave", state: "failed", lastFetchedAt: null, error: "ECONNREFUSED 10.0.0.5:5432" }]),
       holiday: provider("holiday", [], [{ key: "holiday-kr", state: "stale", lastFetchedAt: "2026-06-18T00:00:00.000Z", error: "google 500" }]),
     };
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await buildFeed("work", range, ctx(), providers);
     expect(res.failedSources).toEqual(["internalLeave"]);
     expect(res.staleSources).toEqual(["holiday-kr"]);
+    // 클라이언트向 메시지는 일반화, 원본(DB 주소 등)은 노출 안 함
+    const failed = res.sources.find((s) => s.key === "internalLeave")!;
+    expect(failed.error).toBe("일정을 불러오지 못했습니다.");
+    expect(failed.error).not.toContain("ECONNREFUSED");
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
   });
 
   it("provider가 reject해도 전체는 죽지 않고 failed로 환원", async () => {
@@ -154,12 +161,18 @@ export async function buildFeed(
   const deduped = applyDedup(raw);
   // 비-admin 뷰는 내부 휴가와 중복인 외부 이벤트를 접는다(비파괴 — 원본은 admin 뷰에서 노출).
   const visible = view === "admin" ? deduped : deduped.filter((e) => e.dedupStatus !== "DUPLICATE_OF_INTERNAL");
-
   const events: CalEvent[] = visible.map((e) => maskEvent(e, ctx));
-  const staleSources = statuses.filter((s) => s.state === "stale").map((s) => s.key);
-  const failedSources = statuses.filter((s) => s.state === "failed").map((s) => s.key);
 
-  return { events, sources: statuses, staleSources, failedSources };
+  // 클라이언트向 출처 오류는 일반 메시지로만 — 원본 예외는 서버 로그에만(민감정보 유출 방지, 적대적 리뷰 #7).
+  const sources: SourceStatus[] = statuses.map((s) => {
+    if (s.state === "ok") return s;
+    if (s.error) console.error(`[calendar] source ${s.key} ${s.state}:`, s.error);
+    return { ...s, error: s.state === "failed" ? "일정을 불러오지 못했습니다." : "최신 동기화에 실패해 이전 데이터를 표시합니다." };
+  });
+  const staleSources = sources.filter((s) => s.state === "stale").map((s) => s.key);
+  const failedSources = sources.filter((s) => s.state === "failed").map((s) => s.key);
+
+  return { events, sources, staleSources, failedSources };
 }
 ```
 

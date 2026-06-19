@@ -141,7 +141,7 @@ import type { LeaveRequestStatus } from "@prisma/client";
 export interface LeaveRow { id: string; userId: string; leaveType: string; reason: string | null; startDate: Date; endDate: Date; status: LeaveRequestStatus; }
 export interface WorkflowRow { id: string; title: string; scheduledAt: Date; status: string; }
 export interface ManualRow { id: string; kind: "PERSONAL_EVENT" | "TEAM_EVENT"; title: string; description: string | null; startsAt: Date; endsAt: Date; allDay: boolean; userId: string | null; sourceKey: string; }
-export interface SourceRow { id: string; key: string; externalId: string | null; name: string; cacheTtlSeconds: number; }
+export interface SourceRow { id: string; key: string; externalId: string | null; name: string; cacheTtlSeconds: number; ownerUserId: string | null; }
 export interface CacheRow { payload: unknown; fetchedAt: Date; expiresAt: Date; errorMessage: string | null; }
 
 export function findLeaveInRange(range: NormalizedRange, statuses: LeaveRequestStatus[]): Promise<LeaveRow[]>;
