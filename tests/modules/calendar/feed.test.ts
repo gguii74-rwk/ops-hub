@@ -77,6 +77,10 @@ describe("buildFeed", () => {
     expect(failed.error).toBe("일정을 불러오지 못했습니다.");
     expect(failed.error).not.toContain("ECONNREFUSED");
     expect(spy).toHaveBeenCalled();
+    // stale 브랜치도 동일하게 sanitize — "google 500"이 클라이언트에 노출되면 안 됨
+    const stale = res.sources.find((s) => s.key === "holiday-kr")!;
+    expect(stale.error).toBe("최신 동기화에 실패해 이전 데이터를 표시합니다.");
+    expect(stale.error).not.toContain("google 500");
     spy.mockRestore();
   });
 
