@@ -77,6 +77,11 @@ export function createExternalProvider(opts: ExternalProviderOpts, cfg: External
       const sources = cfg.ownerScoped && opts.view === "personal"
         ? all.filter((s) => s.ownerUserId === ctx.userId)
         : all;
+      // Google 클라이언트는 이 fetchEvents 호출당 1개만 만들어 모든 소스 fetch가 공유한다(적대적 리뷰).
+      // 소스마다 새 GoogleAuth/JWT를 만들던 낭비 제거 — cold cache에서 N개 소스가 미스나도 인스턴스는 1개.
+      // 지연 생성: 실제 fetcher가 도는 첫 미스에서만 만든다(전부 warm/스킵이면 미생성).
+      let sharedClient: GoogleCalendarClient | undefined;
+      const getClient = (): GoogleCalendarClient => opts.client ?? (sharedClient ??= getGoogleCalendarClient());
       // 소스별 병렬 fetch — 한 캘린더가 느리거나 멈춰도 다른 소스를 직렬로 막지 않는다(N×timeout 방지, 적대적 리뷰).
       // 각 소스는 자기 결과로 격리: 예기치 못한 throw도 allSettled가 그 소스만 failed로 환원(provider 전체는 살아남음).
       const settled = await Promise.allSettled(
@@ -90,7 +95,7 @@ export function createExternalProvider(opts: ExternalProviderOpts, cfg: External
             forceRefresh: opts.forceRefresh,
             now: opts.now,
             fetcher: async () => {
-              const client = opts.client ?? getGoogleCalendarClient();
+              const client = getClient();
               // 멈춘 Google 호출이 feed 전체를 막지 않도록 소스별 타임아웃 — 초과 시 reject → getCachedPayload가 stale/failed로 환원.
               const evs = await fetchWithTimeout(client.listEvents(s.externalId!, range.start, range.end), EXTERNAL_FETCH_TIMEOUT_MS, s.key);
               return evs.map(toCached);
