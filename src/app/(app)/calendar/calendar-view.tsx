@@ -104,18 +104,34 @@ export function CalendarView({ allowedViews }: { allowedViews: ViewKey[] }) {
         {WEEKDAYS.map((w) => (
           <div key={w} className="border-b border-border bg-card p-2 text-center text-xs font-medium text-muted-foreground">{w}</div>
         ))}
-        {grid.map((day) => (
-          <div key={day.dateKey} className={`min-h-24 border-b border-r border-border p-1 ${day.inMonth ? "" : "bg-muted/30 text-muted-foreground"}`}>
-            <div className="text-xs">{Number(day.dateKey.slice(-2))}</div>
-            <div className="mt-1 space-y-0.5">
-              {day.events.map((e) => (
-                <div key={e.id} className={`truncate rounded px-1 py-0.5 text-[11px] ${KIND_CLASS[e.kind] ?? "bg-accent"}`} title={e.title}>
-                  {e.title}
-                </div>
-              ))}
+        {grid.map((day) => {
+          const dayNum = Number(day.dateKey.slice(-2));
+          // 셀 배경: 지난날은 회색 음영(muted는 거의 흰색이라 muted-foreground 기반으로 확실히 구분),
+          // 이번 달 외 미래는 옅게, 오늘·이번 달 미래는 기본.
+          const cellTone = day.isPast ? "bg-muted-foreground/10" : !day.inMonth ? "bg-muted/40" : "";
+          const dimNumber = day.isPast || !day.inMonth; // 지난날·달력 외 → 숫자 흐리게
+          return (
+            <div key={day.dateKey} className={`min-h-24 border-b border-r border-border p-1 ${cellTone}`}>
+              <div className="text-xs">
+                {day.isToday ? (
+                  // 오늘: 브랜드 색 동그라미로 강조.
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[11px] font-semibold leading-none text-primary-foreground">
+                    {dayNum}
+                  </span>
+                ) : (
+                  <span className={dimNumber ? "text-muted-foreground" : "font-medium"}>{dayNum}</span>
+                )}
+              </div>
+              <div className={`mt-1 space-y-0.5 ${day.isPast ? "opacity-60" : ""}`}>
+                {day.events.map((e) => (
+                  <div key={e.id} className={`truncate rounded px-1 py-0.5 text-[11px] ${KIND_CLASS[e.kind] ?? "bg-accent"}`} title={e.title}>
+                    {e.title}
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {query.isError && <p className="text-sm text-destructive">캘린더를 불러오지 못했습니다.</p>}

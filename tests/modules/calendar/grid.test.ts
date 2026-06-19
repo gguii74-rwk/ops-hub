@@ -35,4 +35,25 @@ describe("buildMonthGrid", () => {
     expect(grid.find((d) => d.dateKey === "2026-06-11")!.events).toHaveLength(1);
     expect(grid.find((d) => d.dateKey === "2026-06-12")!.events).toHaveLength(0);
   });
+
+  it("now가 속한 칸은 isToday, 이전은 isPast, 이후는 둘 다 false", () => {
+    const grid = buildMonthGrid(new Date("2026-06-15T03:00:00+09:00"), [], new Date("2026-06-15T03:00:00+09:00"));
+    const today = grid.find((d) => d.dateKey === "2026-06-15")!;
+    expect(today.isToday).toBe(true);
+    expect(today.isPast).toBe(false);
+    const past = grid.find((d) => d.dateKey === "2026-06-10")!;
+    expect(past.isPast).toBe(true);
+    expect(past.isToday).toBe(false);
+    const future = grid.find((d) => d.dateKey === "2026-06-20")!;
+    expect(future.isPast).toBe(false);
+    expect(future.isToday).toBe(false);
+  });
+
+  it("오늘/지난날 판정은 KST 기준(UTC 늦은 밤 → KST 다음날)", () => {
+    // 2026-06-15T20:00Z = 2026-06-16 05:00 KST → 오늘은 06-16, 06-15는 지난날
+    const grid = buildMonthGrid(new Date("2026-06-15T03:00:00+09:00"), [], new Date("2026-06-15T20:00:00Z"));
+    expect(grid.find((d) => d.dateKey === "2026-06-16")!.isToday).toBe(true);
+    expect(grid.find((d) => d.dateKey === "2026-06-15")!.isToday).toBe(false);
+    expect(grid.find((d) => d.dateKey === "2026-06-15")!.isPast).toBe(true);
+  });
 });
