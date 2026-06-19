@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { normalizeGoogleEvent, collectAllPages } from "@/lib/integrations/google/map";
+import { normalizeGoogleEvent, collectAllPages, type GoogleRawEvent } from "@/lib/integrations/google/map";
 
 describe("normalizeGoogleEvent", () => {
   it("all-day: date(시작) ~ date(종료, 배타) → 반열림 KST 경계, allDay true", () => {
@@ -37,7 +37,7 @@ describe("normalizeGoogleEvent", () => {
 });
 
 describe("collectAllPages", () => {
-  const ev = (id: string): any => ({ id, summary: id, description: null, start: { date: "2026-06-19" }, end: { date: "2026-06-20" } });
+  const ev = (id: string): GoogleRawEvent => ({ id, summary: id, description: null, start: { date: "2026-06-19" }, end: { date: "2026-06-20" } });
 
   it("nextPageToken을 따라 모든 페이지 누적(2500건 초과 누락 방지)", async () => {
     const pages: Record<string, { items: any[]; nextPageToken?: string }> = {
