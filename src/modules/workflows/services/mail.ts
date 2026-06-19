@@ -6,7 +6,7 @@ import { ForbiddenError } from "@/kernel/access";
 import { sendMail, type MailMessage } from "@/lib/integrations/mail";
 import { ConflictError, type MailActionCtx } from "../types";
 import { KIND_RESOURCE } from "../policy";
-import { createSendingDelivery, finalizeDelivery, findDeliveryForAction } from "../repositories/mail";
+import { claimFailedForRetry, createSendingDelivery, finalizeDelivery, findDeliveryForAction } from "../repositories/mail";
 
 function canSend(ctx: MailActionCtx, kind: WorkflowKind): boolean {
   return ctx.isOwner || ctx.permissionKeys.has(`${KIND_RESOURCE[kind]}:send`);
@@ -50,6 +50,12 @@ export async function retryDelivery(
   if (d.taskId !== args.taskId) throw new ForbiddenError("해당 작업의 발송이 아닙니다.");
   if (d.status !== "FAILED") throw new ConflictError("실패한 발송만 재시도할 수 있습니다.");
   if (!d.kind || !canSend(ctx, d.kind)) throw new ForbiddenError("재발송 권한이 없습니다.");
+
+  // 단일 비행 점유: FAILED→SENDING 원자 갱신. 동시 재시도 중 진 쪽은 여기서 멈춰
+  // SMTP 중복 발송을 차단한다. 점유 후엔 SENDING이므로 cancel 게이트/멱등 가드에도 가시화된다(§6.2).
+  if (!(await claimFailedForRetry(d.id, args.taskId))) {
+    throw new ConflictError("이미 재시도가 진행 중입니다.");
+  }
 
   // 첨부가 shared storage에서 사라졌으면 조용히 실패시키지 않고 FAILED로 확정(§6.2).
   const missing = d.attachmentPaths.filter((p) => !existsSync(p));

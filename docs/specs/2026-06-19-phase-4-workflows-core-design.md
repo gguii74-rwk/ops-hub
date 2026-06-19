@@ -117,7 +117,7 @@ enum MailDeliveryStatus {
 
 **발송 멱등성 인덱스**: 같은 논리적 발송의 중복 SMTP를 막기 위해 `(taskId, step)`에 **부분 unique 인덱스**를 둔다 — `WHERE taskId IS NOT NULL AND status IN ('SENDING','SENT')`. FAILED·임시 메일(taskId null)은 제외해 재시도 갱신·비워크플로 발송과 충돌하지 않는다. Prisma가 partial unique index를 직접 표현하지 못하므로 migration raw SQL로 추가하고, 애플리케이션도 tx 내에서 동일 가드를 둔다(§6.2).
 
-**migration 안전성**: `MailDelivery`는 현재 빈 테이블이다 — `src/`·seed 어디에서도 쓰지 않으며 ops-hub는 cutover 전이라 기존 행이 없다. 따라서 backfill은 불필요하다. 다만 비-null `status` 추가가 (향후 행이 있어도) 안전하도록, migration은 `status`에 임시 default `SENDING`을 부여해 컬럼을 추가한 뒤 default를 제거하는 2단 SQL로 작성한다(애플리케이션은 항상 명시적 status로 insert). 부분 unique 인덱스도 같은 migration의 raw SQL로 추가한다.
+**migration 안전성**: `MailDelivery`는 main에 **이미 존재하던 테이블**이다(day-sync 계승). `src/`·seed가 cutover 전이라 행이 없을 것으로 기대하지만, 스키마가 행을 허용하므로 비어있음을 전제로 삼지 않는다. main의 기존 행은 `sentAt`이 NOT NULL(`@default(now())`)인 **완료된 발송**이므로, migration은 `status`에 임시 default `SENT`를 부여해 컬럼을 추가한 뒤 default를 제거하는 2단 SQL로 작성한다 — 기존 행은 `SENT`로 backfill되고, 신규 앱 insert는 항상 명시적 status를 준다. 임시 default를 `SENDING`으로 두면 과거 발송이 진행 중으로 둔갑해 cancel 게이트(`hasActiveSending`)·활성 unique 인덱스를 막으므로 금지한다. 부분 unique 인덱스도 같은 migration의 raw SQL로 추가한다(같은 `(taskId, step)`로 2건 이상 발송된 레거시 데이터가 cutover로 유입되면 인덱스 생성이 실패할 수 있어, cutover ETL에서 dedup이 필요하다 — 이 migration의 책임 범위는 아니다).
 
 ### 4.3 기존 타임스탬프 컬럼 처리
 
@@ -221,12 +221,13 @@ export async function retryDelivery(
 - 2단계가 있어 SMTP 성공 후 4단계 갱신이 실패한 "유령 발송"도 `SENDING` 레코드로 남아 운영자가 탐지·판단할 수 있다.
 - **워크플로 상태 전이와 분리** — 발송 실패가 직전 전이를 롤백하지 않는다(워크플로 service가 발송 단계를 분리해 호출).
 
-재시도(`retryDelivery`)는 **저장된 `bodyHtml`·`recipients`·`subject`·`attachmentPaths`로 원본을 그대로 재발송**한다(워크플로 재생성 없음 → 본문 drift 없음). fail-closed로 다음을 검증한 뒤 발송하고 기존 레코드를 갱신한다(SENDING→SENT/FAILED, 새 행을 만들지 않으므로 멱등 인덱스와 무충돌. attemptCount는 두지 않음 — YAGNI):
+재시도(`retryDelivery`)는 **저장된 `bodyHtml`·`recipients`·`subject`·`attachmentPaths`로 원본을 그대로 재발송**한다(워크플로 재생성 없음 → 본문 drift 없음). 기존 레코드를 제자리 갱신하므로(새 행 없음) deliver의 `(taskId, step)` 부분 unique 인덱스(§4.2)는 retry 경합을 막지 못한다 — 같은 행을 두 번 UPDATE할 뿐이라 P2002가 나지 않는다. 따라서 retry는 **자체 원자 점유**로 단일 비행을 보장한다(attemptCount는 두지 않음 — YAGNI). fail-closed로 다음을 검증·점유한 뒤 발송하고 기존 레코드를 갱신한다:
 
 - (a) `delivery.taskId === args.taskId` (route task 소속 확인)
 - (b) `delivery.status === FAILED` (SENDING은 발송 여부가 불확실하므로 자동 재시도하지 않고 UI에 '확인 필요'로 표시 — 중복 발송 방지)
 - (c) `ctx.isOwner` 또는 `ctx.permissionKeys.has(`${KIND_RESOURCE[kind]}:send`)` (kind는 delivery→task→type에서 로드). 한 워크플로 도메인의 `:send` 권한으로 타 도메인 발송을 재전송하는 것을 막는다.
-- 첨부 파일이 shared storage에서 사라졌으면 재발송은 FAILED로 처리한다(조용한 실패 금지).
+- (d) **원자 점유**: `FAILED→SENDING`을 조건부 `updateMany({ id, taskId, status: FAILED })`로 1회 갱신. 갱신 0건이면(동시 재시도가 이미 점유) **`ConflictError`(409)** — SMTP 미발생. 점유 성공 후 비로소 발송하므로 동시 retry 중 정확히 1건만 외부 발송한다. 점유 직후 행은 `SENDING`이라 cancel 게이트(`hasActiveSending`, §5.2)와 멱등 가드(§6.2)에도 진행 중으로 가시화된다.
+- 첨부 파일이 shared storage에서 사라졌으면 재발송은 (점유 후) FAILED로 처리한다(조용한 실패 금지).
 
 ### 6.3 send orchestration 계약과 SENDING 해소
 

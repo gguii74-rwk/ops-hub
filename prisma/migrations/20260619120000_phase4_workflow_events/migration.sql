@@ -1,9 +1,12 @@
 -- CreateEnum
 CREATE TYPE "workflows"."MailDeliveryStatus" AS ENUM ('SENDING', 'SENT', 'FAILED');
 
--- AlterTable: MailDelivery.status — 2단(임시 default로 추가 후 제거). 빈 테이블이라 backfill 불필요하나
--- 향후 행이 있어도 NOT NULL 추가가 안전하도록 임시 default를 거친 뒤 제거한다(§4.2).
-ALTER TABLE "workflows"."MailDelivery" ADD COLUMN "status" "workflows"."MailDeliveryStatus" NOT NULL DEFAULT 'SENDING';
+-- AlterTable: MailDelivery.status — 2단(임시 default로 추가 후 제거).
+-- main의 기존 MailDelivery 행은 sentAt NOT NULL(@default(now()))인 '완료된 발송'이므로 임시 default 'SENT'로 backfill한다.
+-- (신규 앱 행은 항상 status를 명시 생성하므로 이 default는 오직 기존 행 backfill에만 영향을 준다.)
+-- 'SENDING'을 기본값으로 쓰면 과거 발송이 진행 중으로 둔갑해 cancel 게이트(hasActiveSending)와
+-- 활성 unique 인덱스를 막으므로 금지한다(§4.2).
+ALTER TABLE "workflows"."MailDelivery" ADD COLUMN "status" "workflows"."MailDeliveryStatus" NOT NULL DEFAULT 'SENT';
 ALTER TABLE "workflows"."MailDelivery" ALTER COLUMN "status" DROP DEFAULT;
 
 -- AlterTable: MailDelivery 신규 컬럼 + sentAt nullable/no-default

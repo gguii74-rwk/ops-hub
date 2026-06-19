@@ -449,7 +449,7 @@ npm test -- tests/modules/workflows/   # 워크플로 스위트 PASS
 
 - **`deliver`의 SMTP 실패를 rethrow하지 말 것.** FAILED로 기록하고 레코드를 반환한다 — 발송 실패가 호출자의 직전 전이를 롤백시키면 안 된다(§6.2 "워크플로 상태 전이와 분리").
 - **SENDING 레코드를 자동으로 timeout 전환하지 말 것.** 발송 여부 오판→중복 SMTP를 유발한다. 해소는 admin `resolveDelivery`만(§6.3, §13 비목표).
-- **retry는 새 `MailDelivery` 행을 만들지 말 것.** 기존 레코드를 갱신한다(멱등 인덱스와 무충돌). 본문은 반드시 저장된 `bodyHtml`을 쓴다 — 워크플로를 재생성하면 본문 drift가 생긴다(§6.2).
+- **retry는 새 `MailDelivery` 행을 만들지 말 것.** 기존 레코드를 갱신한다. 단 제자리 갱신이라 deliver의 `(taskId, step)` 부분 unique 인덱스가 retry 경합을 막지 못하므로, retry는 SMTP 전에 **`FAILED→SENDING` 원자 점유**(`claimFailedForRetry`, 조건부 `updateMany`)로 단일 비행을 보장한다 — 점유 0건이면 `ConflictError`(409), 중복 외부 발송 차단(§6.2). 본문은 반드시 저장된 `bodyHtml`을 쓴다 — 워크플로를 재생성하면 본문 drift가 생긴다(§6.2).
 - **`SENDING` 재시도를 허용하지 말 것**(발송 불확실). retry는 `FAILED`만. `SENDING`은 admin `resolve`로만 종료.
 - 멱등 가드는 `taskId`·`step`이 **둘 다 non-null**일 때만 적용 — 임시/비워크플로 메일(`taskId` null)은 멱등 대상이 아니다(§6.2).
 - `finalizeDelivery`에서 `providerMessageId`를 항상 덮어쓰지 말 것 — 지정 시에만 갱신해 resolve가 기존 값을 지우지 않게 한다.

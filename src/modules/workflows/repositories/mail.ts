@@ -60,6 +60,16 @@ export async function finalizeDelivery(
   return prisma.mailDelivery.update({ where: { id }, data });
 }
 
+// 재시도 단일 비행 가드: FAILED→SENDING 원자 점유. 동시 retry 중 1건만 count 1을 받고,
+// 나머지는 0(이미 SENDING/다른 상태) → false. 점유 성공 후에만 SMTP를 발송한다(§6.2).
+export async function claimFailedForRetry(deliveryId: string, taskId: string): Promise<boolean> {
+  const { count } = await prisma.mailDelivery.updateMany({
+    where: { id: deliveryId, taskId, status: "FAILED" },
+    data: { status: "SENDING" },
+  });
+  return count === 1;
+}
+
 export async function findDeliveryForAction(deliveryId: string): Promise<DeliveryForAction | null> {
   const d = await prisma.mailDelivery.findUnique({
     where: { id: deliveryId },

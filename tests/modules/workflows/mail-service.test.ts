@@ -7,6 +7,7 @@ vi.mock("@/modules/workflows/repositories/mail", () => ({
   createSendingDelivery: vi.fn(),
   finalizeDelivery: vi.fn(async (id: string, patch: any) => ({ id, ...patch })),
   findDeliveryForAction: vi.fn(),
+  claimFailedForRetry: vi.fn(),
 }));
 
 import { ForbiddenError } from "@/kernel/access";
@@ -27,6 +28,7 @@ beforeEach(() => {
   repo.createSendingDelivery.mockReset().mockResolvedValue({ id: "d1" });
   repo.finalizeDelivery.mockReset().mockImplementation(async (id: string, patch: any) => ({ id, ...patch }));
   repo.findDeliveryForAction.mockReset();
+  repo.claimFailedForRetry.mockReset().mockResolvedValue(true);
   send.mockReset().mockResolvedValue({ providerMessageId: "pm1" });
   fsExists.mockReset().mockReturnValue(true);
 });
@@ -62,6 +64,20 @@ describe("retryDelivery", () => {
     await retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.weekly:send"] }));
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: ["a@x"], subject: "s", html: "<p>저장본문</p>" }));
     expect(repo.finalizeDelivery).toHaveBeenCalledWith("d1", expect.objectContaining({ status: "SENT" }));
+  });
+
+  it("SMTP 전에 FAILED→SENDING 원자 점유(claimFailedForRetry)로 단일 비행", async () => {
+    repo.findDeliveryForAction.mockResolvedValue(failed);
+    await retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.weekly:send"] }));
+    expect(repo.claimFailedForRetry).toHaveBeenCalledWith("d1", "t1");
+    expect(repo.claimFailedForRetry.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
+  });
+
+  it("점유 실패(경합에서 짐) → Conflict, SMTP 미발생·중복 발송 차단", async () => {
+    repo.findDeliveryForAction.mockResolvedValue(failed);
+    repo.claimFailedForRetry.mockResolvedValue(false);
+    await expect(retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.weekly:send"] }))).rejects.toBeInstanceOf(ConflictError);
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("없음 → Forbidden", async () => {
