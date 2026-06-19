@@ -75,6 +75,13 @@ describe("findWorkflowTasksInRange", () => {
     expect(out).toEqual([{ id: "w1", title: "주간보고", scheduledAt: new Date("2026-06-12"), status: "PENDING" }]);
     expect(calls.workflow.where.scheduledAt).toEqual({ gte: range.start, lt: range.end });
   });
+
+  it("CANCELLED 작업을 제외(status not CANCELLED)하고 scheduledAt 창으로 조회", async () => {
+    rows.workflow = [{ id: "w1", scheduledAt: new Date("2026-06-12"), status: "PENDING", type: { name: "주간보고" } }];
+    await findWorkflowTasksInRange(range);
+    expect(calls.workflow.where.status).toEqual({ not: "CANCELLED" });
+    expect(calls.workflow.where.scheduledAt).toEqual({ gte: range.start, lt: range.end });
+  });
 });
 
 describe("findManualEventsInRange", () => {
