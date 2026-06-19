@@ -103,4 +103,33 @@ describe("getCachedPayload", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(out.data).toEqual({ e: 2 });
   });
+
+  it("동시 미스(같은 source+range) → fetcher 1회만 실행하고 결과 공유(스탬피드 차단)", async () => {
+    // 두 요청이 첫 write 이전에 도착 → 둘 다 due 판정. in-flight 코얼레싱이 없으면 fetcher가 2번 불린다(적대적 리뷰 F1).
+    h.read.mockResolvedValue(null); // 엔트리 없음 → 항상 due
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const fetcher = vi.fn(async () => { await gate; return { v: 1 }; });
+    const p1 = getCachedPayload({ source, range, fetcher, now });
+    const p2 = getCachedPayload({ source, range, fetcher, now });
+    release();
+    const [o1, o2] = await Promise.all([p1, p2]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(o1).toMatchObject({ state: "ok", data: { v: 1 } });
+    expect(o2).toMatchObject({ state: "ok", data: { v: 1 } });
+    expect(h.write).toHaveBeenCalledTimes(1);
+  });
+
+  it("서로 다른 range는 코얼레싱되지 않는다(각자 fetch)", async () => {
+    h.read.mockResolvedValue(null);
+    const range2 = { start: new Date("2026-06-30T15:00:00Z"), end: new Date("2026-08-11T15:00:00Z") };
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const fetcher = vi.fn(async () => { await gate; return { v: 1 }; });
+    const p1 = getCachedPayload({ source, range, fetcher, now });
+    const p2 = getCachedPayload({ source, range: range2, fetcher, now });
+    release();
+    await Promise.all([p1, p2]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
 });

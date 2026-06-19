@@ -25,7 +25,7 @@ export async function GET(req: Request) {
     const range = normalizeToGridWindow(anchor);
     const summary = await getPermissionSummary(session.user.id);
     const ctx = { userId: session.user.id, isOwner: false, permissionKeys: new Set(summary.keys) };
-    const providers = createCalendarProviders({ forceRefresh: false });
+    const providers = createCalendarProviders({ forceRefresh: false, view });
     const feed = await buildFeed(view, range, ctx, providers);
     return NextResponse.json(feed, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

@@ -2,7 +2,7 @@ import type { CalendarEventKind } from "@prisma/client";
 import { getGoogleCalendarClient, type GoogleCalendarClient, type NormalizedGoogleEvent } from "@/lib/integrations/google";
 import { findSourcesByKind, type SourceRow } from "../repositories";
 import { getCachedPayload } from "../cache";
-import type { CalendarSourceProvider, NormalizedRange, RawEvent, SourceResult, SourceStatus } from "../types";
+import type { CalendarSourceProvider, FeedContext, NormalizedRange, RawEvent, SourceResult, SourceStatus, ViewKey } from "../types";
 
 // 캐시에 저장하는 직렬화 가능한 형태(Date → ISO).
 export interface CachedGoogleEvent {
@@ -41,6 +41,7 @@ export interface ExternalProviderOpts {
   client?: GoogleCalendarClient;
   forceRefresh?: boolean;
   now?: () => Date;
+  view?: ViewKey; // personal 뷰면 owner 스코프 소스(개인 Google)만 fetch — 타인/공유 소스 fan-out·상태 누출 차단(F2)
 }
 
 interface ExternalProviderConfig {
@@ -48,6 +49,7 @@ interface ExternalProviderConfig {
   sourceKinds: Array<"GOOGLE_CALENDAR" | "HOLIDAY">;
   eventKind: CalendarEventKind;
   ownerOf: (s: SourceRow) => string | null; // google=개인 소스 ownerUserId 전파, holiday=항상 null
+  ownerScoped?: boolean; // true(google)면 personal 뷰에서 본인 소유 소스로 제한. holiday는 소유 개념 없음 → 항상 전체.
 }
 
 // google·holiday provider의 cache-first 루프는 동일하다(소스 종류·event kind·owner 귀속만 다름).
@@ -55,8 +57,13 @@ interface ExternalProviderConfig {
 export function createExternalProvider(opts: ExternalProviderOpts, cfg: ExternalProviderConfig): CalendarSourceProvider {
   return {
     key: cfg.key,
-    async fetchEvents(range: NormalizedRange): Promise<SourceResult> {
-      const sources = await findSourcesByKind(cfg.sourceKinds);
+    async fetchEvents(range: NormalizedRange, ctx: FeedContext): Promise<SourceResult> {
+      const all = await findSourcesByKind(cfg.sourceKinds);
+      // personal 뷰: 본인 소유 소스만 — fetch/캐시 갱신과 status 집계를 owner 스코프로 제한해
+      // 저권한 사용자가 타인 Google 캘린더를 갱신시키거나 그 존재·상태를 알게 되는 경로를 차단(F2).
+      const sources = cfg.ownerScoped && opts.view === "personal"
+        ? all.filter((s) => s.ownerUserId === ctx.userId)
+        : all;
       const events: RawEvent[] = [];
       const statuses: SourceStatus[] = [];
       for (const s of sources) {

@@ -26,7 +26,7 @@ export async function POST(req: Request) {
     const summary = await getPermissionSummary(session.user.id);
     const ctx = { userId: session.user.id, isOwner: false, permissionKeys: new Set(summary.keys) };
     // forceRefresh: (view,range) 범위만 강제 재검증. 전역 캐시 무효화 아님. min-interval은 cache가 가드.
-    const providers = createCalendarProviders({ forceRefresh: true });
+    const providers = createCalendarProviders({ forceRefresh: true, view });
     const feed = await buildFeed(view, range, ctx, providers);
     return NextResponse.json(feed, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

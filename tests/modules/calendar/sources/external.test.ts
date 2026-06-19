@@ -104,6 +104,35 @@ describe("createGoogleProvider", () => {
     expect(out.statuses[0].state).toBe("failed");
     expect(h.cache).not.toHaveBeenCalled();
   });
+
+  it("personal 뷰: 본인 소유 Google 소스만 fetch — 타인·공유 소스는 외부 호출·상태 누출 없음(트러스트 경계, F2)", async () => {
+    h.sources.mockResolvedValue([
+      { id: "s1", key: "google:mine", externalId: "mine@cal", name: "내 캘린더", cacheTtlSeconds: 900, ownerUserId: "u1" },
+      { id: "s2", key: "google:other", externalId: "other@cal", name: "타인 캘린더", cacheTtlSeconds: 900, ownerUserId: "u9" },
+      { id: "s3", key: "google:team", externalId: "team@cal", name: "공유 캘린더", cacheTtlSeconds: 900, ownerUserId: null },
+    ]);
+    h.getClient.mockReturnValue({ listEvents: async () => [] });
+    cacheRunsFetcher();
+    const out = await createGoogleProvider({ view: "personal" }).fetchEvents(range, ctx);
+    // 본인 소스(s1)만 외부 fetch — 타인(s2)·공유(s3)는 getCachedPayload조차 호출 안 됨
+    expect(h.cache).toHaveBeenCalledTimes(1);
+    expect(out.statuses.map((s) => s.key)).toEqual(["google:mine"]);
+    const json = JSON.stringify(out);
+    expect(json).not.toContain("google:other");
+    expect(json).not.toContain("google:team");
+  });
+
+  it("leave 뷰: 전체 Google 소스 fetch(팀 휴가 보조 데이터) — personal 외 view는 owner 스코프 안 함", async () => {
+    h.sources.mockResolvedValue([
+      { id: "s1", key: "google:mine", externalId: "mine@cal", name: "내", cacheTtlSeconds: 900, ownerUserId: "u1" },
+      { id: "s2", key: "google:other", externalId: "other@cal", name: "타인", cacheTtlSeconds: 900, ownerUserId: "u9" },
+    ]);
+    h.getClient.mockReturnValue({ listEvents: async () => [] });
+    cacheRunsFetcher();
+    const out = await createGoogleProvider({ view: "leave" }).fetchEvents(range, ctx);
+    expect(h.cache).toHaveBeenCalledTimes(2);
+    expect(out.statuses.map((s) => s.key).sort()).toEqual(["google:mine", "google:other"]);
+  });
 });
 
 describe("createHolidayProvider", () => {

@@ -177,10 +177,11 @@ API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requireP
 - 권한이 없으면 제목을 `휴가`/`부재`/`외부 일정` 요약으로 대체(`masked: true`), 휴가 사유·개인 일정 제목·외부 캘린더 설명은 `null`.
 - 상세 열람은 PM/OWNER 및 명시 권한자만(매트릭스는 `calendar-design.md` §권한별 표시 정책 준수).
 - 마스킹 매트릭스는 view + 대상 이벤트의 소유자/種별로 결정한다(본인 이벤트는 항상 상세, 타인은 권한에 따라).
-- **마스킹은 안전망이 아니다(중요).** 마스킹은 title/description만 가리고 `userId`·시작/종료 시각은 응답에 남는다. 따라서 **노출 자체를 막아야 하는 데이터는 조회/합성 단계에서 차단**한다: ① 타인 PERSONAL_EVENT은 manual provider가 `ctx`로 애초에 조회하지 않고(§6), ② 타인 tentative(미승인) 일정은 feed가 `events`에서 제외한다(§7-4). (적대적 리뷰 Finding 1·3)
+- **마스킹은 안전망이 아니다(중요).** 마스킹은 title/description만 가리고 `userId`·시작/종료 시각은 응답에 남는다. 따라서 **노출 자체를 막아야 하는 데이터는 조회/합성 단계에서 차단**한다: ① 타인 PERSONAL_EVENT은 manual provider가 `ctx`로 애초에 조회하지 않고(§6), ② 타인 tentative(미승인) 일정은 feed가 `events`에서 제외하며(§7-4), ③ personal 뷰의 Google 소스는 provider가 본인 소유(`ownerUserId === ctx.userId`)만 **fetch**한다(§9·§12.3) — 타인 소스의 외부 호출·캐시 갱신·`sources[].key` 상태 누출을 fetch 이전에 차단. (적대적 리뷰 Finding 1·3, 후속 F2)
 - **출처 식별자도 비밀 경계다(적대적 리뷰 5차).** `CalendarSource.externalId`(= Google calId, 개인 캘린더면 그 사람 이메일)는 **서버 전용**이며 `CalEvent`에 포함하지 않는다. 그러나 `sourceKey`·이벤트 `id`·`sources[].key`·`staleSources`·`failedSources`는 응답에 실려 UI에 노출되므로, 이들이 calId를 내장하면 **타이틀 마스킹과 무관하게 calId(이메일)가 누구에게나 유출**된다(성공 happy-path에서도). 따라서 **`CalendarSource.key`는 calId를 내장하지 않는 불투명 식별자**여야 한다 — 시드가 calId의 결정적 해시(`googleSourceKey`)로 생성하고, 실제 calId는 `externalId`에만 보관한다(§16/task-10). provider는 응답 필드(`id`/`sourceKey`/`status.key`)에 `key`만 쓰고 `externalId`는 fetch 대상으로만 사용한다(task-06 가드 테스트).
 - **확장 지점(경계 부채)**: 현재 PERSONAL_EVENT 공개 정책은 "본인만 / admin 전체"가 기본이다. 추후 팀 멤버십·세부 권한 단위 공개(예: `calendar.personal.team:view`)는 provider가 받는 동일한 `ctx`(userId+permissionKeys)에서 분기하면 되며, **시그니처 변경 없이 비파괴로 확장**된다.
 - **personal 뷰 = 본인 소유 + 공휴일만(Finding 2).** feed가 personal 뷰에서 `userId === 본인 || kind === HOLIDAY`이 아닌 이벤트를 **제외**한다(마스킹 아님 → 타인 userId·시각이 응답에 없음). 팀 휴가/일정 free/busy는 **work/leave 뷰에서만** 노출(거기선 의도된 기능 — 누가 언제 부재인지 공유). 이 게이트는 `VIEW_SOURCES.personal` 목록과 무관한 하드 게이트라 personal에 소스가 추가돼도 안전하다. `VIEW_SOURCES.personal`에서 `workflowTask`는 제외(사용자 귀속 없는 조직 일정). Google 이벤트가 personal에 나타나려면 owner-map으로 해당 소스 `ownerUserId`가 본인으로 채워져야 한다(§10) — Phase 3 기본(owner-map 비어 있음)에선 personal에 본인 휴가·본인 수동 일정·공휴일만 보인다.
+- **personal 뷰 Google 소스는 fetch 단계부터 owner 스코프(후속 F2).** 위 event-filter는 *응답*만 거른다 — 그것만으로는 google provider가 personal 뷰에서도 **모든 활성 Google 소스를 fetch**해, 저권한(`calendar.personal:view`) 사용자가 타인 Google 캘린더의 외부 호출·캐시 갱신을 유발하고 `sources[].key`로 그 존재·상태를 알게 된다(트러스트 경계·쿼터 증폭). 따라서 google provider는 `view === "personal"`이면 `ownerUserId === ctx.userId` 소스만 `findSourcesByKind` 결과에서 추려 fetch한다(`createCalendarProviders({view})` → `createGoogleProvider({view})`). leave/admin 등 팀 뷰는 전체 소스(의도된 보조 데이터). holiday는 소유 개념이 없어 항상 전체.
 
 ## 10. 중복 제거(비파괴)
 
@@ -216,7 +217,7 @@ API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requireP
 > Phase 3에서는 외부 소스에 대해 백그라운드 SWR을 구현하지 않는다. 캐시가 fresh이면 즉시 반환, expired이면 해당 요청에서 인라인 재검증한다. 재검증 실패 시 **last-good 캐시가 있으면** 그것을 반환하고 `staleSources`에, **last-good이 없으면(cold-cache 최초 실패)** 해당 소스를 빈 결과 + `failedSources`로 표시한다. 재검증 실패는 **warm/cold 모두 `expiresAt`을 짧은 backoff(min-refresh-interval)로 기록**해(warm은 last-good payload 보존), 장애가 지속돼도 만료 후 매 요청 재fetch하지 않는다(적대적 리뷰 Finding 2). 워커 기반 비차단 SWR은 스케줄러/디스패처 도입 Phase로 미룬다.
 
 - 근거: Phase 1에서 outbox 워커/스케줄러를 의도적으로 스켈레톤으로 남겼다. 비차단 SWR을 억지로 만들면 범위가 폭증한다.
-- **알려진 한계**: *같은 순간* 동시 요청이 만료 엔트리에 몰리면 중복 Google 호출(thundering herd). 팀+외주 소규모라 **수용 가능한 한계로 명시**하고 §12.4 min-refresh-interval(기본 30초)로 부분 완화. per-(source,range) in-flight lock은 과설계로 Phase 3 보류. 단, 만료 후 *장애 지속* 시 매 요청 재fetch(연타)는 위 backoff 기록으로 차단한다(적대적 리뷰 Finding 2).
+- **동시성 가드(후속 F1)**: *같은 순간* 동시 요청이 만료 엔트리에 몰리는 thundering herd는, per-(source,range) **in-process in-flight 코얼레싱**으로 1회 재검증에 합류시켜 차단한다(`cache/index.ts`의 `inFlight` 맵). write가 fetch 프로미스 내부에 있어 'write 가시화'와 '맵 해제' 순서가 정렬돼, 합류 못 한 요청은 fresh 적중으로 early-return한다(빈틈 없음). **한계**: 프로세스 메모리라 단일 인스턴스에서만 유효(다중 인스턴스는 인스턴스당 1회로 bounded — 현 배포는 단일 인스턴스). §12.4 min-refresh-interval(기본 30초)은 *순차* 연타를, 이 가드는 *동시* 미스를 막는 상보 관계다. 만료 후 *장애 지속* 시 매 요청 재fetch(연타)는 위 backoff 기록으로 차단한다(적대적 리뷰 Finding 2).
 
 ### 12.4 수동 새로고침
 
