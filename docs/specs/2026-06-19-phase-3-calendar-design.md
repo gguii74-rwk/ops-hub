@@ -179,11 +179,12 @@ API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requireP
 - 마스킹 매트릭스는 view + 대상 이벤트의 소유자/種별로 결정한다(본인 이벤트는 항상 상세, 타인은 권한에 따라).
 - **마스킹은 안전망이 아니다(중요).** 마스킹은 title/description만 가리고 `userId`·시작/종료 시각은 응답에 남는다. 따라서 **노출 자체를 막아야 하는 데이터는 조회/합성 단계에서 차단**한다: ① 타인 PERSONAL_EVENT은 manual provider가 `ctx`로 애초에 조회하지 않고(§6), ② 타인 tentative(미승인) 일정은 feed가 `events`에서 제외한다(§7-4). (적대적 리뷰 Finding 1·3)
 - **확장 지점(경계 부채)**: 현재 PERSONAL_EVENT 공개 정책은 "본인만 / admin 전체"가 기본이다. 추후 팀 멤버십·세부 권한 단위 공개(예: `calendar.personal.team:view`)는 provider가 받는 동일한 `ctx`(userId+permissionKeys)에서 분기하면 되며, **시그니처 변경 없이 비파괴로 확장**된다.
-- **personal 뷰 = 본인 소유 + 공휴일만(Finding 2).** feed가 personal 뷰에서 `userId === 본인 || kind === HOLIDAY`이 아닌 이벤트를 **제외**한다(마스킹 아님 → 타인 userId·시각이 응답에 없음). 팀 휴가/일정 free/busy는 **work/leave 뷰에서만** 노출(거기선 의도된 기능 — 누가 언제 부재인지 공유). 이 게이트는 `VIEW_SOURCES.personal` 목록과 무관한 하드 게이트라 personal에 소스가 추가돼도 안전하다. `VIEW_SOURCES.personal`에서 `workflowTask`는 제외(사용자 귀속 없는 조직 일정).
+- **personal 뷰 = 본인 소유 + 공휴일만(Finding 2).** feed가 personal 뷰에서 `userId === 본인 || kind === HOLIDAY`이 아닌 이벤트를 **제외**한다(마스킹 아님 → 타인 userId·시각이 응답에 없음). 팀 휴가/일정 free/busy는 **work/leave 뷰에서만** 노출(거기선 의도된 기능 — 누가 언제 부재인지 공유). 이 게이트는 `VIEW_SOURCES.personal` 목록과 무관한 하드 게이트라 personal에 소스가 추가돼도 안전하다. `VIEW_SOURCES.personal`에서 `workflowTask`는 제외(사용자 귀속 없는 조직 일정). Google 이벤트가 personal에 나타나려면 owner-map으로 해당 소스 `ownerUserId`가 본인으로 채워져야 한다(§10) — Phase 3 기본(owner-map 비어 있음)에선 personal에 본인 휴가·본인 수동 일정·공휴일만 보인다.
 
 ## 10. 중복 제거(비파괴)
 
 - 판정 기준: **`CalendarSource.ownerUserId`로 매핑된** Google 이벤트 ∩ 내부 APPROVED `LeaveRequest`(PENDING은 `tentative`로 앵커에서 제외 — Finding 3)와 **KST 날짜 겹침** + 휴가성 키워드(`휴가|연차|반차|오전반차|오후반차`) + **all-day**. **Phase 3는 all-day 외부 휴가만 dedup**한다 — "근무시간 대부분을 차지하는 timed 이벤트"는 임계 휴리스틱이 모호해 후속으로 미룬다. `ownerUserId`가 없는 공유 캘린더(예: 팀 공용) 이벤트는 사용자 attribution이 불가하므로 dedup하지 않고 `EXTERNAL_VACATION`으로만 표시한다.
+- **`ownerUserId` 채우는 법 + Phase 3 기본(중요, Finding)**: 시드가 선택적 owner-map(`integrations.google.calendarOwners`: calId→이메일)으로 Google 소스에 `ownerUserId`를 설정한다(`prisma/seed-google.ts`의 순수 resolver, create·update 모두). **Phase 3 기본은 이 map이 비어 있어 모든 Google 소스가 `ownerUserId=null`(공유/팀)** → dedup-by-owner와 personal 뷰의 Google 노출은 **비활성**이다(team 캘린더는 work/leave 뷰에서 마스킹된 free/busy로만 보임). 개인별 Google 캘린더 dedup·personal 노출이 필요해지면 owner-map만 채워 **코드 변경 없이 데이터만으로 활성화**한다. 즉 ownerUserId 기계장치(provider 전파·dedup·personal 필터)는 완비돼 있고, 켜는 스위치는 owner-map 데이터다.
 - 처리: 외부 이벤트를 **삭제하지 않는다.** `DUPLICATE_OF_INTERNAL`로 마킹하고 **응답 합성 단계에서만 접는다**(기본 뷰 미표시). 원본은 캐시에 남아 후속 admin 뷰에서 진단 가능.
 - 사용자 매핑이 안 된 외부 휴가 → `EXTERNAL_VACATION`(상세 제한).
 - 키워드 기반 휴리스틱이라 false positive 가능 → 비파괴 원칙이 안전판이다.
