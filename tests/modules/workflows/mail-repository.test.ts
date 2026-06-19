@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 
 const h = vi.hoisted(() => {
   const calls: Record<string, any> = {};
-  const ret: any = { active: null, created: { id: "d1" }, found: null, throwP2002: false };
+  const ret: any = { active: null, created: { id: "d1" }, found: null, throwP2002: false, updateManyCount: 0 };
   return { calls, ret };
 });
 
@@ -17,6 +17,7 @@ vi.mock("@/lib/prisma", () => {
         return { id: "d1", ...a.data };
       },
       update: async (a: any) => ((h.calls.update = a), { id: a.where.id, ...a.data }),
+      updateMany: async (a: any) => ((h.calls.updateMany = a), { count: h.ret.updateManyCount }),
       findUnique: async (a: any) => ((h.calls.findUnique = a), h.ret.found),
     },
     $transaction: async (fn: any) => fn(client),
@@ -24,7 +25,7 @@ vi.mock("@/lib/prisma", () => {
   return { prisma: client };
 });
 
-import { createSendingDelivery, finalizeDelivery, findDeliveryForAction } from "@/modules/workflows/repositories/mail";
+import { claimFailedForRetry, createSendingDelivery, finalizeDelivery, findDeliveryForAction } from "@/modules/workflows/repositories/mail";
 import { ConflictError } from "@/modules/workflows/types";
 
 beforeEach(() => {
@@ -32,6 +33,7 @@ beforeEach(() => {
   h.ret.active = null;
   h.ret.found = null;
   h.ret.throwP2002 = false;
+  h.ret.updateManyCount = 0;
 });
 
 describe("createSendingDelivery", () => {
@@ -70,6 +72,20 @@ describe("finalizeDelivery", () => {
     await finalizeDelivery("d1", { status: "FAILED", sentAt: null, errorMessage: "x" });
     expect("providerMessageId" in h.calls.update.data).toBe(false);
     expect(h.calls.update.data).toMatchObject({ status: "FAILED", errorMessage: "x" });
+  });
+});
+
+describe("claimFailedForRetry", () => {
+  it("FAILED→SENDING 1건 갱신되면 true (원자 점유 성공)", async () => {
+    h.ret.updateManyCount = 1;
+    const ok = await claimFailedForRetry("d1", "t1");
+    expect(ok).toBe(true);
+    expect(h.calls.updateMany).toMatchObject({ where: { id: "d1", taskId: "t1", status: "FAILED" }, data: { status: "SENDING" } });
+  });
+
+  it("0건 갱신(이미 SENDING/다른 상태 — 경합에서 짐)이면 false", async () => {
+    h.ret.updateManyCount = 0;
+    expect(await claimFailedForRetry("d1", "t1")).toBe(false);
   });
 });
 

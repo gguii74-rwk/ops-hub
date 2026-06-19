@@ -13,7 +13,7 @@
 - 엔트리포인트 §Shared Contracts **SC-1**(스키마 변경 전체 형태).
 - Spec §4(데이터 모델 변경) — 특히 §4.2 migration 안전성(빈 테이블, 2단 status default, 부분 unique 인덱스).
 - 기존 migration 포맷: `prisma/migrations/20260617225534_init/migration.sql`(enum/table/index/FK DDL 스타일).
-- `MailDelivery`는 현재 빈 테이블(`src/`·seed 어디서도 미사용, cutover 전) → backfill 불필요.
+- `MailDelivery`는 main에 이미 존재하던 테이블(day-sync 계승). cutover 전이라 행이 없을 것으로 기대하나 스키마가 행을 허용하므로 빈 테이블을 전제하지 않는다. 기존 행은 `sentAt` NOT NULL인 완료 발송이므로 임시 default `SENT`로 backfill한다(§4.2).
 
 ## Deps
 
@@ -132,9 +132,11 @@ model WorkflowTaskEvent {
 -- CreateEnum
 CREATE TYPE "workflows"."MailDeliveryStatus" AS ENUM ('SENDING', 'SENT', 'FAILED');
 
--- AlterTable: MailDelivery.status — 2단(임시 default로 추가 후 제거). 빈 테이블이라 backfill 불필요하나
--- 향후 행이 있어도 NOT NULL 추가가 안전하도록 임시 default를 거친 뒤 제거한다(§4.2).
-ALTER TABLE "workflows"."MailDelivery" ADD COLUMN "status" "workflows"."MailDeliveryStatus" NOT NULL DEFAULT 'SENDING';
+-- AlterTable: MailDelivery.status — 2단(임시 default로 추가 후 제거).
+-- main의 기존 행은 sentAt NOT NULL인 '완료된 발송'이므로 임시 default 'SENT'로 backfill한다.
+-- (신규 앱 행은 항상 status를 명시 생성하므로 default는 기존 행 backfill에만 영향.)
+-- 'SENDING'을 기본값으로 쓰면 과거 발송이 진행 중으로 둔갑해 cancel 게이트·활성 unique 인덱스를 막으므로 금지(§4.2).
+ALTER TABLE "workflows"."MailDelivery" ADD COLUMN "status" "workflows"."MailDeliveryStatus" NOT NULL DEFAULT 'SENT';
 ALTER TABLE "workflows"."MailDelivery" ALTER COLUMN "status" DROP DEFAULT;
 
 -- AlterTable: MailDelivery 신규 컬럼 + sentAt nullable/no-default
