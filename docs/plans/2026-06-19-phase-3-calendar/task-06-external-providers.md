@@ -1,6 +1,6 @@
 # Task 06 — 외부 provider (google·holiday) + 캐시
 
-`CalendarSource`(GOOGLE_CALENDAR / HOLIDAY)별로 cache-first 조회하는 provider. 캐시 payload는 **직렬화 가능한 `CachedGoogleEvent[]`**(ISO 문자열)로 저장하고, 읽은 뒤 `RawEvent`로 매핑한다. 공휴일도 Google 공휴일 캘린더라 같은 클라이언트를 쓴다. provider는 **factory**로 만들어 `client`·`forceRefresh`를 주입한다.
+`CalendarSource`(GOOGLE_CALENDAR / HOLIDAY)별로 cache-first 조회하는 provider. 캐시 payload는 **직렬화 가능한 `CachedGoogleEvent[]`**(ISO 문자열)로 저장하고, 읽은 뒤 `RawEvent`로 매핑한다. 공휴일도 Google 공휴일 캘린더라 같은 클라이언트를 쓴다. cache-first 루프는 동일하므로 **공통 팩토리 `createExternalProvider`**(external-shared)에 한 번만 두고, google·holiday는 소스 종류·event kind·owner 귀속만 다른 얇은 래퍼다. provider는 factory로 만들어 `client`·`forceRefresh`를 주입한다.
 
 ## Files
 
@@ -153,8 +153,10 @@ describe("createHolidayProvider", () => {
 
 ```ts
 import type { CalendarEventKind } from "@prisma/client";
-import type { NormalizedGoogleEvent } from "@/lib/integrations/google";
-import type { RawEvent } from "../types";
+import { getGoogleCalendarClient, type GoogleCalendarClient, type NormalizedGoogleEvent } from "@/lib/integrations/google";
+import { findSourcesByKind, type SourceRow } from "../repositories";
+import { getCachedPayload } from "../cache";
+import type { CalendarSourceProvider, FeedContext, NormalizedRange, RawEvent, SourceResult, SourceStatus } from "../types";
 
 // 캐시에 저장하는 직렬화 가능한 형태(Date → ISO).
 export interface CachedGoogleEvent {
@@ -188,28 +190,27 @@ export function cachedToRawEvent(c: CachedGoogleEvent, sourceKey: string, kind: 
     tentative: false, // 외부 일정은 잠정 개념 없음
   };
 }
-```
 
-`src/modules/calendar/sources/google.ts`:
-
-```ts
-import type { CalendarSourceProvider, FeedContext, NormalizedRange, RawEvent, SourceResult, SourceStatus } from "../types";
-import { findSourcesByKind } from "../repositories";
-import { getCachedPayload } from "../cache";
-import { getGoogleCalendarClient, type GoogleCalendarClient } from "@/lib/integrations/google";
-import { toCached, cachedToRawEvent, type CachedGoogleEvent } from "./external-shared";
-
-interface ExternalProviderOpts {
+export interface ExternalProviderOpts {
   client?: GoogleCalendarClient;
   forceRefresh?: boolean;
   now?: () => Date;
 }
 
-export function createGoogleProvider(opts: ExternalProviderOpts = {}): CalendarSourceProvider {
+interface ExternalProviderConfig {
+  key: string;
+  sourceKinds: Array<"GOOGLE_CALENDAR" | "HOLIDAY">;
+  eventKind: CalendarEventKind;
+  ownerOf: (s: SourceRow) => string | null; // google=개인 소스 ownerUserId 전파, holiday=항상 null
+}
+
+// google·holiday provider의 cache-first 루프는 동일하다(소스 종류·event kind·owner 귀속만 다름).
+// 중복 복붙 대신 한 팩토리로 둔다(적대적 리뷰 pre-flight). google.ts/holiday.ts는 cfg만 다른 얇은 래퍼.
+export function createExternalProvider(opts: ExternalProviderOpts, cfg: ExternalProviderConfig): CalendarSourceProvider {
   return {
-    key: "google",
+    key: cfg.key,
     async fetchEvents(range: NormalizedRange, _ctx: FeedContext): Promise<SourceResult> {
-      const sources = await findSourcesByKind(["GOOGLE_CALENDAR"]);
+      const sources = await findSourcesByKind(cfg.sourceKinds);
       const events: RawEvent[] = [];
       const statuses: SourceStatus[] = [];
       for (const s of sources) {
@@ -228,59 +229,46 @@ export function createGoogleProvider(opts: ExternalProviderOpts = {}): CalendarS
             return evs.map(toCached);
           },
         });
-        for (const c of outcome.data ?? []) events.push(cachedToRawEvent(c, s.key, "EXTERNAL_EVENT", s.ownerUserId));
+        for (const c of outcome.data ?? []) events.push(cachedToRawEvent(c, s.key, cfg.eventKind, cfg.ownerOf(s)));
         statuses.push({ key: s.key, state: outcome.state, lastFetchedAt: outcome.fetchedAt ? outcome.fetchedAt.toISOString() : null, error: outcome.error });
       }
       return { events, statuses };
     },
   };
+}
+```
+
+`src/modules/calendar/sources/google.ts`:
+
+```ts
+import type { CalendarSourceProvider } from "../types";
+import { createExternalProvider, type ExternalProviderOpts } from "./external-shared";
+
+// 얇은 래퍼 — cache-first 루프는 external-shared의 createExternalProvider에 있다(중복 제거).
+export function createGoogleProvider(opts: ExternalProviderOpts = {}): CalendarSourceProvider {
+  return createExternalProvider(opts, {
+    key: "google",
+    sourceKinds: ["GOOGLE_CALENDAR"],
+    eventKind: "EXTERNAL_EVENT",
+    ownerOf: (s) => s.ownerUserId, // 개인 Google 소스의 ownerUserId를 event.userId로 전파(dedup attribution §10)
+  });
 }
 ```
 
 `src/modules/calendar/sources/holiday.ts`:
 
 ```ts
-import type { CalendarSourceProvider, FeedContext, NormalizedRange, RawEvent, SourceResult, SourceStatus } from "../types";
-import { findSourcesByKind } from "../repositories";
-import { getCachedPayload } from "../cache";
-import { getGoogleCalendarClient, type GoogleCalendarClient } from "@/lib/integrations/google";
-import { toCached, cachedToRawEvent, type CachedGoogleEvent } from "./external-shared";
+import type { CalendarSourceProvider } from "../types";
+import { createExternalProvider, type ExternalProviderOpts } from "./external-shared";
 
-interface ExternalProviderOpts {
-  client?: GoogleCalendarClient;
-  forceRefresh?: boolean;
-  now?: () => Date;
-}
-
+// 얇은 래퍼 — 공휴일도 Google 공휴일 캘린더라 같은 루프를 쓴다. owner 없음(전원 공통).
 export function createHolidayProvider(opts: ExternalProviderOpts = {}): CalendarSourceProvider {
-  return {
+  return createExternalProvider(opts, {
     key: "holiday",
-    async fetchEvents(range: NormalizedRange, _ctx: FeedContext): Promise<SourceResult> {
-      const sources = await findSourcesByKind(["HOLIDAY"]);
-      const events: RawEvent[] = [];
-      const statuses: SourceStatus[] = [];
-      for (const s of sources) {
-        if (!s.externalId) {
-          statuses.push({ key: s.key, state: "failed", lastFetchedAt: null, error: "calendarId(externalId) 없음" });
-          continue;
-        }
-        const outcome = await getCachedPayload<CachedGoogleEvent[]>({
-          source: { id: s.id, cacheTtlSeconds: s.cacheTtlSeconds },
-          range,
-          forceRefresh: opts.forceRefresh,
-          now: opts.now,
-          fetcher: async () => {
-            const client = opts.client ?? getGoogleCalendarClient();
-            const evs = await client.listEvents(s.externalId!, range.start, range.end);
-            return evs.map(toCached);
-          },
-        });
-        for (const c of outcome.data ?? []) events.push(cachedToRawEvent(c, s.key, "HOLIDAY", null));
-        statuses.push({ key: s.key, state: outcome.state, lastFetchedAt: outcome.fetchedAt ? outcome.fetchedAt.toISOString() : null, error: outcome.error });
-      }
-      return { events, statuses };
-    },
-  };
+    sourceKinds: ["HOLIDAY"],
+    eventKind: "HOLIDAY",
+    ownerOf: () => null,
+  });
 }
 ```
 
