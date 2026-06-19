@@ -20,5 +20,6 @@ describe("Phase 4 schema", () => {
     expect(byName.bodyHtml).toBeDefined();
     expect(byName.errorMessage).toBeDefined();
     expect(byName.sentAt.isRequired).toBe(false);
+    expect(byName.status.isRequired).toBe(true);
   });
 });

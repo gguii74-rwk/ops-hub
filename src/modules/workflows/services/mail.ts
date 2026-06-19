@@ -14,6 +14,9 @@ function canSend(ctx: MailActionCtx, kind: WorkflowKind): boolean {
 
 // 발송 전 SENDING 레코드 생성 → SMTP → 정확히 1회 SENT/FAILED 갱신(§6.2).
 // 워크플로 상태 전이와 분리 — 발송 실패가 직전 전이를 롤백하지 않는다.
+// 호출자 계약: deliver는 자체 권한 검사를 하지 않는다. 외부 메일을 실제로 발송하므로
+// 이 함수를 호출하는 워크플로 sub-project의 라우트가 반드시 `<kind>:send` 권한을 먼저 검증해야 한다.
+// (재시도/해소는 retryDelivery/resolveDelivery가 자체적으로 authz를 강제한다.)
 export async function deliver(args: {
   taskId: string | null; step: string | null; msg: MailMessage; sentById: string;
 }): Promise<MailDelivery> {
