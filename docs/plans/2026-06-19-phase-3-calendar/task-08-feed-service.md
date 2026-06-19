@@ -122,6 +122,27 @@ describe("buildFeed", () => {
     expect(adminFeed.events.map((e) => e.id)).toContain("leave:other"); // admin은 봄
   });
 
+  it("personal 뷰: 본인 소유 + 공휴일만, 타인 휴가/팀 일정은 제외(마스킹 아님)", async () => {
+    const providers = {
+      internalLeave: provider("internalLeave", [
+        raw({ id: "leave:mine", userId: "u1" }),
+        raw({ id: "leave:other", userId: "u9" }),
+      ], [ok("internalLeave")]),
+      manual: provider("manual", [raw({ id: "manual:other", kind: "PERSONAL_EVENT", title: "개인", userId: "u9" })], [ok("manual")]),
+      google: provider("google", [
+        raw({ id: "google:mine", kind: "EXTERNAL_EVENT", title: "회의", userId: "u1", sourceKey: "google-u1" }),
+        raw({ id: "google:team", kind: "EXTERNAL_EVENT", title: "팀 미팅", userId: null, sourceKey: "google-team" }),
+      ], [ok("google")]),
+      holiday: provider("holiday", [raw({ id: "h1", kind: "HOLIDAY", title: "신정", description: null, userId: null })], [ok("holiday")]),
+    };
+    const res = await buildFeed("personal", range, ctx({ userId: "u1" }), providers);
+    const ids = res.events.map((e) => e.id);
+    expect(ids).toEqual(expect.arrayContaining(["leave:mine", "google:mine", "h1"]));
+    expect(ids).not.toContain("leave:other"); // 타인 휴가 제외
+    expect(ids).not.toContain("google:team"); // 팀 google(userId 없음) 제외
+    expect(ids).not.toContain("manual:other"); // 방어적: manual이 타인 걸 줘도 제외
+  });
+
   it("provider가 reject해도 전체는 죽지 않고 failed로 환원", async () => {
     const providers = {
       workflowTask: { key: "workflowTask", fetchEvents: async () => { throw new Error("boom"); } } as CalendarSourceProvider,
@@ -180,7 +201,12 @@ export async function buildFeed(
   const folded = view === "admin" ? deduped : deduped.filter((e) => e.dedupStatus !== "DUPLICATE_OF_INTERNAL");
   // 잠정(미승인) 일정은 본인·admin에게만 노출 — 타인에겐 '마스킹'이 아니라 아예 제외(미승인 휴가가 실제 부재로 보이지 않게, Finding 3).
   const canSeeTentative = ctx.isOwner || ctx.permissionKeys.has("calendar.admin:view");
-  const visible = folded.filter((e) => !e.tentative || canSeeTentative || e.userId === ctx.userId);
+  let visible = folded.filter((e) => !e.tentative || canSeeTentative || e.userId === ctx.userId);
+  // personal 뷰는 본인 소유 이벤트 + 공휴일만(팀/타인 데이터는 work/leave 뷰 전용). 소스 목록과 무관한 하드 게이트 —
+  // 마스킹이 아니라 '제외'라 타인 userId·시각이 응답에 남지 않는다(적대적 리뷰 Finding 2).
+  if (view === "personal") {
+    visible = visible.filter((e) => e.userId === ctx.userId || e.kind === "HOLIDAY");
+  }
   const events: CalEvent[] = visible.map((e) => maskEvent(e, ctx));
 
   // 클라이언트向 출처 오류는 일반 메시지로만 — 원본 예외는 서버 로그에만(민감정보 유출 방지, 적대적 리뷰 #7).
@@ -216,3 +242,4 @@ git commit -m "calendar: add feed orchestration (allSettled, dedup fold, masking
 - **admin 외 뷰에서 DUPLICATE_OF_INTERNAL을 배열에서 영구 제거하지 말 것.** 이유: 같은 raw 배열을 admin 경로가 재사용할 수 있어야 한다. 접기는 뷰별 `filter`로만(비파괴).
 - **provider 선택을 하드코딩하지 말 것.** 이유: view↔sources 매핑의 단일 출처는 `VIEW_SOURCES`다(엔트리포인트). 여기서 재정의하면 드리프트.
 - **tentative(미승인) 일정을 타인에게 '마스킹'으로만 처리하지 말 것.** 이유: 마스킹은 시작/종료 시각과 `userId`를 응답에 남기므로 미승인 휴가가 타인에게 실제 부재로 보인다(Finding 3). 본인(`e.userId === ctx.userId`)·admin이 아니면 `events`에서 **제외**한다.
+- **personal 뷰의 타인 데이터 차단을 `VIEW_SOURCES` 선택에만 의존하지 말 것.** 이유: personal 소스에 google 등 조직 소스가 남아 있어, feed의 `userId === 본인 || kind === HOLIDAY` 하드 게이트가 없으면 타인 시각·신원이 샌다(Finding 2). 게이트는 소스 목록과 독립적으로 적용해 소스가 추가돼도 안전하게 한다. 팀 free/busy는 work/leave 뷰에서만.

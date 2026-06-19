@@ -1,11 +1,13 @@
-# Task 10 — seed: CalendarSource + 외주 권한 보정 + 데모 데이터
+# Task 10 — seed: CalendarSource + 외주 권한 보정 (데모는 dev 전용 분리)
 
-세 가지: (a) **외주 역할에 `calendar.leave:view` 부여**(§8.1 — 단위 테스트 대상), (b) HOLIDAY/Google `CalendarSource` seed, (c) Phase 5/6 전 leave/work 뷰가 비지 않도록 데모 `WorkflowTask`/`LeaveRequest` seed. (a)는 `ROLE_ALLOW`를 별도 모듈로 추출해 테스트 가능하게 한다.
+세 가지: (a) **외주 역할에 `calendar.leave:view` 부여**(§8.1 — 단위 테스트 대상), (b) HOLIDAY/Google `CalendarSource` seed(실 config — 메인 seed), (c) leave/work 뷰가 비지 않도록 데모 `WorkflowTask`/`LeaveRequest`를 **dev 전용 `prisma/seed-demo.ts`로 분리**(메인 `db:seed` 경로엔 미포함 — production/cutover에 가짜 승인 휴가·업무가 권위 데이터로 주입되는 것 방지, 적대적 리뷰 Finding 1). (a)는 `ROLE_ALLOW`를 별도 모듈로 추출해 테스트 가능하게 한다.
 
 ## Files
 
 - Create: `prisma/seed-roles.ts` (ROLE_ALLOW 추출 + 외주 권한 추가)
-- Modify: `prisma/seed.ts` (ROLE_ALLOW import 전환 + CalendarSource/데모 seed)
+- Create: `prisma/seed-demo.ts` (dev 전용 데모 WorkflowTask/LeaveRequest)
+- Modify: `prisma/seed.ts` (ROLE_ALLOW import 전환 + CalendarSource seed — 데모는 제외)
+- Modify: `package.json` (`db:seed:demo` 스크립트 추가)
 - Test: `tests/prisma/seed-roles.test.ts`
 
 ## Prep
@@ -98,9 +100,9 @@ import { ROLE_ALLOW } from "./seed-roles";
 
 그리고 기존 인라인 `const ROLE_ALLOW: Record<string, string[]> = { … };` 블록(현재 라인 24~49) **전체 삭제**. 나머지 `ACCESS_ROLES`/`NAV`/`splitKey`/`main` 로직은 그대로 둔다(ROLE_ALLOW 참조는 import로 해결됨).
 
-### 3. CalendarSource + 데모 데이터 seed 추가
+### 3. CalendarSource seed 추가 (실 config — 메인 seed)
 
-`prisma/seed.ts`의 `main()` 안, **nav 루프(step 5) 다음·`console.log` 직전**에 아래 블록을 추가한다(`admin`이 스코프에 있어야 하므로 step 4 이후):
+`prisma/seed.ts`의 `main()` 안, **nav 루프(step 5) 다음·`console.log` 직전**에 아래 블록을 추가한다:
 
 ```ts
   // 6. CalendarSource — 공휴일(Google 공휴일 캘린더) + 설정된 Google 캘린더(best-effort)
@@ -121,8 +123,27 @@ import { ROLE_ALLOW } from "./seed-roles";
     });
   }
 
-  // 7. 데모 데이터 — Phase 5/6 전까지 leave/work 뷰가 비지 않도록 현재 월에 샘플 1건씩.
+  // (데모 WorkflowTask/LeaveRequest는 메인 seed에 두지 않는다 — dev 전용 prisma/seed-demo.ts로 분리. step 3b.)
+```
+
+`console.log` 메시지에 `calendarSources` 한 줄을 덧붙여도 좋다(선택).
+
+### 3b. dev 전용 데모 시드 (`prisma/seed-demo.ts`) + npm 스크립트
+
+데모 데이터는 **메인 seed와 분리된 독립 스크립트**다. `npm run db:seed:demo`로만 실행되며 `prisma db seed`(=메인) 경로엔 포함되지 않는다.
+
+`prisma/seed-demo.ts`:
+
+```ts
+import { PrismaClient } from "@prisma/client";
+
+const prisma = new PrismaClient();
+
+// dev 전용 데모 데이터 — 메인 seed.ts(roles/admin/config 부트스트랩)와 분리.
+// production/cutover의 `db:seed` 경로엔 절대 포함되지 않는다(가짜 승인 휴가·업무가 권위 데이터로 주입되는 것 방지 — 적대적 리뷰 Finding 1).
+async function main() {
   const now = new Date();
+
   const wfType = await prisma.workflowType.upsert({
     where: { kind: "WEEKLY_REPORT" },
     update: {},
@@ -133,20 +154,38 @@ import { ROLE_ALLOW } from "./seed-roles";
     update: { scheduledAt: new Date(now.getFullYear(), now.getMonth(), 12, 9, 0) },
     create: { id: "sample-task-1", typeId: wfType.id, scheduledAt: new Date(now.getFullYear(), now.getMonth(), 12, 9, 0), status: "PENDING" },
   });
-  await prisma.leaveRequest.upsert({
-    where: { id: "sample-leave-1" },
-    update: {},
-    create: { id: "sample-leave-1", userId: admin.id, leaveType: "ANNUAL", startDate: new Date(now.getFullYear(), now.getMonth(), 15), endDate: new Date(now.getFullYear(), now.getMonth(), 16), days: 2, status: "APPROVED", reason: "데모 연차" },
-  });
+
+  // 데모 휴가는 OWNER 사용자에게 귀속(메인 seed가 먼저 만들어야 함).
+  const owner = await prisma.user.findFirst({ where: { systemRole: "OWNER" } });
+  if (!owner) {
+    console.warn("[seed-demo] OWNER 사용자가 없어 데모 LeaveRequest를 건너뜁니다. 먼저 `npm run db:seed` 실행.");
+  } else {
+    await prisma.leaveRequest.upsert({
+      where: { id: "sample-leave-1" },
+      update: {},
+      create: { id: "sample-leave-1", userId: owner.id, leaveType: "ANNUAL", startDate: new Date(now.getFullYear(), now.getMonth(), 15), endDate: new Date(now.getFullYear(), now.getMonth(), 16), days: 2, status: "APPROVED", reason: "데모 연차" },
+    });
+  }
+
+  console.log("[seed-demo] 데모 WorkflowTask/LeaveRequest seed 완료(dev 전용).");
+}
+
+main()
+  .catch((e) => { console.error(e); process.exit(1); })
+  .finally(() => prisma.$disconnect());
 ```
 
-`console.log` 메시지에 `calendarSources` 한 줄을 덧붙여도 좋다(선택).
+`package.json` scripts에 추가:
+
+```json
+"db:seed:demo": "tsx prisma/seed-demo.ts"
+```
 
 ### 4. commit
 
 ```
-git add prisma/seed-roles.ts prisma/seed.ts tests/prisma/seed-roles.test.ts
-git commit -m "seed: grant contractors calendar.leave:view; seed holiday/google sources + demo data"
+git add prisma/seed-roles.ts prisma/seed-demo.ts prisma/seed.ts package.json tests/prisma/seed-roles.test.ts
+git commit -m "seed: grant contractors calendar.leave:view; seed holiday/google sources; split demo data into dev-only seed-demo"
 ```
 
 ## Acceptance Criteria
@@ -154,10 +193,11 @@ git commit -m "seed: grant contractors calendar.leave:view; seed holiday/google 
 - `npm test -- tests/prisma/seed-roles.test.ts` → PASS(외주 3역할 calendar.leave:view 보유).
 - `npm run prisma:validate` → 스키마 유효(변경 없음).
 - `npm run typecheck` / `npm run lint` → OK.
-- (DB 연결 시) `npm run db:seed` → 오류 없이 CalendarSource(holiday-kr 등)·데모 task/leave 생성. **이 DB 검증은 node 단위 테스트 범위 밖**이며 dev DB(터널)에서 수동 확인한다.
+- (DB 연결 시) `npm run db:seed` → 오류 없이 CalendarSource(holiday-kr 등) 생성. **데모 task/leave는 생성하지 않는다**(메인 seed에서 분리됨).
+- (DB 연결 시, dev 전용) `npm run db:seed:demo` → 데모 task/leave 생성. **production/cutover에선 실행하지 않는다.** 이 DB 검증은 node 단위 테스트 범위 밖이며 dev DB(터널)에서 수동 확인한다.
 
 ## Cautions
 
 - **seed.ts를 테스트에서 직접 import하지 말 것.** 이유: 최상위 `main()`이 실행되어 DB 연결을 시도한다. 권한 매트릭스 검증은 부수효과 없는 `seed-roles.ts`만 import한다.
-- **데모 LeaveRequest/WorkflowTask를 production seed에 영구로 남기지 말 것(인지).** 이유: Phase 6 마이그레이션 시 실데이터와 섞이면 안 된다. 고정 id(`sample-*`)로 두어 추후 제거가 쉽게 한다. (제거는 Phase 5/6 작업.)
+- **데모 LeaveRequest/WorkflowTask를 메인 `seed.ts`(=`prisma db seed`)에 두지 말 것.** 이유: 메인 seed는 roles/admin/config 부트스트랩 경로라 cutover·production 재시드 시 가짜 **승인 휴가**(캘린더 이벤트·dedup 앵커·연차/정산 입력이 됨)·업무가 권위 데이터로 주입된다(적대적 리뷰 Finding 1). 고정 id만으론 중복만 막고 오염은 못 막는다. 반드시 `prisma/seed-demo.ts`(dev 전용, `db:seed:demo`)로 분리한다.
 - **`google:${calId}` 외 다른 키 스킴으로 바꾸지 말 것.** 이유: 재seed 시 calId 순서가 바뀌어도 동일 source에 매핑되어야 한다(인덱스 기반 키는 재정렬에 취약).
