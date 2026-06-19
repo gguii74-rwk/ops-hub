@@ -1,6 +1,6 @@
 # Phase 4 — Workflows 공통 기반 설계
 
-- Status: Draft (리뷰 대기)
+- Status: Draft (Codex 적대 리뷰 F1·F2·F4 수용, F3 부분 수용 반영)
 - Date: 2026-06-19
 - Roadmap: `docs/product/modernization-roadmap.md` Phase 4 (Workflows 포팅)
 - Discovery: `docs/discovery/day-sync-analysis.md`
@@ -98,6 +98,7 @@ model WorkflowTaskEvent {
 
 ```prisma
 enum MailDeliveryStatus {
+  SENDING   // 발송 전 생성. SMTP 성공 후 갱신이 실패해도 "유령 발송"을 탐지할 수 있게 남는 중간 상태
   SENT
   FAILED
 
@@ -109,9 +110,11 @@ enum MailDeliveryStatus {
 
 - `status MailDeliveryStatus`
 - `errorMessage String?`
-- `sentAt`을 nullable로 변경 (`DateTime?`, FAILED면 null). 기본값 `@default(now())` 제거.
+- `sentAt`을 nullable로 변경 (`DateTime?`, SENDING/FAILED면 null). 기본값 `@default(now())` 제거.
 
 기존 `step`/`recipients`/`subject`/`attachmentPaths`/`providerMessageId`/`sentById`는 유지.
+
+**migration 안전성**: `MailDelivery`는 현재 빈 테이블이다 — `src/`·seed 어디에서도 쓰지 않으며 ops-hub는 cutover 전이라 기존 행이 없다. 따라서 backfill은 불필요하다. 다만 비-null `status` 추가가 (향후 행이 있어도) 안전하도록, migration은 `status`에 임시 default `SENDING`을 부여해 컬럼을 추가한 뒤 default를 제거하는 2단 SQL로 작성한다(애플리케이션은 항상 명시적 status로 insert).
 
 ### 4.3 기존 타임스탬프 컬럼 처리
 
@@ -171,15 +174,16 @@ export async function cancelTask(taskId: string, ctx: TransitionCtx): Promise<vo
 
 `transitionTask` 절차:
 
-1. task 조회(없으면 throw). `kind = task.type.kind`.
-2. `allowed = TRANSITIONS[kind][task.status] ?? []`. `to ∉ allowed` → throw(거부).
+1. task 조회(없으면 throw). `kind = task.type.kind`, `fromStatus = task.status`.
+2. `allowed = TRANSITIONS[kind][fromStatus] ?? []`. `to ∉ allowed` → throw(거부).
 3. 권한: `action = ACTION_FOR_STATUS[to]`. `OWNER` 허용, 아니면 `permissionKeys.has(`${KIND_RESOURCE[kind]}:${action}`)` 필요. 없으면 throw.
 4. `to === CANCELLED`이면 추가 게이트: 본인(`task.createdById === userId`) 또는 OWNER만.
-5. 트랜잭션:
-   - `WorkflowTask.status = to`, 대응 타임스탬프 컬럼 stamp(있으면).
-   - `WorkflowTaskEvent` insert(`fromStatus`, `toStatus`, `actorId=userId`, `note`).
+5. 트랜잭션(조건부·원자):
+   - `updateMany({ where: { id: taskId, status: fromStatus }, data: { status: to, …대응 타임스탬프 } })`.
+   - **갱신 행 수가 0이면** 그 사이 상태가 바뀐 것 → `ConflictError`(API는 409). read-then-write의 last-write-wins와 이중 이벤트 기록을 막는다.
+   - 1행 갱신에 성공한 경우에만 `WorkflowTaskEvent` insert(`fromStatus`, `toStatus`, `actorId=userId`, `note`).
 
-권한 우선순위는 access-control 규칙(OWNER 허용 → 기본 거부)을 따른다. 부수효과 없는 순수 전이는 `cancelTask`만 API로 노출(§9). generate/send는 워크플로 sub-project가 생성·발송 성공 후 `transitionTask`를 호출한다.
+이 조건부 업데이트 패턴은 `kernel/settings/repository.ts`의 낙관적 동시성(`updateMany` + 기대값 일치) 관례를 따른다. 권한 우선순위는 access-control 규칙(OWNER 허용 → 기본 거부)을 따른다. 부수효과 없는 순수 전이는 `cancelTask`만 API로 노출(§9). generate/send는 워크플로 sub-project가 생성·발송 성공 후 `transitionTask`를 호출한다.
 
 ## 6. 메일 인프라
 
@@ -195,15 +199,29 @@ export async function sendMail(msg: MailMessage): Promise<{ providerMessageId: s
 ### 6.2 `services/mail.ts`
 
 ```ts
-// 동기 발송 후 결과를 MailDelivery에 기록(성공/실패 모두).
+// 발송 전 SENDING 레코드 생성 → SMTP → 정확히 1회 SENT/FAILED로 갱신.
 export async function deliver(args: { taskId: string | null; step: string | null; msg: MailMessage; sentById: string }): Promise<MailDelivery>;
-// FAILED 레코드 재처리(같은 수신자·첨부로 재발송, 결과 갱신 또는 새 레코드).
-export async function retryDelivery(deliveryId: string, ctx: { userId: string }): Promise<MailDelivery>;
+// FAILED 레코드 재처리. taskId·authz ctx로 소속·권한을 검증한 뒤 재발송.
+export async function retryDelivery(
+  args: { deliveryId: string; taskId: string },
+  ctx: { userId: string; isOwner: boolean; permissionKeys: Set<string> },
+): Promise<MailDelivery>;
 ```
 
-- 성공: `status=SENT`, `sentAt=now`, `providerMessageId`.
-- 실패: `status=FAILED`, `errorMessage`, `sentAt=null`. **워크플로 상태 전이와 분리** — 발송 실패가 직전 전이를 롤백하지 않는다(워크플로 service가 발송 단계를 분리해 호출).
-- 재시도는 `failed` 레코드를 다시 발송. 결과는 기존 레코드를 갱신한다(이력 단순화). attemptCount는 두지 않는다(YAGNI; 필요 시 후속).
+발송 절차(`deliver`):
+
+1. **발송 전** `status=SENDING`, `sentAt=null` 레코드 생성.
+2. SMTP 전송.
+3. 결과로 같은 레코드를 **정확히 1회** 갱신 — 성공: `status=SENT`, `sentAt=now`, `providerMessageId`. 실패: `status=FAILED`, `errorMessage`.
+
+- 1단계가 있어 SMTP 성공 후 3단계 갱신이 실패한 "유령 발송"도 `SENDING` 레코드로 남아 운영자가 탐지·판단할 수 있다.
+- **워크플로 상태 전이와 분리** — 발송 실패가 직전 전이를 롤백하지 않는다(워크플로 service가 발송 단계를 분리해 호출).
+
+재시도(`retryDelivery`)는 fail-closed로 다음을 검증한 뒤 재발송하고 기존 레코드를 갱신한다(이력 단순화, attemptCount는 두지 않음 — YAGNI):
+
+- (a) `delivery.taskId === args.taskId` (route task 소속 확인)
+- (b) `delivery.status === FAILED` (SENDING은 발송 여부가 불확실하므로 자동 재시도하지 않고 UI에 '확인 필요'로 표시 — 중복 발송 방지)
+- (c) `ctx.isOwner` 또는 `ctx.permissionKeys.has(`${KIND_RESOURCE[kind]}:send`)` (kind는 delivery→task→type에서 로드). 한 워크플로 도메인의 `:send` 권한으로 타 도메인 발송을 재전송하는 것을 막는다.
 
 ## 7. 권한·네비게이션
 
@@ -231,6 +249,8 @@ export async function retryDelivery(deliveryId: string, ctx: { userId: string })
 | `POST /api/workflows/[id]/cancel` | `CANCELLED` 전이 | `:view` + 본인/admin |
 | `POST /api/workflows/[id]/mail/[deliveryId]/retry` | FAILED 메일 재시도 | 해당 kind `:send` |
 
+- 전이(취소 포함)는 조건부 업데이트라 경쟁 시 한쪽만 성공하고 진 쪽은 **409 Conflict**를 받는다(§5.2).
+- `retry`는 `delivery.taskId === [id]`(소속) && `delivery.status === FAILED`(상태)를 검증하고, 권한은 해당 task kind의 `:send`로 검사한다. `SENDING`(발송 불확실)은 재시도 불가 — UI에서 '확인 필요'로만 노출(§6.2, §10).
 - generate/send 부수효과 라우트는 **공통 기반에 없다**. 워크플로 sub-project가 추가한다.
 - 입력 검증은 zod(`validations/`). 범위 파라미터는 calendar와 동일하게 KST·반열림 규약 재사용 가능.
 
@@ -238,8 +258,8 @@ export async function retryDelivery(deliveryId: string, ctx: { userId: string })
 
 - `/workflows` 목록: WorkflowTask 행(제목·종류·예정일·상태 배지), status 필터. 권한 있는 kind만 노출.
 - `/workflows/[id]` 상세:
-  - **timeline**: `WorkflowTaskEvent` 기반 단계별(수행자·시각·from→to·note) + 각 단계의 `GeneratedFile`·`MailDelivery`(성공/실패 배지·오류) 연결 표시.
-  - 액션: **취소**, **메일 재시도** 버튼(공통). **생성/발송/미리보기 버튼은 slot**(후속 워크플로 sub-project가 채움).
+  - **timeline**: `WorkflowTaskEvent` 기반 단계별(수행자·시각·from→to·note) + 각 단계의 `GeneratedFile`·`MailDelivery`(SENT/FAILED/SENDING='확인 필요' 배지·오류) 연결 표시.
+  - 액션: **취소**, **메일 재시도** 버튼(공통). 재시도는 `FAILED` 메일에만 노출(`SENDING`은 '확인 필요' 표시만). **생성/발송/미리보기 버튼은 slot**(후속 워크플로 sub-project가 채움).
 - React Query로 목록·상세 조회(Phase 3 패턴 재사용), 기존 ui 프리미티브·테마 사용.
 - seed에 더미 `WorkflowType` 3종 + 샘플 `WorkflowTask`/`WorkflowTaskEvent`로 shell을 시연·테스트 가능하게 한다.
 
@@ -260,16 +280,24 @@ export interface GeneratorPort {
 
 TDD(실패 테스트 → FAIL 확인 → 최소 구현 → PASS → commit). node 환경, DB·외부 없이.
 
-- 전이 엔진: 허용 전이 통과 / 비허용 거부(fail-closed) / 권한 없는 전이 거부 / OWNER 우회 / 취소 본인·admin 게이트 / 타임스탬프 stamp / 이벤트 기록.
-- 메일: SENT 기록 / FAILED+error 기록 / sentAt null on fail / 재시도가 결과 갱신 / 발송 실패가 전이 롤백 안 함.
+- 전이 엔진: 허용 전이 통과 / 비허용 거부(fail-closed) / 권한 없는 전이 거부 / OWNER 우회 / 취소 본인·admin 게이트 / 타임스탬프 stamp / 이벤트 기록 / **경쟁 전이 동시성**(조건부 `updateMany`가 0행이면 ConflictError, 이벤트는 1건만 기록).
+- 메일: SENDING 선기록 → SENT 갱신 / SENDING → FAILED+error 갱신 / sentAt null(SENDING·FAILED) / 발송 실패가 전이 롤백 안 함.
+- 메일 재시도 authz: FAILED만 재시도 / `delivery.taskId` 불일치 거부 / 타 kind `:send`로 거부 / SENDING 재시도 거부 / 성공 시 기존 레코드 갱신.
 - repository: 목록·상세 조립, CANCELLED 캘린더 제외 회귀(calendar source 경유).
 - 라우트: 인증·권한(보유 kind만 노출, fail-closed), zod 검증.
 - Prisma는 `vi.mock("@/lib/prisma")` in-memory fake, 메일은 fake transport 주입.
 
 게이트(각 태스크 AC): `npm run typecheck` / `npm run lint` / `npm test` / `npm run build`. 스키마 변경은 §4 migration 1건.
 
-## 13. 미해결·후속
+## 13. 비목표·후속
+
+### 비목표 (명시적)
+
+- **durable outbox·백그라운드 발송 워커·메시지 큐는 도입하지 않는다**(단일 프로세스·소규모 내부 팀, 결정 D3). 발송은 동기로 하고, 신뢰성은 `SENDING → SENT/FAILED` 단일-갱신 패턴(§6.2)과 수동 재시도로 확보한다.
+- **send/generate orchestration의 idempotency는 공통 기반의 책임이 아니다.** 전이 후 발송 순서, 발송 부분실패 복구, `(taskId, step)` 단위 중복발송 방지는 send를 실제 구현하는 **워크플로 sub-project**가 자기 도메인 규칙으로 책임진다. 공통 기반은 `transitionTask`(조건부·원자, §5.2)와 `deliver()`(발송전 레코드→1회 갱신, §6.2)의 원자성까지만 보장한다.
+
+### 후속
 
 - 워크플로별 누락 권한 액션(`workflows.billing:generate`, `workflows.notification:generate`/`review`/`configure` 등)은 해당 sub-project가 `EXTRA_PERMISSIONS`에 추가한다.
-- 메일 재시도 횟수·백오프, 첨부 대용량 처리(25MB)는 발송을 실제로 쓰는 워크플로 sub-project에서 구체화한다.
+- 메일 재시도 횟수·백오프, 첨부 대용량 처리(25MB), `SENDING` 잔여 레코드의 운영 정리(reconcile)는 발송을 실제로 쓰는 워크플로 sub-project에서 구체화한다.
 - AI 서명 없는 commit(글로벌 규칙).
