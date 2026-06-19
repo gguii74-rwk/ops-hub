@@ -35,6 +35,7 @@ describe("maskEvent", () => {
   it("isOwner(시스템 OWNER) → 상세", () => {
     const c = maskEvent(ev({ userId: "u9" }), ctx({ userId: "u1", isOwner: true }));
     expect(c.masked).toBe(false);
+    expect(c.description).toBe("가족 여행");
   });
 
   it("공휴일은 민감하지 않음 → 마스킹 안 함", () => {
@@ -58,5 +59,19 @@ describe("maskEvent", () => {
   it("tentative 플래그는 그대로 통과(가시성/접기 판단은 feed)", () => {
     expect(maskEvent(ev({ tentative: true }), ctx({ userId: "u1" })).tentative).toBe(true);
     expect(maskEvent(ev({ tentative: false }), ctx({ userId: "u1" })).tentative).toBe(false);
+  });
+
+  it("userId null인 외부 이벤트 — null===null 트랩 없음: 비권한자에게 마스킹", () => {
+    const c = maskEvent(ev({ kind: "EXTERNAL_EVENT", title: "미팅", userId: null }), ctx({ userId: "u1" }));
+    expect(c.masked).toBe(true);
+    expect(c.title).toBe("외부 일정");
+    expect(c.description).toBeNull();
+  });
+
+  it("마스킹돼도 userId·시각은 응답에 남는다(차단은 feed 단계)", () => {
+    const c = maskEvent(ev({ kind: "INTERNAL_LEAVE", userId: "u9" }), ctx({ userId: "u1" }));
+    expect(c.masked).toBe(true);
+    expect(c.userId).toBe("u9");
+    expect(typeof c.start).toBe("string"); // ISO 직렬화 유지
   });
 });
