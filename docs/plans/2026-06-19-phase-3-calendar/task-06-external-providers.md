@@ -88,6 +88,19 @@ describe("createGoogleProvider", () => {
     expect(out.events[0].userId).toBeNull();
   });
 
+  it("calendarId(externalId)는 응답에 새지 않는다 — 이메일형 calId 가드(§9)", async () => {
+    // 시드가 만드는 불투명 key + 이메일형 calId(externalId). provider는 key만 응답에 쓰고 externalId는 fetch 대상으로만 써야 한다.
+    h.sources.mockResolvedValue([{ id: "s1", key: "google:ab12cd34ef56", externalId: "person@example.com", name: "Google: person@example.com", cacheTtlSeconds: 900, ownerUserId: null }]);
+    h.getClient.mockReturnValue({ listEvents: async () => [{ id: "e1", summary: "회의", description: null, start: new Date("2026-06-12T01:00:00Z"), end: new Date("2026-06-12T02:00:00Z"), allDay: false }] });
+    cacheRunsFetcher();
+    const out = await createGoogleProvider().fetchEvents(range, ctx);
+    // 이벤트 id·sourceKey·status.key 어디에도 calId(=externalId, 이메일 가능)가 없어야 함
+    expect(JSON.stringify(out)).not.toContain("person@example.com");
+    expect(out.events[0].id).toBe("google:ab12cd34ef56:e1");
+    expect(out.events[0].sourceKey).toBe("google:ab12cd34ef56");
+    expect(out.statuses[0].key).toBe("google:ab12cd34ef56");
+  });
+
   it("summary 없으면 title='외부 일정'", async () => {
     h.sources.mockResolvedValue([{ id: "s1", key: "google-team", externalId: "team@group", name: "팀", cacheTtlSeconds: 900, ownerUserId: null }]);
     h.getClient.mockReturnValue({ listEvents: async () => [{ id: "e2", summary: null, description: null, start: new Date("2026-06-12T01:00:00Z"), end: new Date("2026-06-12T02:00:00Z"), allDay: false }] });

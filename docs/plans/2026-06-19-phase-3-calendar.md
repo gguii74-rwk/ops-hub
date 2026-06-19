@@ -45,8 +45,8 @@ export interface RawEvent {
   end: Date;                 // 반열림 종료
   allDay: boolean;
   userId: string | null;     // 이벤트 소유자(있으면)
-  sourceKey: string;         // 출처 식별(UI 색/그룹, 상태 매칭)
-  externalId: string | null;
+  sourceKey: string;         // 출처 식별(UI 색/그룹, 상태 매칭) — 불투명. CalendarSource.externalId(=calId)를 내장하지 말 것: 응답에 노출됨(§9)
+  externalId: string | null; // 이벤트 단위 외부 id(예: Google event id). CalEvent엔 미포함 — 클라이언트로 나가지 않음
   dedupStatus: CalendarDedupStatus;
   duplicateOfId: string | null;
   tentative: boolean;        // 미승인(PENDING) 휴가 등 잠정 일정. 본인·admin만 노출, dedup 앵커 제외(§10).
@@ -145,7 +145,7 @@ import type { LeaveRequestStatus } from "@prisma/client";
 export interface LeaveRow { id: string; userId: string; leaveType: string; reason: string | null; startDate: Date; endDate: Date; status: LeaveRequestStatus; }
 export interface WorkflowRow { id: string; title: string; scheduledAt: Date; status: string; }
 export interface ManualRow { id: string; kind: "PERSONAL_EVENT" | "TEAM_EVENT"; title: string; description: string | null; startsAt: Date; endsAt: Date; allDay: boolean; userId: string | null; sourceKey: string; }
-export interface SourceRow { id: string; key: string; externalId: string | null; name: string; cacheTtlSeconds: number; ownerUserId: string | null; }
+export interface SourceRow { id: string; key: string; externalId: string | null; name: string; cacheTtlSeconds: number; ownerUserId: string | null; } // key=불투명 식별자(응답 노출), externalId=실제 calId(서버 전용 fetch 대상). 시드가 key를 calId 해시로 생성(§9, task-10)
 export interface CacheRow { payload: unknown; fetchedAt: Date; expiresAt: Date; errorMessage: string | null; }
 
 export function findLeaveInRange(range: NormalizedRange, statuses: LeaveRequestStatus[]): Promise<LeaveRow[]>;
