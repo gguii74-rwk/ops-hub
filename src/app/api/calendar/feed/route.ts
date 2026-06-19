@@ -24,7 +24,7 @@ export async function GET(req: Request) {
     await requirePermission(session.user.id, VIEW_PERMISSION[view], "view");
     const range = normalizeToGridWindow(anchor);
     const summary = await getPermissionSummary(session.user.id);
-    const ctx = { userId: session.user.id, isOwner: false, permissionKeys: new Set(summary.keys) };
+    const ctx = { userId: session.user.id, isOwner: session.user.systemRole === "OWNER", permissionKeys: new Set(summary.keys) };
     const providers = createCalendarProviders({ forceRefresh: false });
     const feed = await buildFeed(view, range, ctx, providers);
     return NextResponse.json(feed, { headers: { "Cache-Control": "no-store" } });
