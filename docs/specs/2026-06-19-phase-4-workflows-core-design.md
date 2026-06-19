@@ -1,6 +1,6 @@
 # Phase 4 — Workflows 공통 기반 설계
 
-- Status: Draft (Codex 적대 리뷰 F1·F2·F4 수용, F3 부분 수용 반영)
+- Status: Draft (Codex 적대 리뷰 2회 반영 — 원자 전이·retry authz·발송 멱등·본문 보존)
 - Date: 2026-06-19
 - Roadmap: `docs/product/modernization-roadmap.md` Phase 4 (Workflows 포팅)
 - Discovery: `docs/discovery/day-sync-analysis.md`
@@ -110,11 +110,14 @@ enum MailDeliveryStatus {
 
 - `status MailDeliveryStatus`
 - `errorMessage String?`
+- `bodyHtml String?` — 렌더된 발송 본문. retry가 워크플로 재생성 없이 원본을 그대로 재발송하도록 보존한다(§6.2). 첨부는 기존 `attachmentPaths`(shared storage 경로)로 이미 보존된다.
 - `sentAt`을 nullable로 변경 (`DateTime?`, SENDING/FAILED면 null). 기본값 `@default(now())` 제거.
 
 기존 `step`/`recipients`/`subject`/`attachmentPaths`/`providerMessageId`/`sentById`는 유지.
 
-**migration 안전성**: `MailDelivery`는 현재 빈 테이블이다 — `src/`·seed 어디에서도 쓰지 않으며 ops-hub는 cutover 전이라 기존 행이 없다. 따라서 backfill은 불필요하다. 다만 비-null `status` 추가가 (향후 행이 있어도) 안전하도록, migration은 `status`에 임시 default `SENDING`을 부여해 컬럼을 추가한 뒤 default를 제거하는 2단 SQL로 작성한다(애플리케이션은 항상 명시적 status로 insert).
+**발송 멱등성 인덱스**: 같은 논리적 발송의 중복 SMTP를 막기 위해 `(taskId, step)`에 **부분 unique 인덱스**를 둔다 — `WHERE taskId IS NOT NULL AND status IN ('SENDING','SENT')`. FAILED·임시 메일(taskId null)은 제외해 재시도 갱신·비워크플로 발송과 충돌하지 않는다. Prisma가 partial unique index를 직접 표현하지 못하므로 migration raw SQL로 추가하고, 애플리케이션도 tx 내에서 동일 가드를 둔다(§6.2).
+
+**migration 안전성**: `MailDelivery`는 현재 빈 테이블이다 — `src/`·seed 어디에서도 쓰지 않으며 ops-hub는 cutover 전이라 기존 행이 없다. 따라서 backfill은 불필요하다. 다만 비-null `status` 추가가 (향후 행이 있어도) 안전하도록, migration은 `status`에 임시 default `SENDING`을 부여해 컬럼을 추가한 뒤 default를 제거하는 2단 SQL로 작성한다(애플리케이션은 항상 명시적 status로 insert). 부분 unique 인덱스도 같은 migration의 raw SQL로 추가한다.
 
 ### 4.3 기존 타임스탬프 컬럼 처리
 
@@ -210,18 +213,20 @@ export async function retryDelivery(
 
 발송 절차(`deliver`):
 
-1. **발송 전** `status=SENDING`, `sentAt=null` 레코드 생성.
-2. SMTP 전송.
-3. 결과로 같은 레코드를 **정확히 1회** 갱신 — 성공: `status=SENT`, `sentAt=now`, `providerMessageId`. 실패: `status=FAILED`, `errorMessage`.
+1. **멱등 가드(tx)**: `taskId != null && step != null`이면 같은 `(taskId, step)`에 활성(SENDING/SENT) 레코드가 있는지 확인한다. 있으면 새 SMTP 없이 **`ConflictError`(409)** — 더블클릭·요청 타임아웃 후 브라우저/서버 재시도로 인한 중복 외부 발송을 막는다.
+2. **발송 전** `status=SENDING`, `sentAt=null`, `bodyHtml=msg.html`, `recipients`/`subject`/`attachmentPaths` 레코드 생성. `(taskId, step)` 부분 unique 인덱스(§4.2)가 경합 시 최종 방어선.
+3. SMTP 전송.
+4. 결과로 같은 레코드를 **정확히 1회** 갱신 — 성공: `status=SENT`, `sentAt=now`, `providerMessageId`. 실패: `status=FAILED`, `errorMessage`.
 
-- 1단계가 있어 SMTP 성공 후 3단계 갱신이 실패한 "유령 발송"도 `SENDING` 레코드로 남아 운영자가 탐지·판단할 수 있다.
+- 2단계가 있어 SMTP 성공 후 4단계 갱신이 실패한 "유령 발송"도 `SENDING` 레코드로 남아 운영자가 탐지·판단할 수 있다.
 - **워크플로 상태 전이와 분리** — 발송 실패가 직전 전이를 롤백하지 않는다(워크플로 service가 발송 단계를 분리해 호출).
 
-재시도(`retryDelivery`)는 fail-closed로 다음을 검증한 뒤 재발송하고 기존 레코드를 갱신한다(이력 단순화, attemptCount는 두지 않음 — YAGNI):
+재시도(`retryDelivery`)는 **저장된 `bodyHtml`·`recipients`·`subject`·`attachmentPaths`로 원본을 그대로 재발송**한다(워크플로 재생성 없음 → 본문 drift 없음). fail-closed로 다음을 검증한 뒤 발송하고 기존 레코드를 갱신한다(SENDING→SENT/FAILED, 새 행을 만들지 않으므로 멱등 인덱스와 무충돌. attemptCount는 두지 않음 — YAGNI):
 
 - (a) `delivery.taskId === args.taskId` (route task 소속 확인)
 - (b) `delivery.status === FAILED` (SENDING은 발송 여부가 불확실하므로 자동 재시도하지 않고 UI에 '확인 필요'로 표시 — 중복 발송 방지)
 - (c) `ctx.isOwner` 또는 `ctx.permissionKeys.has(`${KIND_RESOURCE[kind]}:send`)` (kind는 delivery→task→type에서 로드). 한 워크플로 도메인의 `:send` 권한으로 타 도메인 발송을 재전송하는 것을 막는다.
+- 첨부 파일이 shared storage에서 사라졌으면 재발송은 FAILED로 처리한다(조용한 실패 금지).
 
 ## 7. 권한·네비게이션
 
@@ -251,7 +256,7 @@ export async function retryDelivery(
 
 - 전이(취소 포함)는 조건부 업데이트라 경쟁 시 한쪽만 성공하고 진 쪽은 **409 Conflict**를 받는다(§5.2).
 - `retry`는 `delivery.taskId === [id]`(소속) && `delivery.status === FAILED`(상태)를 검증하고, 권한은 해당 task kind의 `:send`로 검사한다. `SENDING`(발송 불확실)은 재시도 불가 — UI에서 '확인 필요'로만 노출(§6.2, §10).
-- generate/send 부수효과 라우트는 **공통 기반에 없다**. 워크플로 sub-project가 추가한다.
+- generate/send 부수효과 라우트는 **공통 기반에 없다**. 워크플로 sub-project가 추가한다. 단 그 라우트가 호출하는 `deliver()`는 공통 기반이 제공하며 `(taskId, step)` 멱등이다 — 중복 호출은 **409**(§6.2).
 - 입력 검증은 zod(`validations/`). 범위 파라미터는 calendar와 동일하게 KST·반열림 규약 재사용 가능.
 
 ## 10. UI
@@ -282,7 +287,8 @@ TDD(실패 테스트 → FAIL 확인 → 최소 구현 → PASS → commit). nod
 
 - 전이 엔진: 허용 전이 통과 / 비허용 거부(fail-closed) / 권한 없는 전이 거부 / OWNER 우회 / 취소 본인·admin 게이트 / 타임스탬프 stamp / 이벤트 기록 / **경쟁 전이 동시성**(조건부 `updateMany`가 0행이면 ConflictError, 이벤트는 1건만 기록).
 - 메일: SENDING 선기록 → SENT 갱신 / SENDING → FAILED+error 갱신 / sentAt null(SENDING·FAILED) / 발송 실패가 전이 롤백 안 함.
-- 메일 재시도 authz: FAILED만 재시도 / `delivery.taskId` 불일치 거부 / 타 kind `:send`로 거부 / SENDING 재시도 거부 / 성공 시 기존 레코드 갱신.
+- 메일 멱등: 같은 `(taskId, step)` deliver 중복 호출 → 두 번째는 ConflictError(409), SMTP 1회·활성 레코드 1개 / `taskId` 또는 `step`이 null이면 멱등 미적용 / FAILED 레코드가 있으면 deliver는 새 발송 허용(재시도와 구분).
+- 메일 재시도 authz·본문: FAILED만 재시도 / `delivery.taskId` 불일치 거부 / 타 kind `:send`로 거부 / SENDING 재시도 거부 / 저장된 `bodyHtml`로 재발송(워크플로 재생성 없음) / 첨부 유실 시 FAILED / 성공 시 기존 레코드 갱신.
 - repository: 목록·상세 조립, CANCELLED 캘린더 제외 회귀(calendar source 경유).
 - 라우트: 인증·권한(보유 kind만 노출, fail-closed), zod 검증.
 - Prisma는 `vi.mock("@/lib/prisma")` in-memory fake, 메일은 fake transport 주입.
@@ -294,7 +300,8 @@ TDD(실패 테스트 → FAIL 확인 → 최소 구현 → PASS → commit). nod
 ### 비목표 (명시적)
 
 - **durable outbox·백그라운드 발송 워커·메시지 큐는 도입하지 않는다**(단일 프로세스·소규모 내부 팀, 결정 D3). 발송은 동기로 하고, 신뢰성은 `SENDING → SENT/FAILED` 단일-갱신 패턴(§6.2)과 수동 재시도로 확보한다.
-- **send/generate orchestration의 idempotency는 공통 기반의 책임이 아니다.** 전이 후 발송 순서, 발송 부분실패 복구, `(taskId, step)` 단위 중복발송 방지는 send를 실제 구현하는 **워크플로 sub-project**가 자기 도메인 규칙으로 책임진다. 공통 기반은 `transitionTask`(조건부·원자, §5.2)와 `deliver()`(발송전 레코드→1회 갱신, §6.2)의 원자성까지만 보장한다.
+- **발송 중복방지는 공통 기반의 책임이다.** `(taskId, step)` 단위 중복 SMTP는 `deliver()`의 멱등 가드(활성 레코드 유일성 + 부분 unique 인덱스, §4.2·§6.2)가 foundation에서 막는다 — 각 워크플로가 가드를 재구현하다 빠뜨려 고객 대면 메일(인보이스 등)이 중복 발송되는 fail-open을 차단한다. 공통 기반은 `transitionTask`(조건부·원자, §5.2)와 `deliver()`(멱등·발송전 레코드→1회 갱신, §6.2)의 원자성을 보장한다.
+- **워크플로 sub-project 책임**: 어떤 step을 언제·어떤 순서로 보낼지(다단계 발송 orchestration)와 본문 재생성 정책. 발송 자체의 멱등·이력·재시도는 공통 기반이 담당한다.
 
 ### 후속
 
