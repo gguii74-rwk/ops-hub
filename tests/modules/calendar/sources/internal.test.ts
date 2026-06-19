@@ -72,9 +72,23 @@ describe("workflowTaskProvider", () => {
     expect(out.events[0].start.toISOString()).toBe("2026-06-11T15:00:00.000Z");
     expect(out.events[0].end.toISOString()).toBe("2026-06-12T15:00:00.000Z");
   });
+
+  it("repository throw → events 빈 배열 + failed status", async () => {
+    h.wf.mockRejectedValue(new Error("wf db down"));
+    const out = await workflowTaskProvider.fetchEvents(range, ctx);
+    expect(out.events).toEqual([]);
+    expect(out.statuses[0]).toEqual({ key: "workflowTask", state: "failed", lastFetchedAt: null, error: "wf db down" });
+  });
 });
 
 describe("manualProvider", () => {
+  it("repository throw → events 빈 배열 + failed status", async () => {
+    h.manual.mockRejectedValue(new Error("manual db down"));
+    const out = await manualProvider.fetchEvents(range, ctx);
+    expect(out.events).toEqual([]);
+    expect(out.statuses[0]).toEqual({ key: "manual", state: "failed", lastFetchedAt: null, error: "manual db down" });
+  });
+
   it("ManualRow → RawEvent (kind·userId·sourceKey 보존, tentative false), 비-admin은 본인 PERSONAL만 조회", async () => {
     h.manual.mockResolvedValue([
       { id: "m1", kind: "TEAM_EVENT", title: "팀 워크숍", description: "오프사이트", startsAt: new Date("2026-06-12T00:00:00Z"), endsAt: new Date("2026-06-13T00:00:00Z"), allDay: true, userId: null, sourceKey: "manual-team" },

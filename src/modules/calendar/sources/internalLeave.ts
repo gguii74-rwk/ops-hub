@@ -1,4 +1,4 @@
-import type { CalendarSourceProvider, FeedContext, NormalizedRange, RawEvent, SourceResult } from "../types";
+import type { CalendarSourceProvider, NormalizedRange, RawEvent, SourceResult } from "../types";
 import { findLeaveInRange, type LeaveRow } from "../repositories";
 import { allDayHalfOpen } from "../time";
 
@@ -25,7 +25,7 @@ function toRawEvent(l: LeaveRow): RawEvent {
 
 export const internalLeaveProvider: CalendarSourceProvider = {
   key: KEY,
-  async fetchEvents(range: NormalizedRange, _ctx: FeedContext): Promise<SourceResult> {
+  async fetchEvents(range: NormalizedRange): Promise<SourceResult> {
     try {
       const rows = await findLeaveInRange(range, ["APPROVED", "PENDING"]);
       return { events: rows.map(toRawEvent), statuses: [{ key: KEY, state: "ok", lastFetchedAt: null, error: null }] };
