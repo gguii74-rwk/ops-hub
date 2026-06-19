@@ -6,6 +6,7 @@ import { PermissionProvider } from "@/lib/auth/permissions-client";
 import { Button } from "@/components/ui/button";
 import { ThemeSwitcher } from "@/components/theme-switcher";
 import { AppNav } from "./app-nav";
+import { Providers } from "./providers";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
@@ -21,6 +22,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <PermissionProvider keys={summary.keys}>
+      <Providers>
       <div className="grid min-h-screen grid-cols-[200px_1fr]">
         <aside className="flex flex-col gap-4 border-r border-border bg-card p-4">
           <strong className="font-display text-lg font-semibold tracking-tight">ops-hub</strong>
@@ -41,6 +43,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           {children}
         </main>
       </div>
+      </Providers>
     </PermissionProvider>
   );
 }
