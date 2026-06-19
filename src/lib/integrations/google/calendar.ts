@@ -1,6 +1,6 @@
 import "server-only";
 import { google } from "googleapis";
-import { collectAllPages, normalizeGoogleEvent, type GoogleRawEvent, type NormalizedGoogleEvent } from "./map";
+import { collectAllPages, normalizeGoogleEvents, type GoogleRawEvent, type NormalizedGoogleEvent } from "./map";
 
 export interface GoogleCalendarClient {
   listEvents(calendarId: string, timeMin: Date, timeMax: Date): Promise<NormalizedGoogleEvent[]>;
@@ -37,7 +37,10 @@ export function getGoogleCalendarClient(): GoogleCalendarClient {
           }));
         return { items, nextPageToken: res.data.nextPageToken ?? undefined };
       });
-      return raw.map(normalizeGoogleEvent);
+      // 이벤트별 격리 정규화 — 형식 오류 한 건이 소스 전체를 실패시키지 않게 한다(적대적 리뷰). 건너뛴 건은 서버 로그에만.
+      const { events, skipped } = normalizeGoogleEvents(raw);
+      if (skipped > 0) console.warn(`[google] calendar ${calendarId}: ${skipped}건 형식 오류 이벤트 건너뜀`);
+      return events;
     },
   };
 }
