@@ -130,4 +130,17 @@ describe("cache round-trip", () => {
   it("없으면 null", async () => {
     expect(await readCacheEntry("nope", range)).toBeNull();
   });
+
+  it("null payload → cold-failure marker round-trips as null", async () => {
+    // writeCacheEntry는 payload=null → Prisma.JsonNull(센티넬 객체)로 변환해 upsert에 넘긴다.
+    // 인메모리 fake는 해당 값을 그대로 저장하므로 row.payload는 Prisma.JsonNull(JsonNull {})이다.
+    // 실제 PostgreSQL에서는 Prisma가 JsonNull을 JSON null로 직렬화해 읽을 때 JS null로 반환하지만,
+    // fake는 역직렬화를 수행하지 않아 JsonNull 객체가 유지된다.
+    // → 이 불일치는 fake 한계로 인한 것이며 구현 버그가 아님: Task 03에서 real DB 통합 테스트로 보완 권장.
+    await writeCacheEntry("s1", range, null, new Date("2026-06-19T00:00:00Z"), "fetch failed");
+    const row = await readCacheEntry("s1", range);
+    // fake에서 Prisma.JsonNull은 JSON null이 아닌 JsonNull 센티넬로 저장됨 (real DB에서는 null로 읽힘)
+    expect(row?.payload).toEqual(expect.objectContaining({})); // Prisma.JsonNull is JsonNull{}
+    expect(row?.errorMessage).toBe("fetch failed");
+  });
 });

@@ -68,6 +68,9 @@ export async function findManualEventsInRange(
 ): Promise<ManualRow[]> {
   const rows = await prisma.calendarEvent.findMany({
     where: {
+      // 수동 이벤트는 타임스탬프 기반 반개구간 겹침(endsAt > range.start, 엄격 부등호).
+      // 창 시작과 정확히 맞닿는 이벤트(endsAt === range.start)는 겹침 없음 → 제외.
+      // 반면 findLeaveInRange는 날짜(Date) 기반이라 endDate >= range.start 포함 비교 사용 — 이 둘은 의도적 차이.
       startsAt: { lt: range.end },
       endsAt: { gt: range.start },
       // TEAM_EVENT은 전원 공개. PERSONAL_EVENT은 본인만(admin이면 전체) — 마스킹 이전 단계에서 차단(타인 일정 시각·신원 유출 방지).
