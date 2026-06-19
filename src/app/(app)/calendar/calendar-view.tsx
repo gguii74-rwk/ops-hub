@@ -28,7 +28,7 @@ async function fetchFeed(view: ViewKey, anchorISO: string): Promise<FeedResponse
 }
 
 function monthKey(d: Date): string {
-  return `${d.getFullYear()}-${d.getMonth()}`;
+  return `${d.getFullYear()}-${d.getMonth() + 1}`;
 }
 function addMonths(d: Date, n: number): Date {
   return new Date(d.getFullYear(), d.getMonth() + n, 1);
@@ -43,6 +43,7 @@ export function CalendarView({ allowedViews }: { allowedViews: ViewKey[] }) {
   const qc = useQueryClient();
   const [view, setView] = useState<ViewKey>(allowedViews[0] ?? "work");
   const [anchor, setAnchor] = useState<Date>(() => new Date());
+  const [refreshing, setRefreshing] = useState(false);
   const query = useQuery({
     queryKey: ["calendar", view, monthKey(anchor)],
     queryFn: () => fetchFeed(view, monthAnchorISO(anchor)),
@@ -57,12 +58,17 @@ export function CalendarView({ allowedViews }: { allowedViews: ViewKey[] }) {
   }, [view, anchor, qc]);
 
   async function refresh() {
-    await fetch("/api/calendar/refresh", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ view, start: monthAnchorISO(anchor) }),
-    });
-    await qc.invalidateQueries({ queryKey: ["calendar", view, monthKey(anchor)] });
+    setRefreshing(true);
+    try {
+      await fetch("/api/calendar/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ view, start: monthAnchorISO(anchor) }),
+      });
+      await qc.invalidateQueries({ queryKey: ["calendar", view, monthKey(anchor)] });
+    } finally {
+      setRefreshing(false);
+    }
   }
 
   const feed = query.data;
@@ -83,7 +89,7 @@ export function CalendarView({ allowedViews }: { allowedViews: ViewKey[] }) {
           <Button size="sm" variant="ghost" onClick={() => setAnchor((a) => addMonths(a, -1))}>이전</Button>
           <Button size="sm" variant="ghost" onClick={() => setAnchor(new Date())}>오늘</Button>
           <Button size="sm" variant="ghost" onClick={() => setAnchor((a) => addMonths(a, 1))}>다음</Button>
-          <Button size="sm" variant="outline" onClick={refresh} disabled={query.isFetching}>새로고침</Button>
+          <Button size="sm" variant="outline" onClick={refresh} disabled={query.isFetching || refreshing}>새로고침</Button>
         </div>
       </div>
 
