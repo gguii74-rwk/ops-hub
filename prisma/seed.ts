@@ -5,7 +5,7 @@ import bcrypt from "bcryptjs";
 import { ACCESS_ROLE_KEYS, NAV as NAV_CATALOG, RESOURCES } from "../src/kernel/access/catalog";
 import { EXTRA_PERMISSIONS } from "./seed-permissions";
 import { ROLE_ALLOW } from "./seed-roles";
-import { resolveGoogleOwnerId, googleSourceKey } from "./seed-google";
+import { planGoogleSources } from "./seed-google";
 
 const prisma = new PrismaClient();
 
@@ -165,17 +165,29 @@ async function main() {
     await prisma.$disconnect();
     process.exit(1);
   }
-  for (const calId of calIds) {
-    const ownerUserId = resolveGoogleOwnerId(calId, ownerEmailByCalId, userIdByEmail);
-    // key는 불투명(calId의 HMAC) — calId(개인 캘린더면 이메일)가 feed 응답으로 새지 않게 한다(§9, 적대적 리뷰).
-    // 실제 calId는 externalId에만 보관(provider fetch 대상). name은 admin 식별용 DB 필드라 응답엔 미포함.
-    const key = googleSourceKey(calId, keySecret);
-    await prisma.calendarSource.upsert({
-      where: { key },
-      // ownerUserId는 create·update 모두 설정 — 재seed 시 owner-map 변경이 기존 행에도 반영돼야 attribution이 고착되지 않음(적대적 리뷰).
-      update: { externalId: calId, syncStatus: "ACTIVE", ownerUserId },
-      create: { key, kind: "GOOGLE_CALENDAR", name: `Google: ${calId}`, provider: "google", externalId: calId, cacheTtlSeconds: 900, visibility: "TEAM", ownerUserId },
-    });
+  // 조정은 externalId(=calId, 안정) 기준 — secret 회전 시에도 같은 calId는 기존 행을 in-place로 재키잉해
+  // 중복 ACTIVE 소스를 만들지 않는다(key-기준 upsert의 함정, 적대적 리뷰). 설정에서 빠진 calId는 PAUSED.
+  const existingGoogle = await prisma.calendarSource.findMany({
+    where: { kind: "GOOGLE_CALENDAR" },
+    select: { id: true, externalId: true },
+  });
+  const plan = planGoogleSources(calIds, existingGoogle, keySecret, ownerEmailByCalId, userIdByEmail);
+  for (const u of plan.upserts) {
+    // key는 불투명(calId의 HMAC) — calId(개인 캘린더면 이메일)가 feed 응답으로 새지 않게 한다(§9). 실제 calId는 externalId에만 보관.
+    // ownerUserId는 update에도 반영 — owner-map 변경이 기존 행에 고착되지 않게(적대적 리뷰).
+    if (u.existingId) {
+      await prisma.calendarSource.update({
+        where: { id: u.existingId },
+        data: { key: u.key, externalId: u.calId, syncStatus: "ACTIVE", ownerUserId: u.ownerUserId },
+      });
+    } else {
+      await prisma.calendarSource.create({
+        data: { key: u.key, kind: "GOOGLE_CALENDAR", name: `Google: ${u.calId}`, provider: "google", externalId: u.calId, cacheTtlSeconds: 900, visibility: "TEAM", ownerUserId: u.ownerUserId },
+      });
+    }
+  }
+  if (plan.deactivateIds.length > 0) {
+    await prisma.calendarSource.updateMany({ where: { id: { in: plan.deactivateIds } }, data: { syncStatus: "PAUSED" } });
   }
 
   // (데모 WorkflowTask/LeaveRequest는 메인 seed에 두지 않는다 — dev 전용 prisma/seed-demo.ts로 분리. step 3b.)
