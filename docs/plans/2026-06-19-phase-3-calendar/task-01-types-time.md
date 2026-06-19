@@ -59,6 +59,7 @@ export interface RawEvent {
   externalId: string | null;
   dedupStatus: CalendarDedupStatus;
   duplicateOfId: string | null;
+  tentative: boolean; // 미승인(PENDING) 휴가 등 잠정 일정. 본인·admin만 노출, dedup 앵커 제외(§10)
 }
 
 export interface CalEvent {
@@ -73,6 +74,7 @@ export interface CalEvent {
   sourceKey: string;
   dedupStatus: CalendarDedupStatus;
   masked: boolean;
+  tentative: boolean; // 잠정(미승인) 일정 — UI가 별도 스타일로 표시
 }
 
 export interface SourceStatus {

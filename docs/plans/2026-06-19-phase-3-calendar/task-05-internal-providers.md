@@ -48,7 +48,7 @@ beforeEach(() => {
 });
 
 describe("internalLeaveProvider", () => {
-  it("LeaveRow → INTERNAL_LEAVE RawEvent (all-day, KST 반열림, reason→description)", async () => {
+  it("APPROVED LeaveRow → INTERNAL_LEAVE RawEvent (all-day, KST 반열림, reason→description, tentative false)", async () => {
     h.leave.mockResolvedValue([
       { id: "l1", userId: "u9", leaveType: "ANNUAL", reason: "가족 여행", startDate: new Date("2026-06-10"), endDate: new Date("2026-06-11"), status: "APPROVED" },
     ]);
@@ -68,9 +68,18 @@ describe("internalLeaveProvider", () => {
         externalId: null,
         dedupStatus: "UNIQUE",
         duplicateOfId: null,
+        tentative: false,
       },
     ]);
     expect(h.leave).toHaveBeenCalledWith(range, ["APPROVED", "PENDING"]);
+  });
+
+  it("PENDING LeaveRow → tentative true (잠정 — 본인/admin만, dedup 앵커 아님)", async () => {
+    h.leave.mockResolvedValue([
+      { id: "l2", userId: "u9", leaveType: "ANNUAL", reason: "신청중", startDate: new Date("2026-06-10"), endDate: new Date("2026-06-10"), status: "PENDING" },
+    ]);
+    const out = await internalLeaveProvider.fetchEvents(range, ctx);
+    expect(out.events[0]).toMatchObject({ id: "leave:l2", kind: "INTERNAL_LEAVE", tentative: true });
   });
 
   it("repository throw → events 빈 배열 + failed status", async () => {
@@ -85,7 +94,7 @@ describe("workflowTaskProvider", () => {
   it("WorkflowRow → WORKFLOW_TASK RawEvent (해당 KST 일 all-day)", async () => {
     h.wf.mockResolvedValue([{ id: "w1", title: "주간보고", scheduledAt: new Date("2026-06-12T01:00:00Z"), status: "PENDING" }]);
     const out = await workflowTaskProvider.fetchEvents(range, ctx);
-    expect(out.events[0]).toMatchObject({ id: "workflow:w1", kind: "WORKFLOW_TASK", title: "주간보고", allDay: true, sourceKey: "workflowTask", userId: null });
+    expect(out.events[0]).toMatchObject({ id: "workflow:w1", kind: "WORKFLOW_TASK", title: "주간보고", allDay: true, sourceKey: "workflowTask", userId: null, tentative: false });
     // 2026-06-12T01:00Z = 06-12 10:00 KST → 06-12 00:00 KST = 2026-06-11T15:00Z
     expect(out.events[0].start.toISOString()).toBe("2026-06-11T15:00:00.000Z");
     expect(out.events[0].end.toISOString()).toBe("2026-06-12T15:00:00.000Z");
@@ -93,7 +102,7 @@ describe("workflowTaskProvider", () => {
 });
 
 describe("manualProvider", () => {
-  it("ManualRow → RawEvent (kind·userId·sourceKey 보존)", async () => {
+  it("ManualRow → RawEvent (kind·userId·sourceKey 보존, tentative false), 비-admin은 본인 PERSONAL만 조회", async () => {
     h.manual.mockResolvedValue([
       { id: "m1", kind: "TEAM_EVENT", title: "팀 워크숍", description: "오프사이트", startsAt: new Date("2026-06-12T00:00:00Z"), endsAt: new Date("2026-06-13T00:00:00Z"), allDay: true, userId: null, sourceKey: "manual-team" },
     ]);
@@ -111,8 +120,18 @@ describe("manualProvider", () => {
       externalId: null,
       dedupStatus: "UNIQUE",
       duplicateOfId: null,
+      tentative: false,
     });
     expect(out.statuses[0].state).toBe("ok");
+    // ctx 기반 viewer 전달: 비-admin → 본인 PERSONAL만(includeAllPersonal false)
+    expect(h.manual).toHaveBeenCalledWith(range, { userId: "u1", includeAllPersonal: false });
+  });
+
+  it("calendar.admin:view 보유 → includeAllPersonal true(전체 PERSONAL 조회)", async () => {
+    h.manual.mockResolvedValue([]);
+    const adminCtx = { userId: "u1", isOwner: false, permissionKeys: new Set(["calendar.admin:view"]) };
+    await manualProvider.fetchEvents(range, adminCtx);
+    expect(h.manual).toHaveBeenCalledWith(range, { userId: "u1", includeAllPersonal: true });
   });
 });
 ```
@@ -145,6 +164,7 @@ function toRawEvent(l: LeaveRow): RawEvent {
     externalId: null,
     dedupStatus: "UNIQUE",
     duplicateOfId: null,
+    tentative: l.status === "PENDING", // 미승인 휴가는 잠정 — 본인/admin만 노출, dedup 앵커 아님(§10)
   };
 }
 
@@ -185,6 +205,7 @@ function toRawEvent(w: WorkflowRow): RawEvent {
     externalId: null,
     dedupStatus: "UNIQUE",
     duplicateOfId: null,
+    tentative: false,
   };
 }
 
@@ -223,14 +244,17 @@ function toRawEvent(m: ManualRow): RawEvent {
     externalId: null,
     dedupStatus: "UNIQUE",
     duplicateOfId: null,
+    tentative: false,
   };
 }
 
 export const manualProvider: CalendarSourceProvider = {
   key: KEY,
-  async fetchEvents(range: NormalizedRange, _ctx: FeedContext): Promise<SourceResult> {
+  async fetchEvents(range: NormalizedRange, ctx: FeedContext): Promise<SourceResult> {
     try {
-      const rows = await findManualEventsInRange(range);
+      // PERSONAL_EVENT은 본인만(admin은 전체). 권한 차단은 조회 단계 — 마스킹은 시각·신원을 못 가린다(Finding 1).
+      const includeAllPersonal = ctx.isOwner || ctx.permissionKeys.has("calendar.admin:view");
+      const rows = await findManualEventsInRange(range, { userId: ctx.userId, includeAllPersonal });
       return { events: rows.map(toRawEvent), statuses: [{ key: KEY, state: "ok", lastFetchedAt: null, error: null }] };
     } catch (e) {
       return { events: [], statuses: [{ key: KEY, state: "failed", lastFetchedAt: null, error: e instanceof Error ? e.message : String(e) }] };
@@ -257,3 +281,5 @@ git commit -m "calendar: add internal source providers (leave/workflow/manual)"
 
 - **internal provider에서 title에 사유(reason)를 직접 넣지 말 것.** 이유: 마스킹 이전 단계라 reason은 `description`에만 둔다. title은 일반 라벨("휴가")로 두고, 권한 있는 뷰어에게만 description이 노출되게 Task 07 masking이 처리한다.
 - **provider가 throw하도록 두지 말 것.** 이유: feed가 allSettled로도 잡지만, provider별 `failedSources` 신호를 정확히 주려면 내부에서 try/catch로 `state:"failed"`를 반환한다.
+- **manual provider에서 `ctx`를 무시하지 말 것.** 이유: PERSONAL_EVENT를 viewer로 거르지 않으면 타인 개인 일정의 시각·신원이 새어나간다(Finding 1). `includeAllPersonal = isOwner || permissionKeys.has("calendar.admin:view")`로 repository에 전달한다. 마스킹은 안전망이 아니다(title/description만 가림).
+- **PENDING 휴가를 APPROVED와 구분 없이 내보내지 말 것.** 이유: `tentative`가 없으면 미승인 휴가가 실제 부재로 보이고 dedup 앵커가 되어 외부 휴가를 잘못 접는다(Finding 3). leave provider는 APPROVED·PENDING 모두 가져오되 `tentative: status === "PENDING"`로 표시하고, 가시성/접기 판단은 feed·dedup이 한다.

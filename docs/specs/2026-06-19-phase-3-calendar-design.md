@@ -46,11 +46,11 @@
 
 | 출처 | 권위 | Phase 3 처리 |
 | --- | --- | --- |
-| `LeaveRequest` | 휴가/근태 기준 | 캐시 없이 직접 조회(APPROVED 등) |
+| `LeaveRequest` | 휴가/근태 기준 | 캐시 없이 직접 조회. APPROVED는 확정 부재, PENDING은 잠정(`tentative` — 본인·admin만, dedup 앵커 아님, §10) |
 | `WorkflowTask` | 업무 일정 기준 | 캐시 없이 직접 조회 |
 | Google Calendar | 외부/전환기 보조 | service account fetch → DB 캐시 |
 | 공휴일(Google holiday cal) | 외부 기준 | fetch → DB 캐시(24h) |
-| 수동 일정 | 보조 | `CalendarSourceKind.MANUAL` 소스의 `CalendarEvent`(`PERSONAL_EVENT`/`TEAM_EVENT`) 직접 조회 |
+| 수동 일정 | 보조 | `CalendarSourceKind.MANUAL` 소스의 `CalendarEvent` 직접 조회. PERSONAL_EVENT은 **조회 단계에서 본인만**(admin 전체), TEAM_EVENT은 전원(§9) |
 
 원칙은 `calendar-design.md`를 따른다: 내부 승인 휴가가 Google 휴가성 일정과 겹치면 **내부 우선**, 외부는 `DUPLICATE_OF_INTERNAL`로 접는다.
 
@@ -99,6 +99,7 @@ interface CalEvent {
   sourceKey: string;             // 어느 출처인지(UI 색/그룹용)
   dedupStatus: CalendarDedupStatus;
   masked: boolean;               // UI가 요약 칩으로 표시할지
+  tentative: boolean;            // 잠정(미승인) 일정 — 본인/admin만 받고, UI가 별도 스타일로 표시
 }
 
 type ViewKey = "work" | "leave" | "personal" | "team" | "admin";
@@ -130,7 +131,7 @@ interface CalendarSourceProvider {
 
 - `internalLeave` / `workflowTask`: calendar repository로 권위 테이블 직접 조회 → `RawEvent` 매핑. 조회 실패는 해당 출처 `failed`로 격리(다른 출처에 영향 없음).
 - `google` / `holiday`: **cache-first**(§12). 만료 시 인라인 재fetch, 실패 시 last-good 또는 빈 결과 + failed.
-- `manual`: `CalendarSourceKind.MANUAL` 소스에 속한 `CalendarEvent`(`PERSONAL_EVENT`/`TEAM_EVENT`) 직접 조회.
+- `manual`: `CalendarSourceKind.MANUAL` 소스의 `CalendarEvent` 직접 조회. **PERSONAL_EVENT은 `ctx`로 본인만**(admin은 전체), TEAM_EVENT은 전원. 권한 차단은 조회 단계에서 — 마스킹은 시각·신원을 못 가린다(§9).
 
 `RawEvent`는 마스킹/ dedup 이전의 원본 필드를 보존한다(마스킹은 feed 합성 단계에서 적용).
 
@@ -142,9 +143,10 @@ interface CalendarSourceProvider {
 
 1. 인증 + `requirePermission(userId, "calendar.{view}", "view")`.
 2. view에 필요한 provider 집합을 `Promise.allSettled`로 **병렬 호출**(부분 실패 허용 — rejected는 해당 출처 failed로 환원).
-3. **dedup**(§10): 내부 APPROVED 휴가와 겹치는 외부 휴가성 이벤트를 `DUPLICATE_OF_INTERNAL`로 마킹.
-4. **masking**(§9): 권한 없는 필드를 서버에서 제거/치환(응답에 민감정보 미포함).
-5. `FeedResponse { events, sources, staleSources, failedSources }` 반환.
+3. **dedup**(§10): 내부 **APPROVED**(非tentative) 휴가와 겹치는 외부 휴가성 이벤트를 `DUPLICATE_OF_INTERNAL`로 마킹. PENDING(tentative) 휴가는 앵커가 아니다.
+4. **tentative 필터**: 잠정(미승인) 일정은 본인·admin에게만. 타인에겐 마스킹이 아니라 `events`에서 **제외**(미승인 부재가 실제 부재로 보이지 않게).
+5. **masking**(§9): 권한 없는 필드를 서버에서 제거/치환(응답에 민감정보 미포함).
+6. `FeedResponse { events, sources, staleSources, failedSources }` 반환.
 
 `SourceStatus.error`는 **클라이언트엔 일반 메시지로만** 내보내고(예: "일정을 불러오지 못했습니다"), 원본 예외는 **서버 로그**에만 남긴다(DB·외부 API 내부 정보 유출 방지 — 적대적 리뷰 #7). 상세 진단은 admin 뷰(후속)에서.
 
@@ -175,10 +177,12 @@ API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requireP
 - 권한이 없으면 제목을 `휴가`/`부재`/`외부 일정` 요약으로 대체(`masked: true`), 휴가 사유·개인 일정 제목·외부 캘린더 설명은 `null`.
 - 상세 열람은 PM/OWNER 및 명시 권한자만(매트릭스는 `calendar-design.md` §권한별 표시 정책 준수).
 - 마스킹 매트릭스는 view + 대상 이벤트의 소유자/種별로 결정한다(본인 이벤트는 항상 상세, 타인은 권한에 따라).
+- **마스킹은 안전망이 아니다(중요).** 마스킹은 title/description만 가리고 `userId`·시작/종료 시각은 응답에 남는다. 따라서 **노출 자체를 막아야 하는 데이터는 조회/합성 단계에서 차단**한다: ① 타인 PERSONAL_EVENT은 manual provider가 `ctx`로 애초에 조회하지 않고(§6), ② 타인 tentative(미승인) 일정은 feed가 `events`에서 제외한다(§7-4). (적대적 리뷰 Finding 1·3)
+- **확장 지점(경계 부채)**: 현재 PERSONAL_EVENT 공개 정책은 "본인만 / admin 전체"가 기본이다. 추후 팀 멤버십·세부 권한 단위 공개(예: `calendar.personal.team:view`)는 provider가 받는 동일한 `ctx`(userId+permissionKeys)에서 분기하면 되며, **시그니처 변경 없이 비파괴로 확장**된다.
 
 ## 10. 중복 제거(비파괴)
 
-- 판정 기준: **`CalendarSource.ownerUserId`로 매핑된** Google 이벤트 ∩ 내부 APPROVED `LeaveRequest`와 **KST 날짜 겹침** + 휴가성 키워드(`휴가|연차|반차|오전반차|오후반차`) + **all-day**. **Phase 3는 all-day 외부 휴가만 dedup**한다 — "근무시간 대부분을 차지하는 timed 이벤트"는 임계 휴리스틱이 모호해 후속으로 미룬다. `ownerUserId`가 없는 공유 캘린더(예: 팀 공용) 이벤트는 사용자 attribution이 불가하므로 dedup하지 않고 `EXTERNAL_VACATION`으로만 표시한다.
+- 판정 기준: **`CalendarSource.ownerUserId`로 매핑된** Google 이벤트 ∩ 내부 APPROVED `LeaveRequest`(PENDING은 `tentative`로 앵커에서 제외 — Finding 3)와 **KST 날짜 겹침** + 휴가성 키워드(`휴가|연차|반차|오전반차|오후반차`) + **all-day**. **Phase 3는 all-day 외부 휴가만 dedup**한다 — "근무시간 대부분을 차지하는 timed 이벤트"는 임계 휴리스틱이 모호해 후속으로 미룬다. `ownerUserId`가 없는 공유 캘린더(예: 팀 공용) 이벤트는 사용자 attribution이 불가하므로 dedup하지 않고 `EXTERNAL_VACATION`으로만 표시한다.
 - 처리: 외부 이벤트를 **삭제하지 않는다.** `DUPLICATE_OF_INTERNAL`로 마킹하고 **응답 합성 단계에서만 접는다**(기본 뷰 미표시). 원본은 캐시에 남아 후속 admin 뷰에서 진단 가능.
 - 사용자 매핑이 안 된 외부 휴가 → `EXTERNAL_VACATION`(상세 제한).
 - 키워드 기반 휴리스틱이라 false positive 가능 → 비파괴 원칙이 안전판이다.
@@ -206,10 +210,10 @@ API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requireP
 
 ### 12.3 만료 정책(표준 — 확정)
 
-> Phase 3에서는 외부 소스에 대해 백그라운드 SWR을 구현하지 않는다. 캐시가 fresh이면 즉시 반환, expired이면 해당 요청에서 인라인 재검증한다. 재검증 실패 시 **last-good 캐시가 있으면** 그것을 반환하고 `staleSources`에, **last-good이 없으면(cold-cache 최초 실패)** 해당 소스를 빈 결과 + `failedSources`로 표시한다. 워커 기반 비차단 SWR은 스케줄러/디스패처 도입 Phase로 미룬다.
+> Phase 3에서는 외부 소스에 대해 백그라운드 SWR을 구현하지 않는다. 캐시가 fresh이면 즉시 반환, expired이면 해당 요청에서 인라인 재검증한다. 재검증 실패 시 **last-good 캐시가 있으면** 그것을 반환하고 `staleSources`에, **last-good이 없으면(cold-cache 최초 실패)** 해당 소스를 빈 결과 + `failedSources`로 표시한다. 재검증 실패는 **warm/cold 모두 `expiresAt`을 짧은 backoff(min-refresh-interval)로 기록**해(warm은 last-good payload 보존), 장애가 지속돼도 만료 후 매 요청 재fetch하지 않는다(적대적 리뷰 Finding 2). 워커 기반 비차단 SWR은 스케줄러/디스패처 도입 Phase로 미룬다.
 
 - 근거: Phase 1에서 outbox 워커/스케줄러를 의도적으로 스켈레톤으로 남겼다. 비차단 SWR을 억지로 만들면 범위가 폭증한다.
-- **알려진 한계**: 동시 요청이 만료 엔트리에 몰리면 중복 Google 호출(thundering herd). 팀+외주 소규모라 **수용 가능한 한계로 명시**하고 §12.4 min-refresh-interval(기본 30초)로 부분 완화. per-(source,range) in-flight lock은 과설계로 Phase 3 보류.
+- **알려진 한계**: *같은 순간* 동시 요청이 만료 엔트리에 몰리면 중복 Google 호출(thundering herd). 팀+외주 소규모라 **수용 가능한 한계로 명시**하고 §12.4 min-refresh-interval(기본 30초)로 부분 완화. per-(source,range) in-flight lock은 과설계로 Phase 3 보류. 단, 만료 후 *장애 지속* 시 매 요청 재fetch(연타)는 위 backoff 기록으로 차단한다(적대적 리뷰 Finding 2).
 
 ### 12.4 수동 새로고침
 
@@ -217,14 +221,14 @@ API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requireP
 
 - `requirePermission(userId, "calendar.{view}", "view")` — 사용자가 이미 보는 데이터의 재검증이므로 view 권한 재사용. **별도 refresh 권한 키는 신설하지 않음(YAGNI).**
 - **(view, start) → 정규화된 6주 창 범위로만** 캐시 무효화·재fetch. 전역 Google 캐시 강제 갱신(admin 성격)은 admin 뷰와 함께 후속.
-- **cold-cache(최초 fetch 실패로 last-good 없음) 실패도 마커로 기록**(짧은 만료 + errorMessage)해, 직후 강제 새로고침이 min-interval 가드에 걸리게 한다. 안 그러면 엔트리가 없어 가드가 우회되어 Google을 연타한다(적대적 리뷰 #6).
+- **cold·warm 실패 모두 backoff 마커로 기록**(짧은 만료 + errorMessage, warm은 last-good payload 보존)해, 직후의 *일반 요청*·*강제 새로고침* 모두 만료/min-interval 가드에 걸리게 한다. 안 그러면 만료 엔트리가 매 요청 재fetch되어 Google을 연타한다(적대적 리뷰 Finding 2; cold-cache는 기존 #6). cold 마커는 `payload=null`로 기록해 읽을 때 warm(stale)과 구분한다.
 - **min-refresh-interval**: 최근 일정 시간(기본 30초, 상수로 정의) 내 재검증된 소스는 refresh를 무시해 Google 해머링/비용 폭주를 차단.
 
 ## 13. UI(커스텀 경량)
 
 - `/calendar`: 뷰 탭(업무·휴가·개인, §8.1대로 권한 있는 탭만) + **커스텀 월 그리드** + 월 이동(인접 월 prefetch) + 수동 새로고침 + 소스별 로딩/실패 배지 + **이전 데이터 유지**.
 - 디자인 시스템(Tailwind v4 + 기존 ui 프리미티브 + 브랜드 팔레트) 기반. 제3자 캘린더 라이브러리 미사용.
-- 종일 이벤트 칩 중심, `kind`별 브랜드 팔레트 색, 마스킹된 건은 요약 칩(`masked`).
+- 종일 이벤트 칩 중심, `kind`별 브랜드 팔레트 색, 마스킹된 건은 요약 칩(`masked`), 잠정(미승인) 건은 점선/흐림 등 별도 스타일(`tentative` — 본인 휴가 신청 "진행중" 표시; 타인 것은 애초에 응답에 없음).
 - 클라이언트는 마스킹된 feed 응답만 받는다.
 
 ### 13.1 React Query 도입(확정)
@@ -243,6 +247,7 @@ API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requireP
 - range 정규화: 임의 range → 동일 정규화 창 매핑.
 - dedup 판정: 키워드 + KST 날짜 겹침 + userId 매핑, false positive 비파괴 확인.
 - **masking 매트릭스**: view × 사용자 역할 × 이벤트 소유자 조합.
+- **권한·격리 negative 테스트(필수)**: ① 타인 PERSONAL_EVENT이 본인 personal feed에 **조회되지 않음**(manual provider가 본인 userId로만 질의 — 마스킹이 아니라 부재), ② warm 캐시 만료 + fetch 실패 직후의 재요청이 외부를 **재호출하지 않음**(backoff 유지), ③ 타인 PENDING(tentative) 휴가가 feed에서 **제외됨**(본인·admin만 노출). (적대적 리뷰 Finding 1·2·3)
 - feed 합성: `Promise.allSettled` 부분 실패 → staleSources/failedSources 분기.
 - Google 클라이언트는 **fake provider 주입**(googleapis 미호출).
 - `lint`/`typecheck`/`build`/`test` 그린.

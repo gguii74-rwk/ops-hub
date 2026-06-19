@@ -35,7 +35,7 @@ function raw(p: Partial<RawEvent>): RawEvent {
     id: "x", kind: "INTERNAL_LEAVE", title: "휴가", description: "사유",
     start: new Date("2026-06-10T00:00:00Z"), end: new Date("2026-06-11T00:00:00Z"),
     allDay: true, userId: "u9", sourceKey: "internalLeave", externalId: null,
-    dedupStatus: "UNIQUE", duplicateOfId: null, ...p,
+    dedupStatus: "UNIQUE", duplicateOfId: null, tentative: false, ...p,
   };
 }
 const ok = (key: string): SourceStatus => ({ key, state: "ok", lastFetchedAt: null, error: null });
@@ -105,6 +105,23 @@ describe("buildFeed", () => {
     spy.mockRestore();
   });
 
+  it("tentative(PENDING) 휴가: 본인엔 노출, 타인엔 제외(마스킹 아님), admin엔 노출", async () => {
+    const providers = {
+      internalLeave: provider("internalLeave", [
+        raw({ id: "leave:mine", userId: "u1", tentative: true }),
+        raw({ id: "leave:other", userId: "u9", tentative: true }),
+      ], [ok("internalLeave")]),
+      workflowTask: provider("workflowTask", [], [ok("workflowTask")]),
+      holiday: provider("holiday", [], [ok("holiday")]),
+    };
+    const mine = await buildFeed("work", range, ctx({ userId: "u1" }), providers);
+    expect(mine.events.map((e) => e.id)).toContain("leave:mine"); // 본인 미승인은 보임
+    expect(mine.events.map((e) => e.id)).not.toContain("leave:other"); // 타인 미승인은 아예 제외(마스킹 아님)
+
+    const adminFeed = await buildFeed("work", range, ctx({ userId: "u1", permissionKeys: new Set(["calendar.admin:view"]) }), providers);
+    expect(adminFeed.events.map((e) => e.id)).toContain("leave:other"); // admin은 봄
+  });
+
   it("provider가 reject해도 전체는 죽지 않고 failed로 환원", async () => {
     const providers = {
       workflowTask: { key: "workflowTask", fetchEvents: async () => { throw new Error("boom"); } } as CalendarSourceProvider,
@@ -160,7 +177,10 @@ export async function buildFeed(
 
   const deduped = applyDedup(raw);
   // 비-admin 뷰는 내부 휴가와 중복인 외부 이벤트를 접는다(비파괴 — 원본은 admin 뷰에서 노출).
-  const visible = view === "admin" ? deduped : deduped.filter((e) => e.dedupStatus !== "DUPLICATE_OF_INTERNAL");
+  const folded = view === "admin" ? deduped : deduped.filter((e) => e.dedupStatus !== "DUPLICATE_OF_INTERNAL");
+  // 잠정(미승인) 일정은 본인·admin에게만 노출 — 타인에겐 '마스킹'이 아니라 아예 제외(미승인 휴가가 실제 부재로 보이지 않게, Finding 3).
+  const canSeeTentative = ctx.isOwner || ctx.permissionKeys.has("calendar.admin:view");
+  const visible = folded.filter((e) => !e.tentative || canSeeTentative || e.userId === ctx.userId);
   const events: CalEvent[] = visible.map((e) => maskEvent(e, ctx));
 
   // 클라이언트向 출처 오류는 일반 메시지로만 — 원본 예외는 서버 로그에만(민감정보 유출 방지, 적대적 리뷰 #7).
@@ -195,3 +215,4 @@ git commit -m "calendar: add feed orchestration (allSettled, dedup fold, masking
 - **`Promise.all`로 바꾸지 말 것.** 이유: 한 출처 실패가 전체를 reject시켜 부분 실패 허용(§7)이 깨진다. 반드시 `allSettled`.
 - **admin 외 뷰에서 DUPLICATE_OF_INTERNAL을 배열에서 영구 제거하지 말 것.** 이유: 같은 raw 배열을 admin 경로가 재사용할 수 있어야 한다. 접기는 뷰별 `filter`로만(비파괴).
 - **provider 선택을 하드코딩하지 말 것.** 이유: view↔sources 매핑의 단일 출처는 `VIEW_SOURCES`다(엔트리포인트). 여기서 재정의하면 드리프트.
+- **tentative(미승인) 일정을 타인에게 '마스킹'으로만 처리하지 말 것.** 이유: 마스킹은 시작/종료 시각과 `userId`를 응답에 남기므로 미승인 휴가가 타인에게 실제 부재로 보인다(Finding 3). 본인(`e.userId === ctx.userId`)·admin이 아니면 `events`에서 **제외**한다.

@@ -44,7 +44,7 @@ function evt(p: Partial<CalEvent>): CalEvent {
   return {
     id: "e", kind: "WORKFLOW_TASK", title: "주간보고", description: null,
     start: "2026-06-11T15:00:00.000Z", end: "2026-06-12T15:00:00.000Z", // 06-12 KST all-day
-    allDay: true, userId: null, sourceKey: "workflowTask", dedupStatus: "UNIQUE", masked: false, ...p,
+    allDay: true, userId: null, sourceKey: "workflowTask", dedupStatus: "UNIQUE", masked: false, tentative: false, ...p,
   };
 }
 
@@ -331,5 +331,6 @@ git commit -m "calendar: add React Query provider + custom month-grid UI (work/l
 - **QueryClient를 모듈 전역으로 생성하지 말 것.** 이유: 서버에서 요청 간 캐시가 공유돼 사용자 간 데이터가 샌다. 반드시 Provider 내부 `useState(() => new QueryClient())`.
 - **`prefetchQuery`를 렌더 본문에서 호출하지 말 것.** 이유: 렌더마다 부수효과가 발생한다. `useEffect`로 [view, anchor] 변화에만 prefetch.
 - **마스킹을 클라이언트에서 풀려고 하지 말 것.** 이유: 서버가 이미 마스킹한 `CalEvent`만 온다. `masked` 플래그는 표시 스타일에만 쓴다(데이터 복원 불가·불필요).
+- **`tentative` 플래그를 무시하지 말 것(권장).** 이유: 본인 미승인 휴가 신청이 잠정 일정으로 내려온다(타인 것은 응답에 없음 — 서버 필터). 점선/흐림 등 별도 칩 스타일로 "진행중"을 구분하면 확정 부재와 혼동을 막는다(Finding 3). 미적용 시에도 데이터 안전엔 문제 없음(본인 것만).
 - **서버에 `anchor.toISOString()`(자정 시각)을 그대로 보내지 말 것.** 이유: 월 경계에서 브라우저 TZ에 따라 서버 KST 정규화가 인접 달을 잡을 수 있다(적대적 리뷰 #4). 반드시 `monthAnchorISO`(해당 월 15일 KST 정오)로 보낸다. 화면 표시(연/월 라벨·네비)는 운영 TZ가 KST라는 배포 전제(§16)에 기댄다.
 - **`KIND_CLASS` 토큰명을 가정만 하고 넘어가지 말 것.** 이유: 브랜드 팔레트 globals에 실제 정의된 semantic 토큰(primary/secondary/accent/muted/destructive 등)과 일치하는지 확인하고, 없으면 정의된 토큰으로 교체한다(없는 클래스는 색 없이 렌더되어 조용히 밋밋해진다).

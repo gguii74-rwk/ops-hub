@@ -34,7 +34,7 @@ function ev(p: Partial<RawEvent>): RawEvent {
     id: "x", kind: "EXTERNAL_EVENT", title: "t", description: null,
     start: new Date("2026-06-10T00:00:00Z"), end: new Date("2026-06-11T00:00:00Z"),
     allDay: true, userId: null, sourceKey: "google-team", externalId: null,
-    dedupStatus: "UNIQUE", duplicateOfId: null, ...p,
+    dedupStatus: "UNIQUE", duplicateOfId: null, tentative: false, ...p,
   };
 }
 
@@ -74,6 +74,15 @@ describe("applyDedup", () => {
     const out = applyDedup([internal, external]);
     expect(out.find((e) => e.id === "g1")!.dedupStatus).toBe("UNIQUE");
   });
+
+  it("tentative(PENDING) 내부 휴가는 dedup 앵커가 아님 → 외부 휴가 UNIQUE 유지", () => {
+    const pending = ev({ id: "leave:l2", kind: "INTERNAL_LEAVE", title: "휴가", userId: "u9", sourceKey: "internalLeave", tentative: true, start: new Date("2026-06-10T00:00:00Z"), end: new Date("2026-06-12T00:00:00Z") });
+    const external = ev({ id: "google-team:g2", title: "연차", allDay: true, userId: "u9", start: new Date("2026-06-10T00:00:00Z"), end: new Date("2026-06-11T00:00:00Z") });
+    const out = applyDedup([pending, external]);
+    const extOut = out.find((e) => e.id === "google-team:g2")!;
+    expect(extOut.kind).toBe("EXTERNAL_VACATION"); // 키워드 재분류는 됨
+    expect(extOut.dedupStatus).toBe("UNIQUE"); // 단 미승인(PENDING)과는 dedup 안 함
+  });
 });
 ```
 
@@ -91,7 +100,8 @@ function hasLeaveKeyword(title: string): boolean {
 }
 
 export function applyDedup(events: RawEvent[]): RawEvent[] {
-  const internalLeaves = events.filter((e) => e.kind === "INTERNAL_LEAVE");
+  // APPROVED 내부 휴가만 권위 앵커. PENDING(tentative)은 확정 전이라 외부 휴가를 접는 근거가 될 수 없다(Finding 3).
+  const internalLeaves = events.filter((e) => e.kind === "INTERNAL_LEAVE" && !e.tentative);
   return events.map((e) => {
     if (e.kind !== "EXTERNAL_EVENT" && e.kind !== "EXTERNAL_VACATION") return e;
 
@@ -122,7 +132,7 @@ function ev(p: Partial<RawEvent>): RawEvent {
     id: "x", kind: "INTERNAL_LEAVE", title: "휴가", description: "가족 여행",
     start: new Date("2026-06-10T00:00:00Z"), end: new Date("2026-06-11T00:00:00Z"),
     allDay: true, userId: "u9", sourceKey: "internalLeave", externalId: null,
-    dedupStatus: "UNIQUE", duplicateOfId: null, ...p,
+    dedupStatus: "UNIQUE", duplicateOfId: null, tentative: false, ...p,
   };
 }
 const ctx = (p: Partial<FeedContext>): FeedContext => ({ userId: "u1", isOwner: false, permissionKeys: new Set<string>(), ...p });
@@ -168,6 +178,11 @@ describe("maskEvent", () => {
     const c = maskEvent(ev({}), ctx({ userId: "u1" }));
     expect(c.start).toBe("2026-06-10T00:00:00.000Z");
     expect(c.end).toBe("2026-06-11T00:00:00.000Z");
+  });
+
+  it("tentative 플래그는 그대로 통과(가시성/접기 판단은 feed)", () => {
+    expect(maskEvent(ev({ tentative: true }), ctx({ userId: "u1" })).tentative).toBe(true);
+    expect(maskEvent(ev({ tentative: false }), ctx({ userId: "u1" })).tentative).toBe(false);
   });
 });
 ```
@@ -217,6 +232,7 @@ export function maskEvent(raw: RawEvent, ctx: FeedContext): CalEvent {
     sourceKey: raw.sourceKey,
     dedupStatus: raw.dedupStatus,
     masked,
+    tentative: raw.tentative, // 가시성/접기 판단은 feed가 함 — 마스킹은 플래그만 통과
   };
 }
 ```
@@ -240,3 +256,4 @@ git commit -m "calendar: add non-destructive dedup + server-side event masking"
 - **dedup에서 이벤트를 배열에서 제거하지 말 것.** 이유: 키워드 휴리스틱은 false positive가 난다(§10). 삭제는 비가역이고 admin 진단을 막는다. 반드시 `dedupStatus` 마킹만. 접기는 feed(Task 08)가 응답 단계에서.
 - **마스킹을 클라이언트로 미루지 말 것.** 이유: 마스킹된 응답에 민감정보를 실으면 네트워크에서 유출된다. 반드시 서버에서 title 치환·description null 처리.
 - **본인 판정에서 `raw.userId == null`을 본인으로 취급하지 말 것.** 이유: userId 없는 외부/공휴일 이벤트가 "본인 것"으로 새어 상세가 노출된다. 명시적으로 `raw.userId && raw.userId === ctx.userId`.
+- **dedup 앵커에 tentative(PENDING) 휴가를 포함하지 말 것.** 이유: 미승인 휴가가 외부 휴가를 접으면, 휴가가 거절돼도 외부 실제 일정이 숨겨진다(Finding 3). 앵커는 `INTERNAL_LEAVE && !tentative`만. tentative 자체의 노출 차단은 feed가 한다(마스킹 아님).
