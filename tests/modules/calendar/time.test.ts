@@ -32,6 +32,12 @@ describe("allDayHalfOpen", () => {
     expect(r.start.toISOString()).toBe("2026-06-18T15:00:00.000Z"); // 06-19 00:00 KST
     expect(r.end.toISOString()).toBe("2026-06-19T15:00:00.000Z"); // 06-20 00:00 KST
   });
+
+  it("다일 구간 → [시작일 00:00 KST, 종료일+1 00:00 KST)", () => {
+    const r = allDayHalfOpen(new Date("2026-06-19T02:00:00+09:00"), new Date("2026-06-21T20:00:00+09:00"));
+    expect(r.start.toISOString()).toBe("2026-06-18T15:00:00.000Z"); // 06-19 00:00 KST
+    expect(r.end.toISOString()).toBe("2026-06-21T15:00:00.000Z"); // 06-22 00:00 KST
+  });
 });
 
 describe("normalizeToGridWindow", () => {

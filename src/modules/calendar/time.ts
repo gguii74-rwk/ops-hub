@@ -25,7 +25,7 @@ export function kstDayStartUtc(d: Date): Date {
   return new Date(dayStartShifted - OFFSET_MS);
 }
 
-export function allDayHalfOpen(startInclusive: Date, endInclusive: Date): { start: Date; end: Date } {
+export function allDayHalfOpen(startInclusive: Date, endInclusive: Date): NormalizedRange {
   return {
     start: kstDayStartUtc(startInclusive),
     end: new Date(kstDayStartUtc(endInclusive).getTime() + MS_PER_DAY),
