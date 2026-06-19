@@ -15,9 +15,14 @@ export async function createSendingDelivery(args: {
   taskId: string | null; step: string | null; recipients: string[]; subject: string;
   bodyHtml: string; attachmentPaths: string[]; sentById: string;
 }): Promise<MailDelivery> {
+  // task-scoped 발송은 멱등 키 step이 필수다. step=null이면 부분 unique 인덱스가
+  // 작동하지 않아(Postgres에서 NULL은 충돌하지 않음) 중복 발송을 막을 수 없으므로 거부한다.
+  if (args.taskId != null && args.step == null) {
+    throw new Error("task-scoped 발송(taskId 지정)에는 멱등 키 step이 필요합니다.");
+  }
   try {
     return await prisma.$transaction(async (tx: PrismaTx) => {
-      if (args.taskId != null && args.step != null) {
+      if (args.taskId != null) {
         const active = await tx.mailDelivery.findFirst({
           where: { taskId: args.taskId, step: args.step, status: { in: ["SENDING", "SENT"] } },
           select: { id: true },
@@ -46,18 +51,23 @@ export async function createSendingDelivery(args: {
   }
 }
 
-// 같은 레코드를 정확히 1회 SENT/FAILED로 갱신. providerMessageId는 지정 시에만 갱신(resolve가 기존 값을 지우지 않게).
+// SENDING인 동안에만 정확히 1회 SENT/FAILED로 확정(compare-and-set). 조건 없는 update는
+// retry 발송 창에 끼어든 admin resolve(또는 동시 resolve)를 조용히 덮어쓰므로(LWW) 금지한다.
+// 대상이 이미 SENDING이 아니면 다른 경로가 먼저 확정한 것 → ConflictError(409)로 가시화한다.
+// providerMessageId는 지정 시에만 갱신(resolve가 기존 값을 지우지 않게).
 export async function finalizeDelivery(
   id: string,
   patch: { status: "SENT" | "FAILED"; sentAt: Date | null; providerMessageId?: string | null; errorMessage?: string | null },
 ): Promise<MailDelivery> {
-  const data: Prisma.MailDeliveryUpdateInput = {
+  const data: Prisma.MailDeliveryUpdateManyMutationInput = {
     status: patch.status,
     sentAt: patch.sentAt,
     errorMessage: patch.errorMessage ?? null,
   };
   if (patch.providerMessageId !== undefined) data.providerMessageId = patch.providerMessageId;
-  return prisma.mailDelivery.update({ where: { id }, data });
+  const { count } = await prisma.mailDelivery.updateMany({ where: { id, status: "SENDING" }, data });
+  if (count !== 1) throw new ConflictError("발송이 이미 다른 경로에서 확정되었습니다.");
+  return prisma.mailDelivery.findUniqueOrThrow({ where: { id } });
 }
 
 // 재시도 단일 비행 가드: FAILED→SENDING 원자 점유. 동시 retry 중 1건만 count 1을 받고,
