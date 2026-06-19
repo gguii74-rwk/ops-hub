@@ -1,14 +1,15 @@
 # Task 10 — seed: CalendarSource + 외주 권한 보정 (데모는 dev 전용 분리)
 
-세 가지: (a) **외주 역할에 `calendar.leave:view` 부여**(§8.1 — 단위 테스트 대상), (b) HOLIDAY/Google `CalendarSource` seed(실 config — 메인 seed), (c) leave/work 뷰가 비지 않도록 데모 `WorkflowTask`/`LeaveRequest`를 **dev 전용 `prisma/seed-demo.ts`로 분리**(메인 `db:seed` 경로엔 미포함 — production/cutover에 가짜 승인 휴가·업무가 권위 데이터로 주입되는 것 방지, 적대적 리뷰 Finding 1). (a)는 `ROLE_ALLOW`를 별도 모듈로 추출해 테스트 가능하게 한다.
+세 가지: (a) **외주 역할에 `calendar.leave:view` 부여**(§8.1 — 단위 테스트 대상), (b) HOLIDAY/Google `CalendarSource` seed(실 config — 메인 seed). Google 소스는 선택적 owner-map(`integrations.google.calendarOwners`: calId→이메일)으로 `ownerUserId`를 채운다 — map 없으면 null(공유/팀, **Phase 3 기본**). dedup·personal-google이 이 attribution에 의존(§10). (c) leave/work 뷰가 비지 않도록 데모 `WorkflowTask`/`LeaveRequest`를 **dev 전용 `prisma/seed-demo.ts`로 분리**(메인 `db:seed` 경로엔 미포함 — production/cutover에 가짜 승인 휴가·업무가 권위 데이터로 주입되는 것 방지, 적대적 리뷰 Finding 1). (a)·(b)의 순수 로직(`ROLE_ALLOW`, calId→ownerUserId 해석)은 별도 모듈로 추출해 테스트 가능하게 한다.
 
 ## Files
 
 - Create: `prisma/seed-roles.ts` (ROLE_ALLOW 추출 + 외주 권한 추가)
+- Create: `prisma/seed-google.ts` (calId→ownerUserId 순수 resolver)
 - Create: `prisma/seed-demo.ts` (dev 전용 데모 WorkflowTask/LeaveRequest)
-- Modify: `prisma/seed.ts` (ROLE_ALLOW import 전환 + CalendarSource seed — 데모는 제외)
+- Modify: `prisma/seed.ts` (ROLE_ALLOW·resolveGoogleOwnerId import 전환 + CalendarSource seed(ownerUserId 포함) — 데모는 제외)
 - Modify: `package.json` (`db:seed:demo` 스크립트 추가)
-- Test: `tests/prisma/seed-roles.test.ts`
+- Test: `tests/prisma/seed-roles.test.ts`, `tests/prisma/seed-google.test.ts`
 
 ## Prep
 
@@ -90,12 +91,58 @@ export const ROLE_ALLOW: Record<string, string[]> = {
 
 실행(PASS): `npm test -- tests/prisma/seed-roles.test.ts`
 
+### 1b. Google 소스 owner resolver (테스트 먼저)
+
+Google 소스에 `ownerUserId`를 채우는 순수 로직. 명시적 owner-map(calId→이메일)이 있을 때만 그 이메일의 userId로 귀속한다. dedup·personal-google이 이 attribution에 의존하므로(§10) 단위 테스트로 못 박는다.
+
+`tests/prisma/seed-google.test.ts`:
+
+```ts
+import { describe, it, expect } from "vitest";
+import { resolveGoogleOwnerId } from "../../prisma/seed-google";
+
+describe("resolveGoogleOwnerId", () => {
+  const userIdByEmail = { "u9@corp.com": "user-9" };
+
+  it("owner-map에 매핑된 calId → 해당 userId", () => {
+    expect(resolveGoogleOwnerId("cal-9@group", { "cal-9@group": "u9@corp.com" }, userIdByEmail)).toBe("user-9");
+  });
+
+  it("owner-map에 없는 calId → null(공유/팀)", () => {
+    expect(resolveGoogleOwnerId("team@group", {}, userIdByEmail)).toBeNull();
+  });
+
+  it("매핑된 이메일에 해당 User 없음 → null(고착 방지)", () => {
+    expect(resolveGoogleOwnerId("cal-x@group", { "cal-x@group": "ghost@corp.com" }, userIdByEmail)).toBeNull();
+  });
+});
+```
+
+`prisma/seed-google.ts`:
+
+```ts
+// calId → ownerUserId. 명시적 owner-map(calId→이메일)이 있을 때만 그 이메일의 userId로 귀속, 없으면 null(공유/팀).
+// Phase 3 기본은 owner-map이 비어 있어 전부 null(team) — dedup/personal-google 비활성. map을 채우면 코드 변경 없이 활성화(§10).
+export function resolveGoogleOwnerId(
+  calId: string,
+  ownerEmailByCalId: Record<string, string>,
+  userIdByEmail: Record<string, string>,
+): string | null {
+  const email = ownerEmailByCalId[calId];
+  if (!email) return null;
+  return userIdByEmail[email] ?? null;
+}
+```
+
+실행(PASS): `npm test -- tests/prisma/seed-google.test.ts`
+
 ### 2. seed.ts에서 ROLE_ALLOW import로 전환
 
 `prisma/seed.ts` 상단 import 추가(기존 `EXTRA_PERMISSIONS` import 아래):
 
 ```ts
 import { ROLE_ALLOW } from "./seed-roles";
+import { resolveGoogleOwnerId } from "./seed-google";
 ```
 
 그리고 기존 인라인 `const ROLE_ALLOW: Record<string, string[]> = { … };` 블록(현재 라인 24~49) **전체 삭제**. 나머지 `ACCESS_ROLES`/`NAV`/`splitKey`/`main` 로직은 그대로 둔다(ROLE_ALLOW 참조는 import로 해결됨).
@@ -115,11 +162,21 @@ import { ROLE_ALLOW } from "./seed-roles";
 
   const calIdsRow = await prisma.systemSetting.findUnique({ where: { key: "integrations.google.calendarIds" } });
   const calIds = Array.isArray(calIdsRow?.value) ? (calIdsRow.value as string[]) : [];
+  // 선택적 owner-map(calId→이메일). 비어 있으면 전부 team(ownerUserId=null) = Phase 3 기본. 채우면 dedup/personal-google 활성(§10).
+  const ownersRow = await prisma.systemSetting.findUnique({ where: { key: "integrations.google.calendarOwners" } });
+  const ownerEmailByCalId =
+    ownersRow?.value && typeof ownersRow.value === "object" && !Array.isArray(ownersRow.value)
+      ? (ownersRow.value as Record<string, string>)
+      : {};
+  const users = await prisma.user.findMany({ select: { id: true, email: true } });
+  const userIdByEmail = Object.fromEntries(users.map((u) => [u.email, u.id]));
   for (const calId of calIds) {
+    const ownerUserId = resolveGoogleOwnerId(calId, ownerEmailByCalId, userIdByEmail);
     await prisma.calendarSource.upsert({
       where: { key: `google:${calId}` },
-      update: { externalId: calId, syncStatus: "ACTIVE" },
-      create: { key: `google:${calId}`, kind: "GOOGLE_CALENDAR", name: `Google: ${calId}`, provider: "google", externalId: calId, cacheTtlSeconds: 900, visibility: "TEAM" },
+      // ownerUserId는 create·update 모두 설정 — 재seed 시 owner-map 변경이 기존 행에도 반영돼야 attribution이 고착되지 않음(적대적 리뷰).
+      update: { externalId: calId, syncStatus: "ACTIVE", ownerUserId },
+      create: { key: `google:${calId}`, kind: "GOOGLE_CALENDAR", name: `Google: ${calId}`, provider: "google", externalId: calId, cacheTtlSeconds: 900, visibility: "TEAM", ownerUserId },
     });
   }
 
@@ -190,10 +247,10 @@ git commit -m "seed: grant contractors calendar.leave:view; seed holiday/google 
 
 ## Acceptance Criteria
 
-- `npm test -- tests/prisma/seed-roles.test.ts` → PASS(외주 3역할 calendar.leave:view 보유).
+- `npm test -- tests/prisma/seed-roles.test.ts tests/prisma/seed-google.test.ts` → PASS(외주 권한 + Google owner resolver).
 - `npm run prisma:validate` → 스키마 유효(변경 없음).
 - `npm run typecheck` / `npm run lint` → OK.
-- (DB 연결 시) `npm run db:seed` → 오류 없이 CalendarSource(holiday-kr 등) 생성. **데모 task/leave는 생성하지 않는다**(메인 seed에서 분리됨).
+- (DB 연결 시) `npm run db:seed` → 오류 없이 CalendarSource(holiday-kr 등) 생성. owner-map이 있으면 매핑된 Google 소스에 `ownerUserId` 설정(없으면 null=team). **데모 task/leave는 생성하지 않는다**(메인 seed에서 분리됨).
 - (DB 연결 시, dev 전용) `npm run db:seed:demo` → 데모 task/leave 생성. **production/cutover에선 실행하지 않는다.** 이 DB 검증은 node 단위 테스트 범위 밖이며 dev DB(터널)에서 수동 확인한다.
 
 ## Cautions
@@ -201,3 +258,5 @@ git commit -m "seed: grant contractors calendar.leave:view; seed holiday/google 
 - **seed.ts를 테스트에서 직접 import하지 말 것.** 이유: 최상위 `main()`이 실행되어 DB 연결을 시도한다. 권한 매트릭스 검증은 부수효과 없는 `seed-roles.ts`만 import한다.
 - **데모 LeaveRequest/WorkflowTask를 메인 `seed.ts`(=`prisma db seed`)에 두지 말 것.** 이유: 메인 seed는 roles/admin/config 부트스트랩 경로라 cutover·production 재시드 시 가짜 **승인 휴가**(캘린더 이벤트·dedup 앵커·연차/정산 입력이 됨)·업무가 권위 데이터로 주입된다(적대적 리뷰 Finding 1). 고정 id만으론 중복만 막고 오염은 못 막는다. 반드시 `prisma/seed-demo.ts`(dev 전용, `db:seed:demo`)로 분리한다.
 - **`google:${calId}` 외 다른 키 스킴으로 바꾸지 말 것.** 이유: 재seed 시 calId 순서가 바뀌어도 동일 source에 매핑되어야 한다(인덱스 기반 키는 재정렬에 취약).
+- **Google 소스 `ownerUserId`를 create에만 넣고 update에 빠뜨리지 말 것.** 이유: 재seed 시 owner-map이 바뀌어도 기존 행이 갱신 안 되면 attribution이 고착된다(적대적 리뷰). create·update 모두 설정한다.
+- **owner-map이 비어 dedup/personal-google이 비활성인 것은 의도된 Phase 3 기본임(인지).** 이유: 개인별 Google 캘린더 dedup이 필요해지면 `integrations.google.calendarOwners`만 채우면 코드 변경 없이 활성화된다(§10). 기본은 공유/팀 캘린더만 가정.

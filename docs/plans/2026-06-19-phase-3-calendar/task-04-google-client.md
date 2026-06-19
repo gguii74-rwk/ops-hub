@@ -26,8 +26,8 @@ service account 자격증명으로 Google Calendar 이벤트를 가져오는 lib
 `tests/lib/integrations/google/map.test.ts`:
 
 ```ts
-import { describe, it, expect } from "vitest";
-import { normalizeGoogleEvent } from "@/lib/integrations/google/map";
+import { describe, it, expect, vi } from "vitest";
+import { normalizeGoogleEvent, collectAllPages } from "@/lib/integrations/google/map";
 
 describe("normalizeGoogleEvent", () => {
   it("all-day: date(시작) ~ date(종료, 배타) → 반열림 KST 경계, allDay true", () => {
@@ -61,6 +61,32 @@ describe("normalizeGoogleEvent", () => {
     const n = normalizeGoogleEvent({ id: "g3", summary: null, description: null, start: { date: "2026-06-19" }, end: { date: "2026-06-20" } });
     expect(n.summary).toBeNull();
     expect(n.id).toBe("g3");
+  });
+});
+
+describe("collectAllPages", () => {
+  const ev = (id: string): any => ({ id, summary: id, description: null, start: { date: "2026-06-19" }, end: { date: "2026-06-20" } });
+
+  it("nextPageToken을 따라 모든 페이지 누적(2500건 초과 누락 방지)", async () => {
+    const pages: Record<string, { items: any[]; nextPageToken?: string }> = {
+      "": { items: [ev("a"), ev("b")], nextPageToken: "p2" },
+      p2: { items: [ev("c")], nextPageToken: "p3" },
+      p3: { items: [ev("d")] }, // 토큰 없음 → 종료
+    };
+    const calls: (string | undefined)[] = [];
+    const out = await collectAllPages(async (t) => {
+      calls.push(t);
+      return pages[t ?? ""];
+    });
+    expect(out.map((e) => e.id)).toEqual(["a", "b", "c", "d"]);
+    expect(calls).toEqual([undefined, "p2", "p3"]);
+  });
+
+  it("단일 페이지(토큰 없음) → 한 번만 호출", async () => {
+    const fetchPage = vi.fn(async () => ({ items: [ev("only")] }));
+    const out = await collectAllPages(fetchPage);
+    expect(out.map((e) => e.id)).toEqual(["only"]);
+    expect(fetchPage).toHaveBeenCalledTimes(1);
   });
 });
 ```
@@ -113,6 +139,20 @@ export function normalizeGoogleEvent(ev: GoogleRawEvent): NormalizedGoogleEvent 
     allDay: start.allDay,
   };
 }
+
+// 페이지네이션: nextPageToken이 소진될 때까지 모든 페이지를 누적한다(단일 페이지만 읽고 이후를 버리면 조용히 누락 — 적대적 리뷰).
+export async function collectAllPages(
+  fetchPage: (pageToken?: string) => Promise<{ items: GoogleRawEvent[]; nextPageToken?: string }>,
+): Promise<GoogleRawEvent[]> {
+  const all: GoogleRawEvent[] = [];
+  let pageToken: string | undefined;
+  do {
+    const page = await fetchPage(pageToken);
+    all.push(...page.items);
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+  return all;
+}
 ```
 
 실행(PASS): `npm test -- tests/lib/integrations/google/map.test.ts`
@@ -124,7 +164,7 @@ export function normalizeGoogleEvent(ev: GoogleRawEvent): NormalizedGoogleEvent 
 ```ts
 import "server-only";
 import { google } from "googleapis";
-import { normalizeGoogleEvent, type GoogleRawEvent, type NormalizedGoogleEvent } from "./map";
+import { collectAllPages, normalizeGoogleEvent, type GoogleRawEvent, type NormalizedGoogleEvent } from "./map";
 
 export interface GoogleCalendarClient {
   listEvents(calendarId: string, timeMin: Date, timeMax: Date): Promise<NormalizedGoogleEvent[]>;
@@ -139,22 +179,26 @@ export function getGoogleCalendarClient(): GoogleCalendarClient {
 
   return {
     async listEvents(calendarId, timeMin, timeMax) {
-      const res = await calendar.events.list({
-        calendarId,
-        timeMin: timeMin.toISOString(),
-        timeMax: timeMax.toISOString(),
-        singleEvents: true,
-        orderBy: "startTime",
-        maxResults: 2500,
+      // nextPageToken 소진까지 루프 — 단일 페이지(maxResults)만 읽고 이후를 버리면 조용히 누락된다(적대적 리뷰).
+      const raw = await collectAllPages(async (pageToken) => {
+        const res = await calendar.events.list({
+          calendarId,
+          timeMin: timeMin.toISOString(),
+          timeMax: timeMax.toISOString(),
+          singleEvents: true,
+          orderBy: "startTime",
+          maxResults: 2500,
+          pageToken,
+        });
+        const items: GoogleRawEvent[] = (res.data.items ?? []).map((it) => ({
+          id: it.id ?? "",
+          summary: it.summary ?? null,
+          description: it.description ?? null,
+          start: it.start ? { date: it.start.date ?? undefined, dateTime: it.start.dateTime ?? undefined } : null,
+          end: it.end ? { date: it.end.date ?? undefined, dateTime: it.end.dateTime ?? undefined } : null,
+        }));
+        return { items, nextPageToken: res.data.nextPageToken ?? undefined };
       });
-      const items = res.data.items ?? [];
-      const raw: GoogleRawEvent[] = items.map((it) => ({
-        id: it.id ?? "",
-        summary: it.summary ?? null,
-        description: it.description ?? null,
-        start: it.start ? { date: it.start.date ?? undefined, dateTime: it.start.dateTime ?? undefined } : null,
-        end: it.end ? { date: it.end.date ?? undefined, dateTime: it.end.dateTime ?? undefined } : null,
-      }));
       return raw.map(normalizeGoogleEvent);
     },
   };
@@ -177,7 +221,7 @@ git commit -m "google: add service-account calendar client + pure event normaliz
 
 ## Acceptance Criteria
 
-- `npm test -- tests/lib/integrations/google/map.test.ts` → PASS.
+- `npm test -- tests/lib/integrations/google/map.test.ts` → PASS(정규화 + `collectAllPages` 다중 페이지 누적).
 - `npm run typecheck` → 에러 없음(googleapis 타입 포함).
 - `npm run lint` → boundaries OK(lib는 lib만 import — module 타입 import 없음).
 
@@ -186,3 +230,4 @@ git commit -m "google: add service-account calendar client + pure event normaliz
 - **mapGoogleEvent가 `RawEvent`(module 타입)를 반환하게 만들지 말 것.** 이유: `boundaries/element-types`상 lib는 module을 import할 수 없다. lib는 `NormalizedGoogleEvent`까지만, `RawEvent` 변환은 Task 06 provider에서.
 - **lib에서 `@/modules/calendar/time` 등 module 유틸 import 금지.** 이유: 같은 경계 규칙. all-day 파싱은 `+09:00` 리터럴로 lib 안에서 자립한다.
 - **Google all-day `end.date`를 +1일 하지 말 것.** 이유: Google은 종료일을 이미 배타(다음날)로 준다. 그대로 반열림 종료로 쓴다.
+- **`events.list`를 단일 호출로 끝내지 말 것.** 이유: 6주 창에 2500건(특히 `singleEvents:true`로 반복 일정 펼침) 초과 시 `nextPageToken` 이후 페이지가 조용히 누락되고 `failed` 신호도 없다(적대적 리뷰). `collectAllPages`로 토큰 소진까지 누적한다.
