@@ -139,7 +139,7 @@ interface CalendarSourceProvider {
 
 `GET /api/calendar/feed?view=work|leave|personal&start[&teamId]`
 
-`start`는 **앵커**(보려는 달의 임의 시각)다. 서버는 이를 포함하는 **정규화된 6주 그리드 창**을 계산해 응답한다. 임의 `(start,end)` 범위는 Phase 3 계약에서 제외한다 — 월 그리드 UI만 지원하며, 자유 범위는 §12.2 캐시 단편화를 되살리기 때문이다(필요 시 후속에서 별도 범위 API).
+`start`는 **앵커**(보려는 달의 임의 시각)다. 서버는 이를 포함하는 **정규화된 6주 그리드 창**을 계산해 응답한다. 임의 `(start,end)` 범위는 Phase 3 계약에서 제외한다 — 월 그리드 UI만 지원하며, 자유 범위는 §12.2 캐시 단편화를 되살리기 때문이다(필요 시 후속에서 별도 범위 API). 또한 앵커는 **운영 창(now 기준 ±`MAX_ANCHOR_MONTHS`=12개월)** 안이어야 하며, 밖이면 400 — 무제한 달 열거로 인한 외부 호출·캐시 행 증가를 막는다(§12.4, 적대적 리뷰).
 
 1. 인증 + `requirePermission(userId, "calendar.{view}", "view")`.
 2. view에 필요한 provider 집합을 `Promise.allSettled`로 **병렬 호출**(부분 실패 허용 — rejected는 해당 출처 failed로 환원).
@@ -224,6 +224,7 @@ API·UI가 **동일 permission key**를 공유한다(`useCan(...)` ↔ `requireP
 - **(view, start) → 정규화된 6주 창 범위로만** 캐시 무효화·재fetch. 전역 Google 캐시 강제 갱신(admin 성격)은 admin 뷰와 함께 후속.
 - **cold·warm 실패 모두 backoff 마커로 기록**(짧은 만료 + errorMessage, warm은 last-good payload 보존)해, 직후의 *일반 요청*·*강제 새로고침* 모두 만료/min-interval 가드에 걸리게 한다. 안 그러면 만료 엔트리가 매 요청 재fetch되어 Google을 연타한다(적대적 리뷰 Finding 2; cold-cache는 기존 #6). cold 마커는 `payload=null`로 기록해 읽을 때 warm(stale)과 구분한다.
 - **min-refresh-interval**: 최근 일정 시간(기본 30초, 상수로 정의) 내 재검증된 소스는 refresh를 무시해 Google 해머링/비용 폭주를 차단.
+- **앵커 운영 창 제한(Finding)**: min-refresh-interval은 (source,range)별이라 *서로 다른 달*을 열거하면 매번 cold-fetch가 일어나(가드 우회) Google 호출·`CalendarCacheEntry` 행이 무한 증가한다. `start` 앵커를 now 기준 **±`MAX_ANCHOR_MONTHS`(12)** 로 제한해 키 공간(달×소스)과 외부 호출을 바운드한다 — GET·POST 라우트 공통 입력 검증. 사용자별 rate-limit은 소규모 내부 도구라 보류(YAGNI); 키 공간 제한이 1차 방어다.
 
 ## 13. UI(커스텀 경량)
 
