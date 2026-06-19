@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { normalizeGoogleEvent, collectAllPages, type GoogleRawEvent } from "@/lib/integrations/google/map";
+import { normalizeGoogleEvent, normalizeGoogleEvents, collectAllPages, type GoogleRawEvent } from "@/lib/integrations/google/map";
 
 describe("normalizeGoogleEvent", () => {
   it("all-day: date(시작) ~ date(종료, 배타) → 반열림 KST 경계, allDay true", () => {
@@ -33,6 +33,30 @@ describe("normalizeGoogleEvent", () => {
     const n = normalizeGoogleEvent({ id: "g3", summary: null, description: null, start: { date: "2026-06-19" }, end: { date: "2026-06-20" } });
     expect(n.summary).toBeNull();
     expect(n.id).toBe("g3");
+  });
+});
+
+describe("normalizeGoogleEvents (이벤트별 격리)", () => {
+  const valid = (id: string): GoogleRawEvent => ({ id, summary: id, description: null, start: { date: "2026-06-19" }, end: { date: "2026-06-20" } });
+
+  it("형식 오류 이벤트 1건(취소/id-only)이 있어도 나머지는 정규화되고 전체가 throw하지 않는다", () => {
+    const malformed: GoogleRawEvent = { id: "bad", summary: null, description: null, start: null, end: null };
+    const { events, skipped } = normalizeGoogleEvents([valid("a"), malformed, valid("b")]);
+    expect(events.map((e) => e.id)).toEqual(["a", "b"]);
+    expect(skipped).toBe(1);
+  });
+
+  it("start만 있고 end가 불완전해도 해당 건만 건너뛴다", () => {
+    const halfBad: GoogleRawEvent = { id: "half", summary: null, description: null, start: { date: "2026-06-19" }, end: {} };
+    const { events, skipped } = normalizeGoogleEvents([halfBad, valid("ok")]);
+    expect(events.map((e) => e.id)).toEqual(["ok"]);
+    expect(skipped).toBe(1);
+  });
+
+  it("모두 정상 → skipped 0", () => {
+    const { events, skipped } = normalizeGoogleEvents([valid("a"), valid("b")]);
+    expect(events).toHaveLength(2);
+    expect(skipped).toBe(0);
   });
 });
 

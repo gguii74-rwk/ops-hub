@@ -40,6 +40,21 @@ export function normalizeGoogleEvent(ev: GoogleRawEvent): NormalizedGoogleEvent 
   };
 }
 
+// 이벤트별 격리 정규화 — start/end가 불완전한 한 건(취소·id-only 등)이 parseEdge throw로 소스 전체
+// 새로고침을 실패시키지 않게 한다(적대적 리뷰). 실패 건은 건너뛰고 개수만 돌려준다(호출부가 서버 로그로 집계).
+export function normalizeGoogleEvents(raw: GoogleRawEvent[]): { events: NormalizedGoogleEvent[]; skipped: number } {
+  const events: NormalizedGoogleEvent[] = [];
+  let skipped = 0;
+  for (const ev of raw) {
+    try {
+      events.push(normalizeGoogleEvent(ev));
+    } catch {
+      skipped++;
+    }
+  }
+  return { events, skipped };
+}
+
 // 페이지네이션: nextPageToken이 소진될 때까지 모든 페이지를 누적한다(단일 페이지만 읽고 이후를 버리면 조용히 누락 — 적대적 리뷰).
 export async function collectAllPages(
   fetchPage: (pageToken?: string) => Promise<{ items: GoogleRawEvent[]; nextPageToken?: string }>,

@@ -157,11 +157,19 @@ async function main() {
       : {};
   const users = await prisma.user.findMany({ select: { id: true, email: true } });
   const userIdByEmail = Object.fromEntries(users.map((u) => [u.email, u.id]));
+  // Google 소스 key는 HMAC(server secret)로 파생 — calId(이메일)를 역산 가능한 무염 해시로 노출하지 않음(적대적 리뷰).
+  // calId가 있을 때만 필요. 누락/짧으면 fail-closed(약한 비밀로 키를 만들지 않음, SEED_ADMIN_PASSWORD와 동일 철학).
+  const keySecret = process.env.CALENDAR_SOURCE_KEY_SECRET ?? "";
+  if (calIds.length > 0 && keySecret.length < 16) {
+    console.error("CALENDAR_SOURCE_KEY_SECRET가 없거나 16자 미만 — Google 소스 key를 만들 수 없어 중단합니다(역산 가능한 무염 해시 금지).");
+    await prisma.$disconnect();
+    process.exit(1);
+  }
   for (const calId of calIds) {
     const ownerUserId = resolveGoogleOwnerId(calId, ownerEmailByCalId, userIdByEmail);
-    // key는 불투명(calId 해시) — calId(개인 캘린더면 이메일)가 feed 응답으로 새지 않게 한다(§9, 적대적 리뷰 5차).
+    // key는 불투명(calId의 HMAC) — calId(개인 캘린더면 이메일)가 feed 응답으로 새지 않게 한다(§9, 적대적 리뷰).
     // 실제 calId는 externalId에만 보관(provider fetch 대상). name은 admin 식별용 DB 필드라 응답엔 미포함.
-    const key = googleSourceKey(calId);
+    const key = googleSourceKey(calId, keySecret);
     await prisma.calendarSource.upsert({
       where: { key },
       // ownerUserId는 create·update 모두 설정 — 재seed 시 owner-map 변경이 기존 행에도 반영돼야 attribution이 고착되지 않음(적대적 리뷰).
