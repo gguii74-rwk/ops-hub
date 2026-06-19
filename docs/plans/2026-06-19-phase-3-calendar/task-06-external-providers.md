@@ -156,7 +156,7 @@ import type { CalendarEventKind } from "@prisma/client";
 import { getGoogleCalendarClient, type GoogleCalendarClient, type NormalizedGoogleEvent } from "@/lib/integrations/google";
 import { findSourcesByKind, type SourceRow } from "../repositories";
 import { getCachedPayload } from "../cache";
-import type { CalendarSourceProvider, FeedContext, NormalizedRange, RawEvent, SourceResult, SourceStatus } from "../types";
+import type { CalendarSourceProvider, NormalizedRange, RawEvent, SourceResult, SourceStatus } from "../types";
 
 // 캐시에 저장하는 직렬화 가능한 형태(Date → ISO).
 export interface CachedGoogleEvent {
@@ -209,7 +209,7 @@ interface ExternalProviderConfig {
 export function createExternalProvider(opts: ExternalProviderOpts, cfg: ExternalProviderConfig): CalendarSourceProvider {
   return {
     key: cfg.key,
-    async fetchEvents(range: NormalizedRange, _ctx: FeedContext): Promise<SourceResult> {
+    async fetchEvents(range: NormalizedRange): Promise<SourceResult> {
       const sources = await findSourcesByKind(cfg.sourceKinds);
       const events: RawEvent[] = [];
       const statuses: SourceStatus[] = [];
