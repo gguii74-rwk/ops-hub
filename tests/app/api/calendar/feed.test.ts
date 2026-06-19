@@ -73,7 +73,8 @@ describe("GET /api/calendar/feed", () => {
     expect((range.end.getTime() - range.start.getTime()) / 86_400_000).toBe(42);
     expect(ctx.userId).toBe("u1");
     expect(ctx.permissionKeys.has("calendar.work:view")).toBe(true);
-    expect(h.createProviders).toHaveBeenCalledWith({ forceRefresh: false });
+    // view를 provider 생성에 전달 → google provider가 personal 뷰에서 owner 스코프를 적용할 수 있게 함(F2)
+    expect(h.createProviders).toHaveBeenCalledWith({ forceRefresh: false, view: "work" });
     expect(providers).toBeDefined();
   });
 });
@@ -96,6 +97,6 @@ describe("POST /api/calendar/refresh", () => {
     const res = await POST(postReq({ view: "leave", start: new Date().toISOString() }));
     expect(res.status).toBe(200);
     expect(h.requirePermission).toHaveBeenCalledWith("u1", "calendar.leave", "view");
-    expect(h.createProviders).toHaveBeenCalledWith({ forceRefresh: true });
+    expect(h.createProviders).toHaveBeenCalledWith({ forceRefresh: true, view: "leave" });
   });
 });

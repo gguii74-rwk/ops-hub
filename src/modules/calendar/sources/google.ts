@@ -8,5 +8,6 @@ export function createGoogleProvider(opts: ExternalProviderOpts = {}): CalendarS
     sourceKinds: ["GOOGLE_CALENDAR"],
     eventKind: "EXTERNAL_EVENT",
     ownerOf: (s) => s.ownerUserId, // 개인 Google 소스의 ownerUserId를 event.userId로 전파(dedup attribution §10)
+    ownerScoped: true, // personal 뷰에서 본인 소유 Google 소스로 제한(F2)
   });
 }

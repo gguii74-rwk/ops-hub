@@ -21,6 +21,16 @@ function outcomeFromEntry<T>(entry: { payload: unknown; fetchedAt: Date; errorMe
   return { data: null, state: "failed", fetchedAt: null, error: entry.errorMessage };
 }
 
+// 같은 source+range에 대한 진행 중 재검증을 묶는 in-process 맵 — 동시 미스가 모두 fetcher를 호출하는
+// 스탬피드를 막는다(적대적 리뷰 F1). expiresAt 기반 throttle은 첫 write 이후에야 효력이 생기므로,
+// fetch 진행 창(네트워크 수 초) 동안 도착한 동시 요청은 이 맵으로 1회 fetch에 합류시킨다.
+// 한계: 프로세스 메모리라 단일 인스턴스에서만 유효(다중 인스턴스는 인스턴스당 1회로 bounded — 현 배포는 단일 인스턴스).
+const inFlight = new Map<string, Promise<CacheOutcome<unknown>>>();
+
+function rangeKey(sourceId: string, range: NormalizedRange): string {
+  return `${sourceId}|${range.start.getTime()}|${range.end.getTime()}`;
+}
+
 export async function getCachedPayload<T>(args: {
   source: { id: string; cacheTtlSeconds: number };
   range: NormalizedRange;
@@ -45,23 +55,37 @@ export async function getCachedPayload<T>(args: {
     return outcomeFromEntry<T>(entry);
   }
 
-  // due(만료 / 엔트리 없음 / forceRefresh가 min-interval 경과) → 인라인 재검증
-  try {
-    const data = await fetcher();
-    const expiresAt = new Date(current.getTime() + source.cacheTtlSeconds * 1000);
-    await writeCacheEntry(source.id, range, data, expiresAt, null);
-    return { data, state: "ok", fetchedAt: current, error: null };
-  } catch (e) {
-    const error = e instanceof Error ? e.message : String(e);
-    const retryAt = new Date(current.getTime() + backoffMs);
-    const lastGood = entry && entry.payload !== null ? (entry.payload as T) : null;
-    if (lastGood !== null) {
-      // warm: last-good payload는 보존하되 expiresAt를 backoff로 당기고 errorMessage 기록 → stale + 재fetch 폭주 차단.
-      await writeCacheEntry(source.id, range, lastGood, retryAt, error);
-      return { data: lastGood, state: "stale", fetchedAt: current, error };
+  // due(만료 / 엔트리 없음 / forceRefresh가 min-interval 경과) → 동시 미스는 1회 재검증으로 합류.
+  // write가 fetch 프로미스 내부에 있어, 리더의 write가 보이는 시점과 맵 해제 시점이 순서대로 정렬된다
+  // (write 완료 전 read → 맵 적중해 합류 / write 완료 후 read → fresh 적중해 early-return). 둘 사이 빈틈 없음.
+  const key = rangeKey(source.id, range);
+  const existing = inFlight.get(key);
+  if (existing) return (await existing) as CacheOutcome<T>;
+
+  const revalidate = (async (): Promise<CacheOutcome<unknown>> => {
+    try {
+      const data = await fetcher();
+      const expiresAt = new Date(current.getTime() + source.cacheTtlSeconds * 1000);
+      await writeCacheEntry(source.id, range, data, expiresAt, null);
+      return { data, state: "ok", fetchedAt: current, error: null };
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      const retryAt = new Date(current.getTime() + backoffMs);
+      const lastGood = entry && entry.payload !== null ? entry.payload : null;
+      if (lastGood !== null) {
+        // warm: last-good payload는 보존하되 expiresAt를 backoff로 당기고 errorMessage 기록 → stale + 재fetch 폭주 차단.
+        await writeCacheEntry(source.id, range, lastGood, retryAt, error);
+        return { data: lastGood, state: "stale", fetchedAt: current, error };
+      }
+      // cold: 성공 이력 없음 → payload null 마커 + 짧은 backoff → failed. 직후 요청/forceRefresh 모두 재fetch 안 함.
+      await writeCacheEntry(source.id, range, null, retryAt, error);
+      return { data: null, state: "failed", fetchedAt: null, error };
     }
-    // cold: 성공 이력 없음 → payload null 마커 + 짧은 backoff → failed. 직후 요청/forceRefresh 모두 재fetch 안 함.
-    await writeCacheEntry(source.id, range, null, retryAt, error);
-    return { data: null, state: "failed", fetchedAt: null, error };
+  })();
+  inFlight.set(key, revalidate);
+  try {
+    return (await revalidate) as CacheOutcome<T>;
+  } finally {
+    inFlight.delete(key);
   }
 }
