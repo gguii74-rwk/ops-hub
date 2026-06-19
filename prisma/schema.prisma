@@ -77,6 +77,14 @@ enum WorkflowStatus {
   @@schema("workflows")
 }
 
+enum MailDeliveryStatus {
+  SENDING
+  SENT
+  FAILED
+
+  @@schema("workflows")
+}
+
 enum LeaveType {
   ANNUAL
   HALF
@@ -355,6 +363,7 @@ model WorkflowTask {
 
   files          GeneratedFile[]
   mailDeliveries MailDelivery[]
+  events         WorkflowTaskEvent[]
 
   @@index([typeId, scheduledAt])
   @@index([status])
@@ -376,19 +385,36 @@ model GeneratedFile {
 }
 
 model MailDelivery {
-  id                String        @id @default(cuid())
+  id                String             @id @default(cuid())
   taskId            String?
-  task              WorkflowTask? @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  task              WorkflowTask?      @relation(fields: [taskId], references: [id], onDelete: SetNull)
   step              String?
+  status            MailDeliveryStatus
   recipients        Json
   subject           String
+  bodyHtml          String?
   attachmentPaths   Json?
   providerMessageId String?
+  errorMessage      String?
   sentById          String?
-  sentAt            DateTime      @default(now())
+  sentAt            DateTime?
 
   @@index([taskId])
   @@index([sentAt])
+  @@schema("workflows")
+}
+
+model WorkflowTaskEvent {
+  id         String          @id @default(cuid())
+  taskId     String
+  task       WorkflowTask    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  fromStatus WorkflowStatus?
+  toStatus   WorkflowStatus
+  actorId    String?
+  note       String?
+  occurredAt DateTime        @default(now())
+
+  @@index([taskId, occurredAt])
   @@schema("workflows")
 }
 
