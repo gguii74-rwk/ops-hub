@@ -26,13 +26,15 @@ export function getGoogleCalendarClient(): GoogleCalendarClient {
           maxResults: 2500,
           pageToken,
         });
-        const items: GoogleRawEvent[] = (res.data.items ?? []).map((it) => ({
-          id: it.id ?? "",
-          summary: it.summary ?? null,
-          description: it.description ?? null,
-          start: it.start ? { date: it.start.date ?? undefined, dateTime: it.start.dateTime ?? undefined } : null,
-          end: it.end ? { date: it.end.date ?? undefined, dateTime: it.end.dateTime ?? undefined } : null,
-        }));
+        const items: GoogleRawEvent[] = (res.data.items ?? [])
+          .filter((it) => it.id != null)
+          .map((it) => ({
+            id: it.id!, // filter above narrows out null/undefined
+            summary: it.summary ?? null,
+            description: it.description ?? null,
+            start: it.start ? { date: it.start.date ?? undefined, dateTime: it.start.dateTime ?? undefined } : null,
+            end: it.end ? { date: it.end.date ?? undefined, dateTime: it.end.dateTime ?? undefined } : null,
+          }));
         return { items, nextPageToken: res.data.nextPageToken ?? undefined };
       });
       return raw.map(normalizeGoogleEvent);
