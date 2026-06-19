@@ -200,17 +200,17 @@ export function getGoogleCalendarClient(): GoogleCalendarClient;     // GOOGLE_A
 
 | # | title | status | file | deps | outcome |
 |---|-------|--------|------|------|---------|
-| 01 | 공통 타입·상수·KST/range 유틸 | [ ] | [task-01](2026-06-19-phase-3-calendar/task-01-types-time.md) | — | |
-| 02 | calendar repository (Prisma 직접 조회) | [ ] | [task-02](2026-06-19-phase-3-calendar/task-02-repository.md) | 01 | |
-| 03 | cache 레이어 (TTL·인라인 재검증) | [ ] | [task-03](2026-06-19-phase-3-calendar/task-03-cache.md) | 01,02 | |
-| 04 | Google 클라이언트 (lib) + 매핑 | [ ] | [task-04](2026-06-19-phase-3-calendar/task-04-google-client.md) | 01 | |
-| 05 | 내부 provider (leave·workflow·manual) | [ ] | [task-05](2026-06-19-phase-3-calendar/task-05-internal-providers.md) | 01,02 | |
-| 06 | 외부 provider (google·holiday) + 캐시 | [ ] | [task-06](2026-06-19-phase-3-calendar/task-06-external-providers.md) | 01,02,03,04 | |
-| 07 | dedup + masking | [ ] | [task-07](2026-06-19-phase-3-calendar/task-07-dedup-masking.md) | 01 | |
-| 08 | feed 합성 서비스 | [ ] | [task-08](2026-06-19-phase-3-calendar/task-08-feed-service.md) | 01,05,06,07 | |
-| 09 | API: GET feed + POST refresh | [ ] | [task-09](2026-06-19-phase-3-calendar/task-09-api-routes.md) | 08 | |
-| 10 | seed: CalendarSource + 외주 권한 보정 | [ ] | [task-10](2026-06-19-phase-3-calendar/task-10-seed.md) | 01 | |
-| 11 | UI: React Query + 월 그리드 3뷰 | [ ] | [task-11](2026-06-19-phase-3-calendar/task-11-ui.md) | 01,09 | |
+| 01 | 공통 타입·상수·KST/range 유틸 | [x] | [task-01](2026-06-19-phase-3-calendar/task-01-types-time.md) | — | |
+| 02 | calendar repository (Prisma 직접 조회) | [x] | [task-02](2026-06-19-phase-3-calendar/task-02-repository.md) | 01 | |
+| 03 | cache 레이어 (TTL·인라인 재검증) | [x] | [task-03](2026-06-19-phase-3-calendar/task-03-cache.md) | 01,02 | |
+| 04 | Google 클라이언트 (lib) + 매핑 | [x] | [task-04](2026-06-19-phase-3-calendar/task-04-google-client.md) | 01 | |
+| 05 | 내부 provider (leave·workflow·manual) | [x] | [task-05](2026-06-19-phase-3-calendar/task-05-internal-providers.md) | 01,02 | |
+| 06 | 외부 provider (google·holiday) + 캐시 | [x] | [task-06](2026-06-19-phase-3-calendar/task-06-external-providers.md) | 01,02,03,04 | |
+| 07 | dedup + masking | [x] | [task-07](2026-06-19-phase-3-calendar/task-07-dedup-masking.md) | 01 | |
+| 08 | feed 합성 서비스 | [x] | [task-08](2026-06-19-phase-3-calendar/task-08-feed-service.md) | 01,05,06,07 | |
+| 09 | API: GET feed + POST refresh | [x] | [task-09](2026-06-19-phase-3-calendar/task-09-api-routes.md) | 08 | |
+| 10 | seed: CalendarSource + 외주 권한 보정 | [x] | [task-10](2026-06-19-phase-3-calendar/task-10-seed.md) | 01 | |
+| 11 | UI: React Query + 월 그리드 3뷰 | [x] | [task-11](2026-06-19-phase-3-calendar/task-11-ui.md) | 01,09 | |
 
 ## 공통 규칙
 
