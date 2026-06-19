@@ -42,6 +42,12 @@ export async function buildFeed(
   if (view === "personal") {
     visible = visible.filter((e) => e.userId === ctx.userId || e.kind === "HOLIDAY");
   }
+  // leave 뷰: Google은 외부 '휴가'(EXTERNAL_VACATION)만 보조로 노출한다. 일반 EXTERNAL_EVENT(타인 바쁨 블록)은
+  // 제목을 마스킹해도 start/end·userId가 응답에 남아 비휴가 사적 일정을 누출하므로 합성 단계에서 제외한다
+  // (마스킹은 안전망이 아님 — 적대적 리뷰). admin 뷰는 진단 위해 전체 노출, personal은 본인 것만(위 게이트).
+  if (view === "leave") {
+    visible = visible.filter((e) => e.kind !== "EXTERNAL_EVENT");
+  }
   const events: CalEvent[] = visible.map((e) => maskEvent(e, ctx));
 
   // 클라이언트向 출처 오류는 일반 메시지로만 — 원본 예외는 서버 로그에만(민감정보 유출 방지, 적대적 리뷰 #7).

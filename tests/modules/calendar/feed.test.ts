@@ -49,6 +49,34 @@ describe("buildFeed", () => {
     expect(res.events.map((e) => e.id)).not.toContain("google:g1"); // 접힘
   });
 
+  it("leave 뷰: 타인 비휴가 google 일정(EXTERNAL_EVENT)은 제외, 외부 휴가·내부 휴가는 유지(시각 누출 차단)", async () => {
+    const providers = {
+      internalLeave: provider("internalLeave", [raw({ id: "leave:mine", userId: "u1" })], [ok("internalLeave")]),
+      google: provider("google", [
+        raw({ id: "google:busy", kind: "EXTERNAL_EVENT", title: "회의", description: null, userId: "u9", allDay: false, sourceKey: "google-x" }),
+        raw({ id: "google:vac", kind: "EXTERNAL_VACATION", title: "연차", description: null, userId: "u9", allDay: true, sourceKey: "google-x" }),
+      ], [ok("google")]),
+      holiday: provider("holiday", [], [ok("holiday-kr")]),
+    };
+    const res = await buildFeed("leave", range, ctx({ userId: "u1" }), providers);
+    const ids = res.events.map((e) => e.id);
+    expect(ids).toContain("leave:mine"); // 내부 휴가 유지
+    expect(ids).toContain("google:vac"); // 외부 휴가는 leave 뷰의 보조 데이터로 유지
+    expect(ids).not.toContain("google:busy"); // 비휴가 타인 일정은 제외 — 마스킹돼도 시각·userId가 남으므로 합성 단계에서 차단
+  });
+
+  it("admin 뷰: 비휴가 google(EXTERNAL_EVENT)도 표시(진단용 — 권한자 전체 노출)", async () => {
+    const providers = {
+      internalLeave: provider("internalLeave", [], [ok("internalLeave")]),
+      workflowTask: provider("workflowTask", [], [ok("workflowTask")]),
+      manual: provider("manual", [], [ok("manual")]),
+      google: provider("google", [raw({ id: "google:busy", kind: "EXTERNAL_EVENT", title: "회의", description: null, userId: "u9", allDay: false, sourceKey: "google-x" })], [ok("google")]),
+      holiday: provider("holiday", [], [ok("holiday-kr")]),
+    };
+    const res = await buildFeed("admin", range, ctx({ userId: "u1", isOwner: true }), providers);
+    expect(res.events.map((e) => e.id)).toContain("google:busy");
+  });
+
   it("admin 뷰: DUPLICATE_OF_INTERNAL도 표시", async () => {
     const providers = {
       internalLeave: provider("internalLeave", [raw({ id: "leave:l1", userId: "u9", start: new Date("2026-06-10T00:00:00Z"), end: new Date("2026-06-12T00:00:00Z") })], [ok("internalLeave")]),

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveGoogleOwnerId, googleSourceKey } from "../../prisma/seed-google";
+import { resolveGoogleOwnerId, googleSourceKey, planGoogleSources } from "../../prisma/seed-google";
 
 describe("resolveGoogleOwnerId", () => {
   const userIdByEmail = { "u9@corp.com": "user-9" };
@@ -41,5 +41,41 @@ describe("googleSourceKey (HMAC — 비가역 불투명 식별자)", () => {
 
   it("secret 없으면 throw(무염 결정적 해시로의 조용한 폴백 차단)", () => {
     expect(() => googleSourceKey("cal-a@group", "")).toThrow();
+  });
+});
+
+describe("planGoogleSources (externalId 기준 조정 — secret 회전 시 중복 ACTIVE 방지)", () => {
+  const secretA = "secret-aaaaaaaaaaaaaa";
+  const secretB = "secret-bbbbbbbbbbbbbb";
+
+  it("secret 회전: 같은 calId는 기존 행(externalId 매칭)을 update — 생성하지 않는다", () => {
+    const existing = [{ id: "row-1", externalId: "cal-1@g" }];
+    const plan = planGoogleSources(["cal-1@g"], existing, secretB, {}, {});
+    expect(plan.upserts).toHaveLength(1);
+    expect(plan.upserts[0].existingId).toBe("row-1"); // 새 행 생성이 아니라 기존 행 in-place 갱신
+    expect(plan.upserts[0].key).toBe(googleSourceKey("cal-1@g", secretB)); // 새 secret으로 재키잉
+    expect(plan.upserts[0].key).not.toBe(googleSourceKey("cal-1@g", secretA));
+    expect(plan.deactivateIds).toEqual([]);
+  });
+
+  it("신규 calId → existingId null(생성 대상)", () => {
+    const plan = planGoogleSources(["new@g"], [], secretA, {}, {});
+    expect(plan.upserts[0].existingId).toBeNull();
+    expect(plan.upserts[0].calId).toBe("new@g");
+  });
+
+  it("설정에서 빠진 calId의 기존 ACTIVE 행 → 비활성화 대상", () => {
+    const existing = [
+      { id: "row-keep", externalId: "keep@g" },
+      { id: "row-gone", externalId: "gone@g" },
+    ];
+    const plan = planGoogleSources(["keep@g"], existing, secretA, {}, {});
+    expect(plan.upserts.map((u) => u.existingId)).toEqual(["row-keep"]);
+    expect(plan.deactivateIds).toEqual(["row-gone"]);
+  });
+
+  it("ownerUserId는 owner-map으로 해석돼 계획에 포함", () => {
+    const plan = planGoogleSources(["cal-9@g"], [], secretA, { "cal-9@g": "u9@corp.com" }, { "u9@corp.com": "user-9" });
+    expect(plan.upserts[0].ownerUserId).toBe("user-9");
   });
 });
