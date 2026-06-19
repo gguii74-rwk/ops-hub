@@ -1,6 +1,6 @@
 # Task 09 — API: GET feed + POST refresh
 
-`GET /api/calendar/feed`와 `POST /api/calendar/refresh`. 둘 다 인증 → `requirePermission(calendar.{view}:view)` → range 정규화 → `FeedContext` 구성 → `buildFeed`. refresh는 `forceRefresh:true` provider로 (view,range) 범위만 재검증(min-interval은 cache가 가드). provider 조립 헬퍼도 여기서 만든다.
+`GET /api/calendar/feed`와 `POST /api/calendar/refresh`. 둘 다 인증 → `requirePermission(calendar.{view}:view)` → **앵커 운영 창 검증** → range 정규화 → `FeedContext` 구성 → `buildFeed`. refresh는 `forceRefresh:true` provider로 (view,range) 범위만 재검증(min-interval은 cache가 가드). 앵커는 운영 창(±`MAX_ANCHOR_MONTHS`)으로 제한해 무제한 달 열거를 막는다. provider 조립 헬퍼도 여기서 만든다.
 
 ## Files
 
@@ -107,15 +107,20 @@ describe("GET /api/calendar/feed", () => {
     expect((await GET(getReq("view=work&start=2026-06-15"))).status).toBe(403);
   });
 
+  it("창 밖 start(먼 과거) → 400", async () => {
+    expect((await GET(getReq("view=work&start=1900-01-01"))).status).toBe(400);
+  });
+
   it("성공 → 200, buildFeed에 정규화 range·ctx 전달, no-store", async () => {
-    const res = await GET(getReq("view=work&start=2026-06-15T00:00:00Z"));
+    // 앵커는 now 기준 운영 창 안이어야 하므로 현재 시각으로 만든다(고정 날짜는 시간 경과 시 창을 벗어나 테스트가 깨짐).
+    const res = await GET(getReq(`view=work&start=${new Date().toISOString()}`));
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toContain("no-store");
     expect(h.requirePermission).toHaveBeenCalledWith("u1", "calendar.work", "view");
     const [view, range, ctx, providers] = h.buildFeed.mock.calls[0];
     expect(view).toBe("work");
-    expect(range.start.toISOString()).toBe("2026-05-30T15:00:00.000Z");
-    expect(range.end.toISOString()).toBe("2026-07-11T15:00:00.000Z");
+    // 정규화 정확값은 time.test.ts가 검증 — 여기선 6주(42일) 그리드 불변식만 확인.
+    expect((range.end.getTime() - range.start.getTime()) / 86_400_000).toBe(42);
     expect(ctx.userId).toBe("u1");
     expect(ctx.permissionKeys.has("calendar.work:view")).toBe(true);
     expect(h.createProviders).toHaveBeenCalledWith({ forceRefresh: false });
@@ -133,8 +138,12 @@ describe("POST /api/calendar/refresh", () => {
     expect((await POST(postReq({ view: "nope", start: "2026-06-15" }))).status).toBe(400);
   });
 
+  it("창 밖 start → 400", async () => {
+    expect((await POST(postReq({ view: "leave", start: "1900-01-01" }))).status).toBe(400);
+  });
+
   it("성공 → forceRefresh:true provider로 buildFeed, 200", async () => {
-    const res = await POST(postReq({ view: "leave", start: "2026-06-15" }));
+    const res = await POST(postReq({ view: "leave", start: new Date().toISOString() }));
     expect(res.status).toBe(200);
     expect(h.requirePermission).toHaveBeenCalledWith("u1", "calendar.leave", "view");
     expect(h.createProviders).toHaveBeenCalledWith({ forceRefresh: true });
@@ -153,7 +162,8 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { ForbiddenError, getPermissionSummary, requirePermission } from "@/kernel/access";
 import { isViewKey, VIEW_PERMISSION } from "@/modules/calendar/views";
-import { normalizeToGridWindow } from "@/modules/calendar/time";
+import { MAX_ANCHOR_MONTHS } from "@/modules/calendar/constants";
+import { isAnchorWithinWindow, normalizeToGridWindow } from "@/modules/calendar/time";
 import { buildFeed } from "@/modules/calendar/feed";
 import { createCalendarProviders } from "@/modules/calendar/providers";
 
@@ -167,6 +177,8 @@ export async function GET(req: Request) {
   if (!isViewKey(view)) return NextResponse.json({ error: "invalid view" }, { status: 400 });
   const anchor = new Date(start);
   if (Number.isNaN(anchor.getTime())) return NextResponse.json({ error: "invalid start" }, { status: 400 });
+  // 앵커를 운영 창(now 기준 ±MAX_ANCHOR_MONTHS)으로 제한 — 무제한 달 열거로 인한 외부 호출·캐시 행 증가 차단(적대적 리뷰).
+  if (!isAnchorWithinWindow(anchor, new Date(), MAX_ANCHOR_MONTHS)) return NextResponse.json({ error: "start out of allowed window" }, { status: 400 });
 
   try {
     await requirePermission(session.user.id, VIEW_PERMISSION[view], "view");
@@ -190,7 +202,8 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { ForbiddenError, getPermissionSummary, requirePermission } from "@/kernel/access";
 import { isViewKey, VIEW_PERMISSION } from "@/modules/calendar/views";
-import { normalizeToGridWindow } from "@/modules/calendar/time";
+import { MAX_ANCHOR_MONTHS } from "@/modules/calendar/constants";
+import { isAnchorWithinWindow, normalizeToGridWindow } from "@/modules/calendar/time";
 import { buildFeed } from "@/modules/calendar/feed";
 import { createCalendarProviders } from "@/modules/calendar/providers";
 
@@ -204,6 +217,8 @@ export async function POST(req: Request) {
   if (!isViewKey(view)) return NextResponse.json({ error: "invalid view" }, { status: 400 });
   const anchor = new Date(start);
   if (Number.isNaN(anchor.getTime())) return NextResponse.json({ error: "invalid start" }, { status: 400 });
+  // 앵커를 운영 창(now 기준 ±MAX_ANCHOR_MONTHS)으로 제한 — refresh는 forceRefresh라 무제한 달 열거 시 Google 강제 호출이 누적된다(적대적 리뷰).
+  if (!isAnchorWithinWindow(anchor, new Date(), MAX_ANCHOR_MONTHS)) return NextResponse.json({ error: "start out of allowed window" }, { status: 400 });
 
   try {
     await requirePermission(session.user.id, VIEW_PERMISSION[view], "view");
@@ -240,3 +255,4 @@ git commit -m "calendar: add feed + refresh API routes (perm-gated, range-scoped
 - **refresh에 별도 권한 키를 추가하지 말 것.** 이유: §12.4 결정 — 사용자가 이미 보는 데이터의 재검증이라 `calendar.{view}:view`를 재사용한다(YAGNI). 전역 강제 갱신(admin)은 후속.
 - **`ctx.isOwner`를 DB에서 또 조회하지 말 것.** 이유: PM/OWNER는 `getPermissionSummary`에 `calendar.admin:view`가 포함되어 masking이 이미 상세 노출로 처리한다. 추가 쿼리는 불필요(`isOwner:false`로 두어도 동일 결과).
 - **응답에 `Cache-Control: no-store`를 빼지 말 것.** 이유: 마스킹된 권한별 응답이 캐시되면 다른 사용자에게 샐 수 있다(settings 라우트와 동일 규약).
+- **`start` 앵커를 무제한 허용하지 말 것.** 이유: cache의 min-interval 가드는 (source,range)별이라 *서로 다른 달*을 열거하면 매번 cold-fetch가 일어나 Google 호출·`CalendarCacheEntry` 행이 무한 증가한다(적대적 리뷰). `isAnchorWithinWindow(anchor, new Date(), MAX_ANCHOR_MONTHS)`로 운영 창(±12개월) 밖이면 400(GET·POST 공통). 사용자별 rate-limit은 소규모 내부 도구라 보류(YAGNI) — 키 공간 제한이 1차 방어.

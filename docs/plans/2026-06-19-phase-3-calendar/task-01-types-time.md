@@ -31,6 +31,7 @@ export const WEEK_STARTS_ON = 0; // 0=일요일. 월 그리드 주 시작의 단
 export const DEFAULT_GOOGLE_TTL_SEC = 900; // CalendarSource.cacheTtlSeconds 기본
 export const HOLIDAY_TTL_SEC = 86_400; // 공휴일 24h
 export const MIN_REFRESH_INTERVAL_SEC = 30; // 강제 새로고침 해머링 차단(§12.4)
+export const MAX_ANCHOR_MONTHS = 12; // feed/refresh 앵커 허용 창(now 기준 ±개월) — 무제한 달 열거로 인한 외부 호출·캐시 증가 차단(§12.4)
 export const LEAVE_KEYWORDS = ["휴가", "연차", "반차", "오전반차", "오후반차"] as const;
 ```
 
@@ -148,6 +149,7 @@ import {
   allDayHalfOpen,
   normalizeToGridWindow,
   rangesOverlap,
+  isAnchorWithinWindow,
 } from "@/modules/calendar/time";
 
 describe("toKstDateKey", () => {
@@ -198,6 +200,22 @@ describe("rangesOverlap", () => {
     const d = (s: string) => new Date(s);
     expect(rangesOverlap(d("2026-06-01"), d("2026-06-03"), d("2026-06-03"), d("2026-06-05"))).toBe(false);
     expect(rangesOverlap(d("2026-06-01"), d("2026-06-04"), d("2026-06-03"), d("2026-06-05"))).toBe(true);
+  });
+});
+
+describe("isAnchorWithinWindow", () => {
+  const now = new Date("2026-06-15T03:00:00+09:00"); // 2026-06 KST
+
+  it("같은 달·±maxMonths 경계 내 → true", () => {
+    expect(isAnchorWithinWindow(new Date("2026-06-01T00:00:00+09:00"), now, 12)).toBe(true);
+    expect(isAnchorWithinWindow(new Date("2027-06-15T00:00:00+09:00"), now, 12)).toBe(true); // +12개월 경계
+    expect(isAnchorWithinWindow(new Date("2025-06-15T00:00:00+09:00"), now, 12)).toBe(true); // -12개월 경계
+  });
+
+  it("창 밖 → false", () => {
+    expect(isAnchorWithinWindow(new Date("2027-07-15T00:00:00+09:00"), now, 12)).toBe(false); // +13개월
+    expect(isAnchorWithinWindow(new Date("2025-05-15T00:00:00+09:00"), now, 12)).toBe(false); // -13개월
+    expect(isAnchorWithinWindow(new Date("1900-01-01T00:00:00+09:00"), now, 12)).toBe(false);
   });
 });
 ```
@@ -258,6 +276,14 @@ export function normalizeToGridWindow(anchor: Date): NormalizedRange {
 
 export function rangesOverlap(aStart: Date, aEnd: Date, bStart: Date, bEnd: Date): boolean {
   return aStart.getTime() < bEnd.getTime() && bStart.getTime() < aEnd.getTime();
+}
+
+// 앵커가 now 기준 ±maxMonths 개월(KST 월 기준) 안인지. feed/refresh 라우트 입력 검증 — 무제한 달 열거 차단(적대적 리뷰).
+export function isAnchorWithinWindow(anchor: Date, now: Date, maxMonths: number): boolean {
+  const a = shiftToKst(anchor);
+  const n = shiftToKst(now);
+  const months = (a.getUTCFullYear() - n.getUTCFullYear()) * 12 + (a.getUTCMonth() - n.getUTCMonth());
+  return Math.abs(months) <= maxMonths;
 }
 ```
 
