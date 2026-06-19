@@ -133,6 +133,8 @@ describe("createGoogleProvider", () => {
     const out = await createGoogleProvider({ view: "leave" }).fetchEvents(range, ctx);
     expect(h.cache).toHaveBeenCalledTimes(2);
     expect(out.statuses.map((s) => s.key).sort()).toEqual(["google:mine", "google:other"]);
+    // 소스가 둘이어도 Google 클라이언트는 fetchEvents당 1개만 생성·공유(소스별 GoogleAuth 낭비 제거, 적대적 리뷰).
+    expect(h.getClient).toHaveBeenCalledTimes(1);
   });
 
   it("listEvents가 멈춰도 타임아웃 후 failed로 환원 — provider가 행되지 않는다(feed 블로킹 방지, 적대적 리뷰)", { timeout: 2000 }, async () => {
