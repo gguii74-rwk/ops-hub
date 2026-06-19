@@ -55,7 +55,8 @@ export async function findLeaveInRange(range: NormalizedRange, statuses: LeaveRe
 
 export async function findWorkflowTasksInRange(range: NormalizedRange): Promise<WorkflowRow[]> {
   const rows = await prisma.workflowTask.findMany({
-    where: { scheduledAt: { gte: range.start, lt: range.end } },
+    // 취소된 작업은 캘린더에 노출하지 않는다(spec §8, Phase 4 lifecycle 도입의 결과).
+    where: { scheduledAt: { gte: range.start, lt: range.end }, status: { not: "CANCELLED" } },
     select: { id: true, scheduledAt: true, status: true, type: { select: { name: true } } },
     orderBy: { scheduledAt: "asc" },
   });
