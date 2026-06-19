@@ -4,6 +4,8 @@ import bcrypt from "bcryptjs";
 // 상대경로: tsx의 tsconfig paths(@ alias) 해석 의존을 피한다.
 import { ACCESS_ROLE_KEYS, NAV as NAV_CATALOG, RESOURCES } from "../src/kernel/access/catalog";
 import { EXTRA_PERMISSIONS } from "./seed-permissions";
+import { ROLE_ALLOW } from "./seed-roles";
+import { resolveGoogleOwnerId, googleSourceKey } from "./seed-google";
 
 const prisma = new PrismaClient();
 
@@ -19,34 +21,6 @@ const ROLE_NAMES: Record<string, string> = {
   "contractor-civil-response": "외주 민원응대",
 };
 const ACCESS_ROLES = ACCESS_ROLE_KEYS.map((key) => ({ key, name: ROLE_NAMES[key] ?? key }));
-
-// role → 허용 "resource:action" 키. 명확한 셀만(ALLOW). "제한"은 미포함 → 거부 유지.
-const ROLE_ALLOW: Record<string, string[]> = {
-  // pm 권한은 OWNER systemRole로 전부 허용되지만, 비-OWNER PM 대비 명시 ALLOW도 부여.
-  pm: ["*"],
-  "regular-developer": [
-    "dashboard:view", "calendar.work:view", "calendar.leave:view", "calendar.personal:view",
-    "calendar.team:view", "workflows.weekly:view", "workflows.billing:view",
-    "workflows.notification:view", "leave.request:view",
-    "leave.request:create", "workflows.weekly:create", "workflows.weekly:generate",
-    "workflows.notification:create",
-  ],
-  "contractor-developer": [
-    "dashboard:view", "calendar.work:view", "calendar.personal:view",
-    "workflows.weekly:view", "workflows.notification:view", "leave.request:view",
-    "leave.request:create", "workflows.weekly:create", "workflows.notification:create",
-  ],
-  "contractor-content": [
-    "dashboard:view", "calendar.work:view", "calendar.personal:view",
-    "workflows.weekly:view", "workflows.notification:view", "leave.request:view",
-    "leave.request:create", "workflows.weekly:create", "workflows.notification:create",
-  ],
-  "contractor-civil-response": [
-    "dashboard:view", "calendar.work:view", "calendar.personal:view",
-    "workflows.notification:view", "leave.request:view",
-    "leave.request:create", "workflows.notification:create",
-  ],
-};
 
 // nav도 catalog(NAV)가 단일 출처. 순서(sortOrder)만 여기서 부여.
 const NAV = NAV_CATALOG.map((item, index) => ({ ...item, sortOrder: (index + 1) * 10 }));
@@ -165,8 +139,41 @@ async function main() {
     });
   }
 
+  // 6. CalendarSource — 공휴일(Google 공휴일 캘린더) + 설정된 Google 캘린더(best-effort)
+  const HOLIDAY_CAL_ID = "ko.south_korea#holiday@group.v.calendar.google.com";
+  await prisma.calendarSource.upsert({
+    where: { key: "holiday-kr" },
+    update: { name: "대한민국 공휴일", externalId: HOLIDAY_CAL_ID, cacheTtlSeconds: 86_400, syncStatus: "ACTIVE" },
+    create: { key: "holiday-kr", kind: "HOLIDAY", name: "대한민국 공휴일", provider: "google", externalId: HOLIDAY_CAL_ID, cacheTtlSeconds: 86_400, visibility: "PUBLIC" },
+  });
+
+  const calIdsRow = await prisma.systemSetting.findUnique({ where: { key: "integrations.google.calendarIds" } });
+  const calIds = Array.isArray(calIdsRow?.value) ? (calIdsRow.value as string[]) : [];
+  // 선택적 owner-map(calId→이메일). 비어 있으면 전부 team(ownerUserId=null) = Phase 3 기본. 채우면 dedup/personal-google 활성(§10).
+  const ownersRow = await prisma.systemSetting.findUnique({ where: { key: "integrations.google.calendarOwners" } });
+  const ownerEmailByCalId =
+    ownersRow?.value && typeof ownersRow.value === "object" && !Array.isArray(ownersRow.value)
+      ? (ownersRow.value as Record<string, string>)
+      : {};
+  const users = await prisma.user.findMany({ select: { id: true, email: true } });
+  const userIdByEmail = Object.fromEntries(users.map((u) => [u.email, u.id]));
+  for (const calId of calIds) {
+    const ownerUserId = resolveGoogleOwnerId(calId, ownerEmailByCalId, userIdByEmail);
+    // key는 불투명(calId 해시) — calId(개인 캘린더면 이메일)가 feed 응답으로 새지 않게 한다(§9, 적대적 리뷰 5차).
+    // 실제 calId는 externalId에만 보관(provider fetch 대상). name은 admin 식별용 DB 필드라 응답엔 미포함.
+    const key = googleSourceKey(calId);
+    await prisma.calendarSource.upsert({
+      where: { key },
+      // ownerUserId는 create·update 모두 설정 — 재seed 시 owner-map 변경이 기존 행에도 반영돼야 attribution이 고착되지 않음(적대적 리뷰).
+      update: { externalId: calId, syncStatus: "ACTIVE", ownerUserId },
+      create: { key, kind: "GOOGLE_CALENDAR", name: `Google: ${calId}`, provider: "google", externalId: calId, cacheTtlSeconds: 900, visibility: "TEAM", ownerUserId },
+    });
+  }
+
+  // (데모 WorkflowTask/LeaveRequest는 메인 seed에 두지 않는다 — dev 전용 prisma/seed-demo.ts로 분리. step 3b.)
+
   console.log(
-    `seed 완료: permissions=${defs.size}, roles=${ACCESS_ROLES.length}, nav=${NAV.length}, admin=${email}`,
+    `seed 완료: permissions=${defs.size}, roles=${ACCESS_ROLES.length}, nav=${NAV.length}, admin=${email}, calendarSources=seeded`,
   );
 }
 
