@@ -5,7 +5,7 @@
 ## Files
 
 - Create: `prisma/seed-roles.ts` (ROLE_ALLOW 추출 + 외주 권한 추가)
-- Create: `prisma/seed-google.ts` (calId→ownerUserId 순수 resolver)
+- Create: `prisma/seed-google.ts` (calId→ownerUserId 순수 resolver + calId→불투명 source key 생성기 `googleSourceKey`)
 - Create: `prisma/seed-demo.ts` (dev 전용 데모 WorkflowTask/LeaveRequest)
 - Modify: `prisma/seed.ts` (ROLE_ALLOW·resolveGoogleOwnerId import 전환 + CalendarSource seed(ownerUserId 포함) — 데모는 제외)
 - Modify: `package.json` (`db:seed:demo` 스크립트 추가)
@@ -99,7 +99,7 @@ Google 소스에 `ownerUserId`를 채우는 순수 로직. 명시적 owner-map(c
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { resolveGoogleOwnerId } from "../../prisma/seed-google";
+import { resolveGoogleOwnerId, googleSourceKey } from "../../prisma/seed-google";
 
 describe("resolveGoogleOwnerId", () => {
   const userIdByEmail = { "u9@corp.com": "user-9" };
@@ -116,11 +116,30 @@ describe("resolveGoogleOwnerId", () => {
     expect(resolveGoogleOwnerId("cal-x@group", { "cal-x@group": "ghost@corp.com" }, userIdByEmail)).toBeNull();
   });
 });
+
+describe("googleSourceKey", () => {
+  it("calId(이메일 형태)를 key에 노출하지 않는다(§9 — 불투명 식별자)", () => {
+    const key = googleSourceKey("person@example.com");
+    expect(key).not.toContain("person@example.com");
+    expect(key).not.toContain("@");
+    expect(key.startsWith("google:")).toBe(true);
+  });
+
+  it("같은 calId → 같은 key(결정적 — 재시드 upsert 멱등)", () => {
+    expect(googleSourceKey("cal-a@group")).toBe(googleSourceKey("cal-a@group"));
+  });
+
+  it("다른 calId → 다른 key(충돌 방지)", () => {
+    expect(googleSourceKey("cal-a@group")).not.toBe(googleSourceKey("cal-b@group"));
+  });
+});
 ```
 
 `prisma/seed-google.ts`:
 
 ```ts
+import { createHash } from "node:crypto";
+
 // calId → ownerUserId. 명시적 owner-map(calId→이메일)이 있을 때만 그 이메일의 userId로 귀속, 없으면 null(공유/팀).
 // Phase 3 기본은 owner-map이 비어 있어 전부 null(team) — dedup/personal-google 비활성. map을 채우면 코드 변경 없이 활성화(§10).
 export function resolveGoogleOwnerId(
@@ -132,6 +151,13 @@ export function resolveGoogleOwnerId(
   if (!email) return null;
   return userIdByEmail[email] ?? null;
 }
+
+// Google 소스의 CalendarSource.key를 만든다. key는 feed 응답(sourceKey·이벤트 id·sources·stale/failed)에
+// 실려 UI에 노출되므로 calId(개인 캘린더면 이메일)를 내장하면 안 된다(§9 — 적대적 리뷰 5차). 실제 calId는
+// externalId에만 보관한다. 해시라 결정적 → 재시드 upsert(where: { key })가 멱등하다.
+export function googleSourceKey(calId: string): string {
+  return `google:${createHash("sha256").update(calId).digest("hex").slice(0, 12)}`;
+}
 ```
 
 실행(PASS): `npm test -- tests/prisma/seed-google.test.ts`
@@ -142,7 +168,7 @@ export function resolveGoogleOwnerId(
 
 ```ts
 import { ROLE_ALLOW } from "./seed-roles";
-import { resolveGoogleOwnerId } from "./seed-google";
+import { resolveGoogleOwnerId, googleSourceKey } from "./seed-google";
 ```
 
 그리고 기존 인라인 `const ROLE_ALLOW: Record<string, string[]> = { … };` 블록(현재 라인 24~49) **전체 삭제**. 나머지 `ACCESS_ROLES`/`NAV`/`splitKey`/`main` 로직은 그대로 둔다(ROLE_ALLOW 참조는 import로 해결됨).
@@ -172,11 +198,14 @@ import { resolveGoogleOwnerId } from "./seed-google";
   const userIdByEmail = Object.fromEntries(users.map((u) => [u.email, u.id]));
   for (const calId of calIds) {
     const ownerUserId = resolveGoogleOwnerId(calId, ownerEmailByCalId, userIdByEmail);
+    // key는 불투명(calId 해시) — calId(개인 캘린더면 이메일)가 feed 응답으로 새지 않게 한다(§9, 적대적 리뷰 5차).
+    // 실제 calId는 externalId에만 보관(provider fetch 대상). name은 admin 식별용 DB 필드라 응답엔 미포함.
+    const key = googleSourceKey(calId);
     await prisma.calendarSource.upsert({
-      where: { key: `google:${calId}` },
+      where: { key },
       // ownerUserId는 create·update 모두 설정 — 재seed 시 owner-map 변경이 기존 행에도 반영돼야 attribution이 고착되지 않음(적대적 리뷰).
       update: { externalId: calId, syncStatus: "ACTIVE", ownerUserId },
-      create: { key: `google:${calId}`, kind: "GOOGLE_CALENDAR", name: `Google: ${calId}`, provider: "google", externalId: calId, cacheTtlSeconds: 900, visibility: "TEAM", ownerUserId },
+      create: { key, kind: "GOOGLE_CALENDAR", name: `Google: ${calId}`, provider: "google", externalId: calId, cacheTtlSeconds: 900, visibility: "TEAM", ownerUserId },
     });
   }
 
@@ -257,6 +286,6 @@ git commit -m "seed: grant contractors calendar.leave:view; seed holiday/google 
 
 - **seed.ts를 테스트에서 직접 import하지 말 것.** 이유: 최상위 `main()`이 실행되어 DB 연결을 시도한다. 권한 매트릭스 검증은 부수효과 없는 `seed-roles.ts`만 import한다.
 - **데모 LeaveRequest/WorkflowTask를 메인 `seed.ts`(=`prisma db seed`)에 두지 말 것.** 이유: 메인 seed는 roles/admin/config 부트스트랩 경로라 cutover·production 재시드 시 가짜 **승인 휴가**(캘린더 이벤트·dedup 앵커·연차/정산 입력이 됨)·업무가 권위 데이터로 주입된다(적대적 리뷰 Finding 1). 고정 id만으론 중복만 막고 오염은 못 막는다. 반드시 `prisma/seed-demo.ts`(dev 전용, `db:seed:demo`)로 분리한다.
-- **`google:${calId}` 외 다른 키 스킴으로 바꾸지 말 것.** 이유: 재seed 시 calId 순서가 바뀌어도 동일 source에 매핑되어야 한다(인덱스 기반 키는 재정렬에 취약).
+- **source key는 `googleSourceKey(calId)`(calId의 결정적 해시)로 만들 것 — calId를 key에 그대로 박지 말 것.** 이유 ①(유출): key는 `sourceKey`·이벤트 `id`·`sources`·stale/failed로 응답에 노출되므로, calId(개인 캘린더면 이메일)를 내장하면 타이틀 마스킹과 무관하게 누설된다(§9, 적대적 리뷰 5차). 이유 ②(멱등): 키는 calId에 대해 **결정적**이어야 재seed 시 calId 순서가 바뀌어도 동일 source에 매핑된다(인덱스/순서 기반 키 금지). 무작위 slug는 upsert 멱등성을 깨므로 안 된다. 실제 calId는 `externalId`에만 보관한다.
 - **Google 소스 `ownerUserId`를 create에만 넣고 update에 빠뜨리지 말 것.** 이유: 재seed 시 owner-map이 바뀌어도 기존 행이 갱신 안 되면 attribution이 고착된다(적대적 리뷰). create·update 모두 설정한다.
 - **owner-map이 비어 dedup/personal-google이 비활성인 것은 의도된 Phase 3 기본임(인지).** 이유: 개인별 Google 캘린더 dedup이 필요해지면 `integrations.google.calendarOwners`만 채우면 코드 변경 없이 활성화된다(§10). 기본은 공유/팀 캘린더만 가정.
