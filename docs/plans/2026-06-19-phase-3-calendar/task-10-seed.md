@@ -270,7 +270,7 @@ main()
 ### 4. commit
 
 ```
-git add prisma/seed-roles.ts prisma/seed-demo.ts prisma/seed.ts package.json tests/prisma/seed-roles.test.ts
+git add prisma/seed-roles.ts prisma/seed-google.ts prisma/seed-demo.ts prisma/seed.ts package.json tests/prisma/seed-roles.test.ts tests/prisma/seed-google.test.ts
 git commit -m "seed: grant contractors calendar.leave:view; seed holiday/google sources; split demo data into dev-only seed-demo"
 ```
 
