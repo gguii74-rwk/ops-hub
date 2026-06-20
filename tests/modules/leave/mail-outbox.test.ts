@@ -12,7 +12,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: h.prisma }));
 
 import {
   insertPendingDelivery, cancelPendingDeliveries, listDueDeliveryIds, claimDelivery, finalizeDelivery,
-  deadLetterStaleSending, MAIL_MAX_ATTEMPTS,
+  deadLetterStaleSending, MAIL_MAX_ATTEMPTS, MAIL_RETRY_BACKOFF_MS,
 } from "@/modules/leave/repositories/mail";
 
 beforeEach(() => vi.clearAllMocks());
@@ -84,6 +84,17 @@ describe("finalizeDelivery", () => {
     h.db.mailDelivery.updateMany.mockResolvedValue({ count: 0 });
     expect(await finalizeDelivery("m1", "w1", { status: "SENT" })).toBe(false);
   });
+  it("FAILED는 lockedUntil을 backoff(미래)로 설정 — 즉시 재claim 방지", async () => {
+    vi.useFakeTimers();
+    const now = new Date("2026-07-01T00:00:00Z");
+    vi.setSystemTime(now);
+    h.db.mailDelivery.updateMany.mockResolvedValue({ count: 1 });
+    await finalizeDelivery("m1", "w1", { status: "FAILED", errorMessage: "smtp down" });
+    const arg = h.db.mailDelivery.updateMany.mock.calls[0][0];
+    expect(arg.data.status).toBe("FAILED");
+    expect(arg.data.lockedUntil).toEqual(new Date(now.getTime() + MAIL_RETRY_BACKOFF_MS));
+    vi.useRealTimers();
+  });
 });
 
 describe("listDueDeliveryIds", () => {
@@ -94,5 +105,14 @@ describe("listDueDeliveryIds", () => {
     const arg = h.db.mailDelivery.findMany.mock.calls[0][0];
     expect(arg.where.leaveRequestId).toEqual({ not: null });
     expect(MAIL_MAX_ATTEMPTS).toBe(3);
+  });
+  it("FAILED 후보는 backoff(lockedUntil) 경과분만 — 즉시 재claim 안 함", async () => {
+    h.db.mailDelivery.findMany.mockResolvedValue([]);
+    const now = new Date("2026-07-01T00:00:00Z");
+    await listDueDeliveryIds(now, 50);
+    const arg = h.db.mailDelivery.findMany.mock.calls[0][0];
+    const failedClause = (arg.where.OR as Array<Record<string, unknown>>).find((c) => c.status === "FAILED");
+    expect(failedClause).toMatchObject({ attempts: { lt: MAIL_MAX_ATTEMPTS } });
+    expect(failedClause!.OR).toEqual([{ lockedUntil: null }, { lockedUntil: { lt: now } }]);
   });
 });
