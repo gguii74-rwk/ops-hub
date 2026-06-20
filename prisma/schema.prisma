@@ -78,9 +78,11 @@ enum WorkflowStatus {
 }
 
 enum MailDeliveryStatus {
+  PENDING
   SENDING
   SENT
   FAILED
+  CANCELLED
 
   @@schema("workflows")
 }
@@ -408,9 +410,17 @@ model MailDelivery {
   errorMessage      String?
   sentById          String?
   sentAt            DateTime?
+  leaveRequestId    String?
+  eventType         String?
+  attempts          Int       @default(0)
+  lockedUntil       DateTime?
+  workerId          String?
 
+  @@unique([leaveRequestId, eventType])
   @@index([taskId])
   @@index([sentAt])
+  @@index([leaveRequestId])
+  @@index([status, lockedUntil])
   @@schema("workflows")
 }
 
@@ -529,10 +539,18 @@ model LeaveRequest {
   adminActionNote    String?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
+  createdByAdminId   String?
+  createdByAdminAt   DateTime?
+  modifiedByAdminId  String?
+  modifiedByAdminAt  DateTime?
+  deletedByAdminId   String?
+  deletedAt          DateTime?
+  deleteReason       String?
 
   @@index([userId, startDate])
   @@index([status])
   @@index([reviewedById])
+  @@index([deletedAt])
   @@schema("leave")
 }
 
