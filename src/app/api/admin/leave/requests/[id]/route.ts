@@ -14,6 +14,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const parsed = updateLeaveSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "invalid input" }, { status: 400 });
   try {
+    // cross-user 관리자 mutation 경계: admin 전체이력 권한 + 수정 권한 둘 다 요구(접근제어 규칙 #1 —
+    // UI는 admin-history(admin:view 게이트) 안에서만 수정 컨트롤을 노출하므로 API도 동일 키 검사).
+    await requirePermission(session.user.id, "leave.admin", "view");
     await requirePermission(session.user.id, "leave.request", "update");
     const updated = await updateByAdmin(id, parsed.data, session.user.id);
     return NextResponse.json({ id: updated.id });
@@ -32,6 +35,8 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
   const parsed = deleteLeaveSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "삭제 사유는 필수입니다." }, { status: 400 });
   try {
+    // cross-user 관리자 mutation 경계: admin 전체이력 권한 + 삭제 권한 둘 다 요구(접근제어 규칙 #1).
+    await requirePermission(session.user.id, "leave.admin", "view");
     await requirePermission(session.user.id, "leave.request", "delete");
     await deleteByAdmin(id, session.user.id, parsed.data.reason);
     return NextResponse.json({ ok: true });
