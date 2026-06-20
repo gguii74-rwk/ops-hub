@@ -298,6 +298,7 @@ export function EditLeaveModal({ target, onClose }: { target: EditTarget; onClos
   });
   const [adminActionNote, setNote] = useState("");
   const [deleteReason, setDeleteReason] = useState("");
+  const [confirmingDelete, setConfirmingDelete] = useState(false); // 2단계 확인(오클릭 방지, spec §7)
   const set = <K extends keyof LeaveFormState>(k: K, v: LeaveFormState[K]) => setState((s) => ({ ...s, [k]: v }));
   const qc = useQueryClient();
   const invalidate = () => { qc.invalidateQueries({ queryKey: ["admin-leave"] }); qc.invalidateQueries({ queryKey: ["leave"] }); };
@@ -314,8 +315,10 @@ export function EditLeaveModal({ target, onClose }: { target: EditTarget; onClos
   });
   const del = useMutation({
     mutationFn: async () => {
+      const reason = deleteReason.trim();
+      if (!reason) throw new Error("삭제 사유를 입력하세요."); // 사유 필수(되돌릴 수 없는 작업)
       const res = await fetch(`/api/admin/leave/requests/${target.id}`, {
-        method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: deleteReason || null }),
+        method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `삭제 실패 (${res.status})`);
     },
@@ -330,8 +333,18 @@ export function EditLeaveModal({ target, onClose }: { target: EditTarget; onClos
         {(save.isError || del.isError) && <p className="text-sm text-destructive">{((save.error || del.error) as Error)?.message}</p>}
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <Input className="w-40" placeholder="삭제 사유" value={deleteReason} onChange={(e) => setDeleteReason(e.target.value)} />
-            <Button variant="destructive" disabled={del.isPending} onClick={() => del.mutate()}>{del.isPending ? "삭제 중…" : "삭제"}</Button>
+            {/* 삭제: 사유 필수 + 2단계 확인(첫 클릭은 확인 진입만, 실제 DELETE는 '삭제 확인'에서). 오클릭 방지(finding, spec §7). */}
+            <Input className="w-40" placeholder="삭제 사유(필수)" value={deleteReason}
+              onChange={(e) => { setDeleteReason(e.target.value); setConfirmingDelete(false); }} />
+            {!confirmingDelete ? (
+              <Button variant="destructive" disabled={!deleteReason.trim()} onClick={() => setConfirmingDelete(true)}>삭제</Button>
+            ) : (
+              <>
+                <span className="text-sm text-destructive">되돌릴 수 없습니다.</span>
+                <Button variant="ghost" onClick={() => setConfirmingDelete(false)}>취소</Button>
+                <Button variant="destructive" disabled={del.isPending || !deleteReason.trim()} onClick={() => del.mutate()}>{del.isPending ? "삭제 중…" : "삭제 확인"}</Button>
+              </>
+            )}
           </div>
           <div className="flex gap-2">
             <Button variant="ghost" onClick={onClose}>취소</Button>
@@ -348,6 +361,7 @@ export function EditLeaveModal({ target, onClose }: { target: EditTarget; onClos
 - `npx vitest run tests/app/admin-leave-users-route.test.ts` → passed.
 - `npm run build` / `npm run typecheck` / `npm run lint` → 통과.
 - `npm test` → 회귀 없음.
+- **EditLeaveModal 삭제 흐름 테스트(finding):** 삭제 사유가 비면 "삭제" 버튼 disabled; 첫 클릭은 확인 상태로만 진입하고 **DELETE fetch가 일어나지 않음**(`global.fetch` mock 미호출 단언); "삭제 확인"을 눌러야 DELETE 발사. (오클릭 1회로 soft-delete되지 않음.)
 - (수동 확인 포인트, Task 10/11 통합 후) 직접입력 시 사용자 드롭다운 `이름 - 부서 (이메일)` 표시, 반반차 6종 라벨, 알림 체크박스 동작.
 
 ## Cautions

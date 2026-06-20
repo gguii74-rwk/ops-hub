@@ -170,7 +170,7 @@ import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 interface Row { id: string; name: string; email: string; department: string | null; totalDays: number; usedDays: number; pendingDays: number; remainingDays: number; }
@@ -199,9 +199,8 @@ export function StatusClient() {
           {depts.map((d) => <option key={d} value={d}>{d}</option>)}
         </select>
         <Input className="w-40" placeholder="이름 검색" value={q} onChange={(e) => setQ(e.target.value)} />
-        <Button asChild variant="outline" size="sm">
-          <a href={`/api/admin/leave/status/export?year=${year}`}>엑셀 내보내기</a>
-        </Button>
+        {/* Button은 asChild 미지원(native button props만) → buttonVariants로 스타일한 <a> 사용 */}
+        <a href={`/api/admin/leave/status/export?year=${year}`} className={buttonVariants({ variant: "outline", size: "sm" })}>엑셀 내보내기</a>
       </div>
       {isLoading ? <p className="text-sm text-muted-foreground">불러오는 중…</p> : isError ? <p className="text-sm text-destructive">불러오지 못했습니다.</p> : (
         <div className="overflow-x-auto rounded-lg border border-border">
@@ -228,7 +227,7 @@ export function StatusClient() {
   );
 }
 ```
-**주의:** `Button asChild`가 프로젝트 button.tsx에서 지원되는지 확인 — 미지원이면 `<a>`에 직접 버튼 클래스를 주거나 `onClick={() => window.location.assign(...)}`로 대체.
+**주의:** 프로젝트 `button.tsx`는 `asChild`를 **지원하지 않는다**(native button props만). 그래서 위처럼 `buttonVariants({...})`로 스타일한 `<a>`를 쓴다(브라우저 기본 다운로드 동작 유지). `<Button asChild>`를 쓰면 typecheck/렌더가 깨진다.
 
 ## Acceptance Criteria
 - `npx vitest run tests/modules/leave/status-service.test.ts` → passed.

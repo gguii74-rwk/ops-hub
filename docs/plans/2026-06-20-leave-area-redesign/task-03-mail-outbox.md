@@ -455,6 +455,12 @@ export async function drainLeaveMailOutbox(workerId: string = randomUUID()): Pro
   }
   return { sent, failed, skipped };
 }
+
+// fire-and-forget 트리거(연차 작업 라우트가 커밋 후 호출). drain 실패(DB/SMTP)가 **unhandled rejection으로
+// 프로세스를 흔들지 않도록 반드시 .catch 로깅**한다(finding). 누락 보충은 cron drain이 backstop.
+export function triggerLeaveMailDrain(): void {
+  void drainLeaveMailOutbox().catch((e) => console.error("[leave-mail] drain trigger failed", e));
+}
 ```
 실행: 4번 → **PASS**.
 
@@ -481,9 +487,19 @@ export async function POST(req: Request) {
 LEAVE_MAIL_DRAIN_TOKEN=
 ```
 
+### 6b. 감독(supervised drain) — 스케줄러 배포 계약 + stale 행 모니터링 (finding)
+
+at-least-once는 "커밋 후 fire-and-forget drain"만으로는 보장되지 않는다 — 요청 직후 프로세스가 죽거나 그 trigger가 실패하면 `PENDING` 행이 남는다. **주기적 cron drain이 backstop이며, 이게 없으면 누락이 영구화**된다. 따라서 배포 계약을 명시한다(코드가 아니라 배포 산출물이라 환경별):
+
+- **스케줄러 등록(필수, 배포 체크리스트):** 시스템 스케줄러가 **1~5분마다 `POST /api/leave/mail/drain`**(헤더 `x-drain-token: $LEAVE_MAIL_DRAIN_TOKEN`)을 호출하도록 등록한다. 운영 환경은 pm2로 앱을 구동하므로(작업 환경 인벤토리 참조) **pm2 cron 모듈 또는 OS cron**으로 등록하고, 배포 문서(`docs/architecture.md` 배포 섹션 또는 운영 runbook)에 항목을 남긴다. 정확한 도구는 환경별 — **계약은 "N분마다 토큰으로 drain 호출 + 등록을 배포 시 검증"**이다.
+- **stale 행 모니터링/알림:** `MailDelivery`에서 `leaveRequestId IS NOT NULL` 이면서 (`status='PENDING'` 이거나 `status='FAILED' AND attempts >= MAIL_MAX_ATTEMPTS`)인 행이 일정 시간(예: 15분) 이상 남아 있으면 운영자에게 보이도록 한다(대시보드 카운트/로그/알림). dead-letter로 `FAILED` 확정된 행은 "수동 확인 필요" 신호다.
+- **fire-and-forget 안전:** 모든 요청-트리거 drain은 `triggerLeaveMailDrain()`(= `.catch` 로깅 래퍼)로만 호출 — unhandled rejection으로 프로세스를 흔들지 않는다.
+
 ## Acceptance Criteria
 - `npx vitest run tests/modules/leave/mail-outbox.test.ts tests/modules/leave/mail-drain.test.ts tests/modules/leave/mail-templates.test.ts` → all passed.
 - 코드 점검: 메일 `bodyHtml`의 동적 텍스트(reason/rejectionReason/name)가 모두 `esc()`로 인코딩됨(raw `<`/`>` 미포함).
+- 코드 점검: 모든 요청-트리거 drain이 `triggerLeaveMailDrain()`(`.catch` 래퍼)로 호출됨 — raw `void drainLeaveMailOutbox()` 직접 호출 없음(unhandled rejection 방지).
+- 배포 점검(§6b): 스케줄러가 `POST /api/leave/mail/drain`을 주기 호출하도록 등록·문서화됐고, stale `PENDING`/dead-letter `FAILED` 행 모니터링 경로가 있음. (배포 산출물 — 환경별.)
 - `npm test` → 회귀 없음.
 - `npm run typecheck` → 0 errors.
 - `npm run lint` → 통과(eslint boundaries: `repositories/mail.ts`는 `@/lib/prisma`만; `services/mail.ts`는 repo+integrations+`@/kernel/access`(hasPermission — 수신자 권한 확정)만 import).
