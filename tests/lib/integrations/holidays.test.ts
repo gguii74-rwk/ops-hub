@@ -24,6 +24,23 @@ describe("fetchHolidays", () => {
     expect(fetchMock).toHaveBeenCalledTimes(12); // 월별 호출
   });
 
+  it("같은 날이 여러 달에서 반환되면 중복 제거해 정확히 1번만 포함", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("solMonth=05")) return okJson({ item: [
+        { locdate: 20260505, dateName: "어린이날", isHoliday: "Y" },
+      ] }) as Response;
+      if (url.includes("solMonth=06")) return okJson({ item: [
+        { locdate: 20260505, dateName: "어린이날", isHoliday: "Y" }, // 중복
+      ] }) as Response;
+      return okJson("") as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await fetchHolidays(2026);
+    const matches = res.filter((h) => h.date === "2026-05-05");
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toEqual({ date: "2026-05-05", name: "어린이날" });
+  });
+
   it("키 없으면 throw", async () => {
     delete process.env.DATA_GO_KR_SERVICE_KEY;
     await expect(fetchHolidays(2026)).rejects.toThrow();

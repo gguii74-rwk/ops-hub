@@ -7,7 +7,7 @@ export async function getHolidaysInRange(start: Date, end: Date): Promise<Set<st
   return new Set(rows.map((r) => r.date.toISOString().slice(0, 10)));
 }
 
-/** 공공데이터 특일정보에서 해당 연도 공휴일을 가져와 단일 트랜잭션으로 upsert. 반환=건수. */
+/** 공공데이터 특일정보에서 해당 연도 공휴일을 가져와 단일 트랜잭션으로 upsert. 반환값은 적재된 공휴일 건수(트랜잭션 커밋 완료 의미, 실패 시 throw). */
 export async function syncHolidaysForYear(year: number): Promise<number> {
   const holidays = await fetchHolidays(year); // 네트워크는 트랜잭션 밖에서 먼저
   await prisma.$transaction(async (tx) => {
