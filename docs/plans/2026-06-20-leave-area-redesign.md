@@ -119,11 +119,11 @@ migration: `prisma/migrations/<ts>_leave_area_redesign/migration.sql` 신규(기
 상수: `MAIL_MAX_ATTEMPTS = 3`, `MAIL_LEASE_MS = 60_000`. 이벤트: `REQUESTED`(신청→관리자 통지) / `APPROVED` / `REJECTED` / `ADMIN_CREATED`(직접입력 sendNotification 시 신청자 통지).
 
 - **insert(트랜잭션 내부, idempotent):** 연차 작업 tx 안에서 `tx.mailDelivery.create({ leaveRequestId, eventType, status: "PENDING", recipients(JSON string[]), subject, bodyHtml, attempts: 0 })`. `@@unique([leaveRequestId,eventType])` P2002는 **조용히 무시**(이벤트당 행 1개).
-- **수신자(systemRole 기반):** `getLeaveAdminRecipients()` = `systemRole IN (OWNER, ADMIN, MANAGER) AND status = ACTIVE` 사용자 email 배열(REQUESTED용). 신청자 통지(APPROVED/REJECTED/ADMIN_CREATED)는 해당 `LeaveRequest.user.email`.
+- **수신자(permission 기반 — 결정):** `getLeaveAdminRecipients()` = **`leave.approval:view` 유효 보유자**의 email 배열(REQUESTED용). 후보를 `systemRole IN (OWNER,ADMIN,MANAGER) AND ACTIVE`로 좁힌 뒤 `hasPermission(id,"leave.approval","view")`로 확정 → 승인권한 없는 MANAGER 제외(메일로 권한경계 우회 차단). 신청자 통지(APPROVED/REJECTED/ADMIN_CREATED)는 해당 `LeaveRequest.user.email`.
 - **drain 후보(leave 스코프):** `leaveRequestId IS NOT NULL AND eventType IS NOT NULL AND ( status=PENDING OR (status=FAILED AND attempts < N) OR (status=SENDING AND lockedUntil < now AND attempts < N) )`. workflow 행(`leaveRequestId IS NULL`)은 **절대 집지 않음**.
 - **claim(atomic 조건부 update):** 위 조건에 맞을 때만 `status=SENDING, lockedUntil=now+lease, workerId=self, attempts: { increment: 1 }`. 영향 0행이면 선점됨 → skip.
 - **finalize(조건부 — `WHERE id AND status=SENDING AND workerId=self`):** 성공 → `SENT`(+providerMessageId·sentAt·lockedUntil=null), SMTP 실패 → `FAILED`(+errorMessage·lockedUntil=null). **영향 0행이면**(그 사이 `CANCELLED` 또는 타 worker) 결과 폐기, terminal 상태를 덮어쓰지 않음(삭제-발송 race 안전).
-- **cancel(soft-delete tx 내부):** 해당 `leaveRequestId`의 `PENDING/FAILED/(stale)SENDING` 행을 `CANCELLED`로(`SENT/CANCELLED`은 제외). worker는 `CANCELLED`를 후보로 보지 않음.
+- **cancel(soft-delete tx 내부):** 해당 `leaveRequestId`의 **비-terminal 행 전부(`PENDING/FAILED/SENDING` — active SENDING 포함)**를 `CANCELLED`로(`SENT/CANCELLED`만 제외). active SENDING까지 취소해야 worker 조건부 finalize가 0행이 되어 삭제-발송 race가 안전하다. worker는 `CANCELLED`를 후보로 보지 않음.
 - **전달 보장:** at-least-once(누락 방지). `SENDING` reclaim도 `attempts++` + `attempts < N` 게이트(무한 재발송 방지). provider idempotency는 `providerMessageId`로 기록(드문 중복 허용, exactly-once 비목표).
 - **구동(하이브리드):** 연차 작업 라우트가 커밋 성공 후 `void drainLeaveMailOutbox(workerId)`(await 안 함, 실패가 응답을 막지 않음) + `POST /api/leave/mail/drain`(시스템 cron이 주기 호출, 누락 보충).
 

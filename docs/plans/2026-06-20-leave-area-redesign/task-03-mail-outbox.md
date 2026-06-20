@@ -61,12 +61,11 @@ describe("insertPendingDelivery", () => {
 });
 
 describe("cancelPendingDeliveries", () => {
-  it("PENDING/FAILED/stale SENDING을 CANCELLED로", async () => {
+  it("PENDING/FAILED/SENDING(active 포함)을 CANCELLED로 — terminal(SENT/CANCELLED)만 제외", async () => {
     h.db.mailDelivery.updateMany.mockResolvedValue({ count: 2 });
-    const now = new Date("2026-07-01T00:00:00Z");
-    await cancelPendingDeliveries(h.db as never, "r1", now);
+    await cancelPendingDeliveries(h.db as never, "r1");
     expect(h.db.mailDelivery.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ leaveRequestId: "r1" }),
+      where: { leaveRequestId: "r1", status: { in: ["PENDING", "FAILED", "SENDING"] } },
       data: expect.objectContaining({ status: "CANCELLED", lockedUntil: null }),
     }));
   });
@@ -162,13 +161,12 @@ export async function insertPendingDelivery(
   }
 }
 
-// soft-delete tx 내부: 미발송 outbox를 CANCELLED(terminal)로. SENT/CANCELLED·진행중 SENDING은 제외.
-export async function cancelPendingDeliveries(tx: PrismaTx, leaveRequestId: string, now: Date): Promise<void> {
+// soft-delete tx 내부: 비-terminal outbox를 모두 CANCELLED로. SENT/CANCELLED만 제외, **active SENDING(lease 유효) 포함**.
+// active SENDING까지 취소해야 worker 조건부 finalize(WHERE status=SENDING)가 0행이 되어 삭제된 요청에 SENT가 안 남는다
+// (삭제-발송 race 안전, spec §8). at-least-once상 그 직전 provider로 이미 나간 메일은 허용(드문 중복 < 누락).
+export async function cancelPendingDeliveries(tx: PrismaTx, leaveRequestId: string): Promise<void> {
   await tx.mailDelivery.updateMany({
-    where: {
-      leaveRequestId,
-      OR: [{ status: "PENDING" }, { status: "FAILED" }, { status: "SENDING", lockedUntil: { lt: now } }],
-    },
+    where: { leaveRequestId, status: { in: ["PENDING", "FAILED", "SENDING"] } },
     data: { status: "CANCELLED", lockedUntil: null },
   });
 }
@@ -262,6 +260,7 @@ export function buildAdminCreatedNotification(req: MailReqLike) {
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@/lib/prisma", () => ({ prisma: { user: { findMany: vi.fn() } } }));
+vi.mock("@/kernel/access", () => ({ hasPermission: vi.fn() }));
 vi.mock("@/modules/leave/repositories/mail", () => ({
   listDueDeliveryIds: vi.fn(), claimDelivery: vi.fn(), finalizeDelivery: vi.fn(),
 }));
@@ -270,6 +269,7 @@ vi.mock("@/lib/integrations/mail", () => ({ sendMail: vi.fn() }));
 import { drainLeaveMailOutbox, getLeaveAdminRecipients } from "@/modules/leave/services/mail";
 import * as repo from "@/modules/leave/repositories/mail";
 import { sendMail } from "@/lib/integrations/mail";
+import { hasPermission } from "@/kernel/access";
 import { prisma } from "@/lib/prisma";
 
 const r = { list: vi.mocked(repo.listDueDeliveryIds), claim: vi.mocked(repo.claimDelivery), fin: vi.mocked(repo.finalizeDelivery) };
@@ -310,12 +310,17 @@ describe("drainLeaveMailOutbox", () => {
 });
 
 describe("getLeaveAdminRecipients", () => {
-  it("OWNER/ADMIN/MANAGER 활성 사용자 email", async () => {
-    vi.mocked(prisma.user.findMany).mockResolvedValue([{ email: "a@x.com" }, { email: "b@x.com" }] as never);
-    expect(await getLeaveAdminRecipients()).toEqual(["a@x.com", "b@x.com"]);
+  it("후보 중 leave.approval:view 보유자만(permission 기반 — 승인권한 없는 MANAGER 제외)", async () => {
+    vi.mocked(prisma.user.findMany).mockResolvedValue([
+      { id: "u1", email: "a@x.com" }, { id: "u2", email: "b@x.com" },
+    ] as never);
+    vi.mocked(hasPermission).mockImplementation((async (id: string) => id === "u1") as never); // u2는 승인권한 없음
+    expect(await getLeaveAdminRecipients()).toEqual(["a@x.com"]);
     expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { status: "ACTIVE", systemRole: { in: ["OWNER", "ADMIN", "MANAGER"] } }, select: { email: true },
+      where: { status: "ACTIVE", systemRole: { in: ["OWNER", "ADMIN", "MANAGER"] } },
+      select: { id: true, email: true },
     }));
+    expect(hasPermission).toHaveBeenCalledWith("u2", "leave.approval", "view");
   });
 });
 ```
@@ -328,18 +333,24 @@ describe("getLeaveAdminRecipients", () => {
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
+import { hasPermission } from "@/kernel/access";
 import { sendMail } from "@/lib/integrations/mail";
 import { listDueDeliveryIds, claimDelivery, finalizeDelivery } from "../repositories/mail";
 
 const DRAIN_BATCH = 50;
 
-// 통지 수신자(REQUESTED용): systemRole 기반(spec §15 결정). 원본 role='ADMIN' 직접 포팅.
+// 통지 수신자(REQUESTED용): **permission 기반**(결정) — leave.approval:view 유효 보유자만.
+// 후보를 systemRole approver 풀로 좁힌 뒤 hasPermission으로 실권한 확정 → 승인권한 없는 MANAGER 제외(메일로 권한경계 우회 차단).
+// 전제: 승인 권한은 approver 역할로 부여된다(표준 경로). MEMBER에게 override로 부여하는 비표준 경로가 생기면 후보 쿼리를 확장.
 export async function getLeaveAdminRecipients(): Promise<string[]> {
-  const admins = await prisma.user.findMany({
+  const candidates = await prisma.user.findMany({
     where: { status: "ACTIVE", systemRole: { in: ["OWNER", "ADMIN", "MANAGER"] } },
-    select: { email: true },
+    select: { id: true, email: true },
   });
-  return admins.map((a) => a.email);
+  const allowed = await Promise.all(
+    candidates.map(async (u) => ((await hasPermission(u.id, "leave.approval", "view")) ? u.email : null)),
+  );
+  return allowed.filter((e): e is string => e !== null);
 }
 
 // 하이브리드 worker의 drain 1회. claim→발송→조건부 finalize. SMTP 실패만 FAILED, finalize 0행은 폐기.
@@ -395,7 +406,7 @@ LEAVE_MAIL_DRAIN_TOKEN=
 - `npx vitest run tests/modules/leave/mail-outbox.test.ts tests/modules/leave/mail-drain.test.ts` → all passed.
 - `npm test` → 회귀 없음.
 - `npm run typecheck` → 0 errors.
-- `npm run lint` → 통과(eslint boundaries: `repositories/mail.ts`는 `@/lib/prisma`만, `services/mail.ts`는 repo+integrations만 import).
+- `npm run lint` → 통과(eslint boundaries: `repositories/mail.ts`는 `@/lib/prisma`만; `services/mail.ts`는 repo+integrations+`@/kernel/access`(hasPermission — 수신자 권한 확정)만 import).
 
 ## Cautions
 - **Don't** drain에서 발송 성공 후 finalize가 0행일 때 sent로 세지 마라. 이유: 그 사이 soft-delete가 `CANCELLED`로 바꾼 것 — terminal을 덮으면 삭제된 요청에 "발송됨" 이력이 남는다(spec §8 race).
