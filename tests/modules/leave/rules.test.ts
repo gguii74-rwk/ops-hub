@@ -50,6 +50,9 @@ describe("validateLeaveTypeDates", () => {
     expect(() => validateLeaveTypeDates("HALF", d("2026-08-14"), d("2026-08-14"))).not.toThrow();
     expect(() => validateLeaveTypeDates("ANNUAL", d("2026-08-14"), d("2026-08-15"))).not.toThrow();
   });
+  it("QUARTER 여러 날 거부", () => {
+    expect(() => validateLeaveTypeDates("QUARTER", d("2026-08-14"), d("2026-08-15"))).toThrow(LeaveValidationError);
+  });
 });
 
 describe("기타", () => {
@@ -59,6 +62,9 @@ describe("기타", () => {
   it("parseLeaveDate 형식 위반 throw", () => {
     expect(() => parseLeaveDate("2026/08/14")).toThrow(LeaveValidationError);
     expect(toDateKey(parseLeaveDate("2026-08-14"))).toBe("2026-08-14");
+  });
+  it("parseLeaveDate 캘린더 유효성 검증", () => {
+    expect(() => parseLeaveDate("2026-02-30")).toThrow(LeaveValidationError);
   });
   it("kstToday: KST 자정 경계", () => {
     // 2026-08-14 23:00 UTC = 2026-08-15 08:00 KST

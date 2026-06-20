@@ -11,6 +11,8 @@ export function parseLeaveDate(s: string): Date {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new LeaveValidationError(`날짜 형식이 올바르지 않습니다: ${s}`);
   const date = new Date(`${s}T00:00:00.000Z`);
   if (Number.isNaN(date.getTime())) throw new LeaveValidationError(`유효하지 않은 날짜입니다: ${s}`);
+  // 캘린더 유효성: "2026-02-30" 같은 입력은 V8이 자동으로 3월로 파싱하므로 재검증
+  if (toDateKey(date) !== s) throw new LeaveValidationError(`유효하지 않은 날짜입니다: ${s}`);
   return date;
 }
 
@@ -31,11 +33,11 @@ export function calculateLeaveDays(leaveType: LeaveType, start: Date, end: Date,
 
 /** 직원: 과거 신청 불가 + start>end 불가. */
 export function validateDates(start: Date, end: Date, today: Date): void {
-  if (toDateKey(start) < toDateKey(today)) throw new LeaveValidationError("과거 날짜에는 연차를 신청할 수 없습니다.");
   if (start.getTime() > end.getTime()) throw new LeaveValidationError("시작일은 종료일보다 이전이어야 합니다.");
+  if (toDateKey(start) < toDateKey(today)) throw new LeaveValidationError("과거 날짜에는 연차를 신청할 수 없습니다.");
 }
 
-/** 관리자: start>end만 불가(과거 허용). */
+/** 관리자: start>end만 불가(과거 허용, 단일일도 가능). */
 export function validateDatesForAdmin(start: Date, end: Date): void {
   if (start.getTime() > end.getTime()) throw new LeaveValidationError("시작일은 종료일보다 이전이어야 합니다.");
 }
