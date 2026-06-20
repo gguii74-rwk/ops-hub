@@ -27,4 +27,11 @@ describe("GET /api/admin/leave/users", () => {
     expect((await GET()).status).toBe(200);
     expect(requirePermissionMock).toHaveBeenCalledWith("u1", "leave.approval", "approve");
   });
+  it("권한 없으면 403", async () => {
+    const { ForbiddenError } = await import("@/kernel/access");
+    authMock.mockResolvedValue({ user: { id: "u1" } });
+    requirePermissionMock.mockRejectedValue(new ForbiddenError("no"));
+    const res = await GET();
+    expect(res.status).toBe(403);
+  });
 });

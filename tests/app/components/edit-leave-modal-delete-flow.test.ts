@@ -65,22 +65,6 @@ describe("EditLeaveModal 삭제 흐름 — 2단계 확인 + 사유 필수", () =
     expect(spy.calls).toHaveLength(0);
   });
 
-  it("첫 번째 '삭제' 버튼 핸들러는 setConfirmingDelete(true)만 실행 — mutate 미호출", () => {
-    // 2단계 확인 로직: 첫 클릭은 상태 전환만(confirmingDelete=true). mutate는 두 번째 버튼에서만.
-    let confirmingDelete = false;
-    const mutateMock = vi.fn();
-
-    // 첫 번째 버튼 onClick 핸들러(edit-leave-modal.tsx의 !confirmingDelete 분기).
-    const firstButtonHandler = () => {
-      confirmingDelete = true;
-      // mutate() 미호출 — 이것이 2단계 확인의 핵심 불변식
-    };
-
-    firstButtonHandler();
-    expect(confirmingDelete).toBe(true);
-    expect(mutateMock).not.toHaveBeenCalled();
-  });
-
   it("정상 사유 + 삭제 확인 클릭 → DELETE fetch 호출됨", async () => {
     const fn = makeDeleteMutationFn("r1", () => "오기재 정정", spy.fn);
     await fn();
