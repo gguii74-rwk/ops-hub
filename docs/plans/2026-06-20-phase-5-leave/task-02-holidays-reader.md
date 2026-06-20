@@ -125,7 +125,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: { holiday: { findMany, count }, $transa
 const fetchHolidays = vi.fn();
 vi.mock("@/lib/integrations/holidays", () => ({ fetchHolidays }));
 
-import { getHolidaysInRange, ensureYearsSynced, syncHolidaysForYear } from "@/kernel/holidays";
+import { getHolidaysInRange, ensureYearsSynced, syncHolidaysForYear, getUnsyncedYears } from "@/kernel/holidays";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -168,6 +168,13 @@ describe("ensureYearsSynced", () => {
     await expect(ensureYearsSynced([2027])).resolves.toBeUndefined();
   });
 });
+
+describe("getUnsyncedYears", () => {
+  it("미적재(count=0) 연도만 반환", async () => {
+    count.mockResolvedValueOnce(0).mockResolvedValueOnce(20);
+    expect(await getUnsyncedYears([2030, 2026])).toEqual([2030]);
+  });
+});
 ```
 
 ```
@@ -199,7 +206,7 @@ export async function syncHolidaysForYear(year: number): Promise<number> {
   return holidays.length;
 }
 
-/** 미적재(count===0) 연도만 sync. 실패는 로그 후 진행(장애 격리). */
+/** 미적재(count===0) 연도만 sync. 실패는 로그 후 진행(부팅을 막지 않음). */
 export async function ensureYearsSynced(years: number[]): Promise<void> {
   for (const year of years) {
     try {
@@ -211,6 +218,15 @@ export async function ensureYearsSynced(years: number[]): Promise<void> {
       console.error(`[holidays] ${year}년 동기화 실패(무시):`, e);
     }
   }
+}
+
+/** 인자 연도 중 여전히 미적재(count===0)인 연도 반환. fail-closed 게이트(직원 신청)·admin 미적재 알림용. */
+export async function getUnsyncedYears(years: number[]): Promise<number[]> {
+  const result: number[] = [];
+  for (const year of years) {
+    if ((await prisma.holiday.count({ where: { year } })) === 0) result.push(year);
+  }
+  return result;
 }
 ```
 

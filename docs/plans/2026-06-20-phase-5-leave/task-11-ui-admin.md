@@ -94,7 +94,7 @@ export function ApprovalsClient() {
 }
 ```
 
-### 2. allocations (+ 공휴일 sync 버튼)
+### 2. allocations (+ 공휴일 sync 버튼 + 미적재 배너)
 `src/app/(app)/admin/leave/allocations/page.tsx`:
 
 ```tsx
@@ -135,6 +135,11 @@ async function fetchAllocations(year: number): Promise<Alloc[]> {
   if (!res.ok) throw new Error(`allocations ${res.status}`);
   return (await res.json()).items as Alloc[];
 }
+async function fetchHolidayStatus(): Promise<number[]> {
+  const res = await fetch("/api/admin/leave/holidays/sync", { headers: { Accept: "application/json" } });
+  if (!res.ok) return [];
+  return (await res.json()).unsynced as number[];
+}
 async function post(url: string) {
   const res = await fetch(url, { method: "POST" });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `요청 실패 (${res.status})`);
@@ -162,10 +167,16 @@ export function AllocationsClient({ canConfigure }: { canConfigure: boolean }) {
     mutationFn: () => putAllocation(form.userId, year, { allocatedDays: Number(form.allocatedDays), carriedOverDays: Number(form.carriedOverDays) }),
     onSuccess: () => { setForm({ userId: "", allocatedDays: "15", carriedOverDays: "0" }); invalidate(); },
   });
-  const syncHolidays = useMutation({ mutationFn: () => post(`/api/admin/leave/holidays/sync?year=${year}`) });
+  const { data: unsynced = [] } = useQuery({ queryKey: ["admin-leave", "holiday-status"], queryFn: fetchHolidayStatus });
+  const syncHolidays = useMutation({ mutationFn: () => post(`/api/admin/leave/holidays/sync?year=${year}`), onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-leave", "holiday-status"] }) });
 
   return (
     <div className="space-y-4">
+      {unsynced.length > 0 && (
+        <Card className="border-destructive/50 bg-destructive/5 p-3 text-sm text-destructive">
+          공휴일 미동기화: {unsynced.join(", ")}년 — 아래 “{year}년 공휴일 동기화” 버튼으로 동기화하세요(미적재 연도는 직원 신청이 차단됩니다).
+        </Card>
+      )}
       <div className="flex items-center gap-3">
         <Input type="number" className="w-28" value={year} onChange={(e) => setYear(Number(e.target.value) || year)} />
         {canConfigure && (

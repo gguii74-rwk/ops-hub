@@ -131,11 +131,14 @@ export function fetchHolidays(year: number): Promise<RawHoliday[]>;     // getRe
 // src/kernel/holidays/index.ts
 export function getHolidaysInRange(start: Date, end: Date): Promise<Set<string>>;  // "YYYY-MM-DD"(UTC) Set
 export function syncHolidaysForYear(year: number): Promise<number>;     // fetch(트랜잭션 밖)→연도 전량을 단일 $transaction으로 upsert(부분 적재 방지), 반환=건수
-export function ensureYearsSynced(years: number[]): Promise<void>;      // 미적재(count===0) 연도만 sync, 실패는 로그 후 진행
+export function ensureYearsSynced(years: number[]): Promise<void>;      // 미적재(count===0) 연도만 sync 시도, 실패는 로그 후 진행(부팅 안 막음)
+export function getUnsyncedYears(years: number[]): Promise<number[]>;   // 여전히 미적재(count===0)인 연도 반환 — 직원 fail-closed 게이트·admin 미적재 알림
 ```
 
 - 환경변수: `DATA_GO_KR_SERVICE_KEY`(공공데이터포털 인증키). `.env.example`에 추가.
-- 자동 트리거: `src/instrumentation.ts`의 `register()`가 부팅 시 `ensureYearsSynced([currentYear, currentYear+1])`. 시드(task 01)·요청 backstop(task 06)·admin(task 09/11)도 호출.
+- 자동 트리거: `src/instrumentation.ts`의 `register()`가 부팅 시 `ensureYearsSynced([currentYear, currentYear+1])`. 시드(task 01)·요청 backstop(task 06)도 호출. (별도 백그라운드 타이머는 두지 않음 — 미적재 보강은 admin 알림+수동 sync로.)
+- **fail-closed(D8)**: 직원 `createLeaveRequest`는 `ensureYearsSynced` 후 `getUnsyncedYears(spannedYears)`로 미적재면 `LeaveValidationError`로 차단한다. 관리자 경로(`createLeaveRequestByAdmin`/`updateByAdmin`)는 차단하지 않고 `console.warn`만 하고 통과(#1).
+- **admin 알림**: 관리자 화면(task 11)이 `GET /api/admin/leave/holidays/sync`로 현재+익년 미적재를 조회해 배너로 알리고, `POST .../holidays/sync?year`로 수동 동기화한다(성공할 때까지 접속 시 알림).
 - `getHolidaysInRange`는 테이블만 읽는다(sync 안 함). day-calc는 항상 테이블 기준 → 결정적.
 - `syncHolidaysForYear`는 fetch(네트워크) 후 연도 전체를 **단일 트랜잭션**으로 write → 부분 적재 시 롤백되어 `count===0` 유지. 일부만 적재된 채 실패해 `count>0`로 `ensureYearsSynced`가 영구 skip(누락 공휴일이 평일 처리돼 연차 과다 차감)하는 일을 차단한다.
 
