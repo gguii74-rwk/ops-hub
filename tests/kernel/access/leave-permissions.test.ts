@@ -22,4 +22,17 @@ describe("leave 권한", () => {
       expect(ROLE_ALLOW[key]).toContain("leave.request:create");
     }
   });
+  it("작업자 role에 관리자 전용 키 없음", () => {
+    const adminKeys = ["leave.approval:approve", "leave.allocation:configure", "leave.request:update", "leave.request:delete"];
+    for (const role of ["regular-developer", "contractor-developer", "contractor-content", "contractor-civil-response"]) {
+      for (const key of adminKeys) {
+        expect(ROLE_ALLOW[role]).not.toContain(key);
+      }
+    }
+  });
+  it("기존 leave 권한 키 보존", () => {
+    expect(hasExtra("leave.request", "create")).toBe(true);
+    expect(hasExtra("leave.approval", "approve")).toBe(true);
+    expect(hasExtra("leave.allocation", "configure")).toBe(true);
+  });
 });
