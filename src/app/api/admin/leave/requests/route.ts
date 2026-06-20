@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { requirePermission } from "@/kernel/access";
-import { listAllRequests, createLeaveRequestByAdmin } from "@/modules/leave/services/requests";
+import { listAllRequestsWithUser, createLeaveRequestByAdmin } from "@/modules/leave/services/requests";
 import { adminCreateLeaveSchema } from "@/modules/leave/validations";
 import { mapError, parseStatusList } from "@/app/api/leave/_shared";
 
@@ -13,8 +13,8 @@ export async function GET(req: Request) {
   if (statuses === "invalid") return NextResponse.json({ error: "invalid status" }, { status: 400 });
   const userId = url.searchParams.get("userId") ?? undefined;
   try {
-    await requirePermission(session.user.id, "leave.approval", "view");
-    const items = await listAllRequests({ userId, statuses: statuses ?? undefined });
+    await requirePermission(session.user.id, "leave.admin", "view");
+    const items = await listAllRequestsWithUser({ userId, statuses: statuses ?? undefined });
     return NextResponse.json({ items }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return mapError(error);

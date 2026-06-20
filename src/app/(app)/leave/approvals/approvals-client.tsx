@@ -16,7 +16,7 @@ interface Req {
 }
 
 async function fetchPending(): Promise<Req[]> {
-  const res = await fetch("/api/admin/leave/requests?status=PENDING", { headers: { Accept: "application/json" } });
+  const res = await fetch("/api/admin/leave/approvals", { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`pending ${res.status}`);
   return (await res.json()).items as Req[];
 }
