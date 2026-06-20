@@ -21,14 +21,17 @@ export async function GET(req: Request) {
       ? parseLeaveDate(endStr)
       : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0));
     const keys = new Set((await getPermissionSummary(session.user.id)).keys);
-    const canCross = keys.has("leave.status:view") || keys.has("leave.admin:view");
-    // 부서 필터는 cross 권한자만 — 일반 사용자가 보내도 무시(service가 자기 부서로 한정).
+    // admin:view만 전 상태·마스킹 해제. status:view는 부서 경계만 넘되 APPROVED-only·마스킹(사유 보호).
+    const canViewAllStatuses = keys.has("leave.admin:view");
+    const canCrossDepartment = canViewAllStatuses || keys.has("leave.status:view");
+    // 부서 필터는 부서 경계 권한자만 — 일반 사용자가 보내도 무시(service가 자기 부서로 한정).
     const events = await getLeaveCalendar({
       viewerId: session.user.id,
-      canCrossUserAllStatuses: canCross,
+      canViewAllStatuses,
+      canCrossDepartment,
       start,
       end,
-      filterDepartment: canCross ? url.searchParams.get("department") : null,
+      filterDepartment: canCrossDepartment ? url.searchParams.get("department") : null,
     });
     return NextResponse.json({ events }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
