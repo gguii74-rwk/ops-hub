@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 현재 상태 (중요)
 
-앱이 **스캐폴드되어 동작하는 상태**입니다. Phase 0~2(실사·기준선 / 앱 골격·공통 기반 / 설정 체계)와 **디자인 시스템 기반** 패스가 `main`에 머지됐고, **브랜드 팔레트 패스**가 리뷰 중입니다. 다음 도메인 단계는 Phase 3(통합 캘린더와 캐시)입니다.
+앱이 **스캐폴드되어 동작하는 상태**입니다. Phase 0~2(실사·기준선 / 앱 골격·공통 기반 / 설정 체계), **디자인 시스템 기반**, Phase 3(통합 캘린더 `src/modules/calendar`), Phase 4(워크플로 `src/modules/workflows`), Phase 5 Leave **백엔드(스키마·서비스·기본 신청 UI)**가 `main`에 머지된 상태입니다. **현재 활성 작업 = 연차 도메인**: "연차 영역 재설계"(대시보드·현황·전용 캘린더·관리자 모달·알림 메일) plan이 `feat/leave-area-redesign`에서 진행 중(`docs/plans/2026-06-20-leave-area-redesign.md`).
 
 이미 존재하는 것:
 
@@ -145,7 +145,7 @@ src/app/{(auth),dashboard,workflows,leave,admin,api}/
 
 ## 작업 진행 맥락
 
-전체 계획은 `docs/product/modernization-roadmap.md`의 Phase 0~6. **Phase 0~2 완료**(실사·기준선 / 앱 골격·공통 기반 / 설정 체계)에 더해 **디자인 시스템 기반**이 머지되고 **브랜드 팔레트 패스**가 리뷰 중이며, 다음 도메인 단계는 **Phase 3(통합 캘린더와 캐시)**입니다. 마이그레이션 시 기존 운영 DB는 직접 수정하지 않고(이메일을 사용자 병합 키로 사용) 새 PostgreSQL에 적재 후 병행 검증한다 — `docs/migration/initial-migration-plan.md`.
+전체 계획은 `docs/product/modernization-roadmap.md`의 Phase 0~6. **Phase 0~4 + Phase 5 Leave 백엔드**가 머지됐고, **현재는 연차 영역 재설계**(Phase 5 UI 확장)가 활성 작업입니다. 마이그레이션 시 기존 운영 DB는 직접 수정하지 않고(이메일을 사용자 병합 키로 사용) 새 PostgreSQL에 적재 후 병행 검증한다 — `docs/migration/initial-migration-plan.md`.
 
 확장·분리 아키텍처 전략(모듈 경계·이벤트·신원 연동)은 `docs/specs/2026-06-17-modular-extensibility-design.md` 참조.
 
