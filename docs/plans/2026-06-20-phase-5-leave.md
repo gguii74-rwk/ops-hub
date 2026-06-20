@@ -77,7 +77,7 @@ export interface AllocationSummary {
 export interface AdjustAllocationInput {
   userId: string;
   year: number;
-  changeDays: number;          // 양수=ADD, 음수=DEDUCT
+  changeDays: number;          // 양수 크기(>0). 부호는 changeType이 결정(ADD=+, DEDUCT=-)
   changeType: "ADD" | "DEDUCT";
   reason: string;
   reasonDetail?: string | null;
