@@ -216,9 +216,9 @@ export async function retryDelivery(
 1. **멱등 가드(tx)**: `taskId != null && step != null`이면 같은 `(taskId, step)`에 활성(SENDING/SENT) 레코드가 있는지 확인한다. 있으면 새 SMTP 없이 **`ConflictError`(409)** — 더블클릭·요청 타임아웃 후 브라우저/서버 재시도로 인한 중복 외부 발송을 막는다.
 2. **발송 전** `status=SENDING`, `sentAt=null`, `bodyHtml=msg.html`, `recipients`/`subject`/`attachmentPaths` 레코드 생성. `(taskId, step)` 부분 unique 인덱스(§4.2)가 경합 시 최종 방어선.
 3. SMTP 전송.
-4. 결과로 같은 레코드를 **정확히 1회** 갱신 — 성공: `status=SENT`, `sentAt=now`, `providerMessageId`. 실패: `status=FAILED`, `errorMessage`.
+4. 결과로 같은 레코드를 **정확히 1회** 갱신한다 — SMTP 성공: `status=SENT`, `sentAt=now`, `providerMessageId`. **SMTP 실패만**: `status=FAILED`, `errorMessage`. SMTP가 메일을 수락한 뒤 SENT 갱신(compare-and-set)이 실패하면 **FAILED로 변환하지 않고 에러를 전파**해 레코드를 SENDING으로 남긴다 — 이미 발송된 메일을 FAILED로 기록하면 재시도되어 중복 발송되기 때문이다. (SMTP 실패와 DB 갱신 실패는 서로 다른 사건이므로 SMTP 호출만 catch로 감싼다.)
 
-- 2단계가 있어 SMTP 성공 후 4단계 갱신이 실패한 "유령 발송"도 `SENDING` 레코드로 남아 운영자가 탐지·판단할 수 있다.
+- 2단계가 있어 SMTP 성공 후 4단계 갱신이 실패한 "유령 발송"도 `SENDING` 레코드로 남아 운영자가 탐지·판단(admin resolve, §6.3)할 수 있다.
 - **워크플로 상태 전이와 분리** — 발송 실패가 직전 전이를 롤백하지 않는다(워크플로 service가 발송 단계를 분리해 호출).
 
 재시도(`retryDelivery`)는 **저장된 `bodyHtml`·`recipients`·`subject`·`attachmentPaths`로 원본을 그대로 재발송**한다(워크플로 재생성 없음 → 본문 drift 없음). 기존 레코드를 제자리 갱신하므로(새 행 없음) deliver의 `(taskId, step)` 부분 unique 인덱스(§4.2)는 retry 경합을 막지 못한다 — 같은 행을 두 번 UPDATE할 뿐이라 P2002가 나지 않는다. 따라서 retry는 **자체 원자 점유**로 단일 비행을 보장한다(attemptCount는 두지 않음 — YAGNI). fail-closed로 다음을 검증·점유한 뒤 발송하고 기존 레코드를 갱신한다:
@@ -228,6 +228,7 @@ export async function retryDelivery(
 - (c) `ctx.isOwner` 또는 `ctx.permissionKeys.has(`${KIND_RESOURCE[kind]}:send`)` (kind는 delivery→task→type에서 로드). 한 워크플로 도메인의 `:send` 권한으로 타 도메인 발송을 재전송하는 것을 막는다.
 - (d) **원자 점유**: `FAILED→SENDING`을 조건부 `updateMany({ id, taskId, status: FAILED })`로 1회 갱신. 갱신 0건이면(동시 재시도가 이미 점유) **`ConflictError`(409)** — SMTP 미발생. 점유 성공 후 비로소 발송하므로 동시 retry 중 정확히 1건만 외부 발송한다. 점유 직후 행은 `SENDING`이라 cancel 게이트(`hasActiveSending`, §5.2)와 멱등 가드(§6.2)에도 진행 중으로 가시화된다.
 - 첨부 파일이 shared storage에서 사라졌으면 재발송은 (점유 후) FAILED로 처리한다(조용한 실패 금지).
+- deliver와 동일: 재발송 SMTP 수락 후 SENT 갱신이 실패하면 FAILED로 되돌리지 않고 에러를 전파해 SENDING으로 남긴다(중복 발송 방지, admin resolve 대상).
 
 ### 6.3 send orchestration 계약과 SENDING 해소
 
@@ -334,4 +335,5 @@ TDD(실패 테스트 → FAIL 확인 → 최소 구현 → PASS → commit). nod
 
 - 워크플로별 누락 권한 액션(`workflows.billing:generate`, `workflows.notification:generate`/`review`/`configure` 등)은 해당 sub-project가 `EXTRA_PERMISSIONS`에 추가한다.
 - 메일 재시도 횟수·백오프, 첨부 대용량 처리(25MB)는 발송을 실제로 쓰는 워크플로 sub-project에서 구체화한다. (`SENDING` 잔여 해소는 §6.3에서 공통 기반이 담당한다.)
+- **cancel vs 동시 발송 TOCTOU 가드(send sub-project 도입 시 필수)**: 현재 공통 기반에는 `deliver()`를 호출하는 send 라우트가 없어 발현 경로가 없다(SENDING을 만드는 경로는 retry뿐이고, retry 대상 FAILED는 task가 SENT 이후라 cancel 불가). 그러나 send sub-project가 cancel 가능 상태(PENDING/GENERATED)에서 `deliver()`를 background로 호출하게 되면, cancel의 `hasActiveSending` 사전 체크(§5.2)와 `createSendingDelivery`의 SENDING 선기록 사이에 TOCTOU가 생긴다 — 그 사이 시작된 발송이 이미 CANCELLED된 task에 외부 메일을 보낼 수 있다. `createSendingDelivery`는 현재 `(taskId, step)` 활성 중복만 보고 task status는 보지 않으므로, send 경로를 추가할 때 **SENDING 선기록을 task-status 가드와 같은 트랜잭션으로 묶어**(CANCELLED/non-sendable이면 거부) 닫아야 한다. 발송 순서 계약의 1단계(§6.3 "발송 가능 확인")를 사전 체크가 아닌 원자 점유로 강화하는 것이 정석이다.
 - AI 서명 없는 commit(글로벌 규칙).

@@ -31,13 +31,17 @@ export async function deliver(args: {
     sentById: args.sentById,
   });
 
+  // SMTP 실패만 FAILED로 확정한다. sendMail 성공 후 SENT 확정(finalizeDelivery)이 실패하면
+  // 메일은 이미 나갔으므로 FAILED로 둔갑시키지 않는다(재시도 시 중복 발송). 에러를 전파해
+  // 행을 SENDING으로 남기고, admin resolve로 수동 확정하게 한다(§6.2).
+  let providerMessageId: string | null;
   try {
-    const { providerMessageId } = await sendMail(args.msg);
-    return await finalizeDelivery(record.id, { status: "SENT", sentAt: new Date(), providerMessageId });
+    ({ providerMessageId } = await sendMail(args.msg));
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return finalizeDelivery(record.id, { status: "FAILED", sentAt: null, errorMessage: message });
   }
+  return finalizeDelivery(record.id, { status: "SENT", sentAt: new Date(), providerMessageId });
 }
 
 // FAILED 레코드를 저장된 본문으로 그대로 재발송(워크플로 재생성 없음). 새 행 없이 기존 레코드를 갱신.
@@ -63,18 +67,21 @@ export async function retryDelivery(
     return finalizeDelivery(d.id, { status: "FAILED", sentAt: null, errorMessage: `첨부 파일 없음: ${missing.join(", ")}` });
   }
 
+  // deliver와 동일: SMTP 실패만 FAILED로 되돌린다. 재발송 SMTP 수락 후 SENT 확정이 실패하면
+  // 에러를 전파해 SENDING으로 남긴다(admin resolve 대상) — FAILED로 변환하면 또 재시도되어 중복 발송된다.
+  let providerMessageId: string | null;
   try {
-    const { providerMessageId } = await sendMail({
+    ({ providerMessageId } = await sendMail({
       to: d.recipients,
       subject: d.subject,
       html: d.bodyHtml ?? "",
       attachments: d.attachmentPaths.map((p) => ({ filename: basename(p), path: p })),
-    });
-    return await finalizeDelivery(d.id, { status: "SENT", sentAt: new Date(), providerMessageId });
+    }));
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return finalizeDelivery(d.id, { status: "FAILED", sentAt: null, errorMessage: message });
   }
+  return finalizeDelivery(d.id, { status: "SENT", sentAt: new Date(), providerMessageId });
 }
 
 // admin 전용. SENDING 잔여를 SENT/FAILED로 수동 확정해 멱등 가드를 해제·종료(§6.3).
