@@ -1,0 +1,4 @@
+# Windows(core.autocrlf=true)에서 .mjs가 CRLF로 체크아웃되면 shebang+CRLF가
+# vitest/esbuild 파싱을 깨뜨린다(SyntaxError: Invalid or unexpected token).
+# 소스 .mjs는 항상 LF로 체크아웃해 fresh clone·양 노트북·CI에서 일관되게 동작하게 한다.
+*.mjs text eol=lf
