@@ -8,7 +8,7 @@ export const RESOURCES = [
 ] as const;
 
 export const ACTIONS = [
-  "view", "create", "update", "delete", "approve",
+  "view", "create", "update", "delete", "approve", "cancel",
   "generate", "review", "send", "configure", "export", "impersonate",
 ] as const;
 

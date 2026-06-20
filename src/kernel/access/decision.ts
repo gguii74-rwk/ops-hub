@@ -1,5 +1,5 @@
 export type Action =
-  | "view" | "create" | "update" | "delete" | "approve"
+  | "view" | "create" | "update" | "delete" | "approve" | "cancel"
   | "generate" | "review" | "send" | "configure" | "export" | "impersonate";
 
 export type Scope = "own" | "team" | "assigned" | "all";
