@@ -287,7 +287,8 @@ prisma/seed-permissions.ts                        # 권한 2종 추가
 - 대상 실재성(finding; 전사 admin): 위조/비활성 `userId`(create)·존재하지 않거나 soft-deleted request id(update/delete)로 admin 작용 시 fail-closed 거부(부서 대조는 없음).
 - 메일 수신자 권한(finding/결정): REQUESTED 통지가 `leave.approval:view` 보유자 전원에게 가고(role/override로 권한 받은 MEMBER 포함), 승인권한 없는 MANAGER는 제외.
 - 메일 본문 이스케이프(finding): `reason`/`rejectionReason`/이름에 `<img onerror>`·`<a>`·angle-bracket 페이로드를 넣으면 `bodyHtml`에 `&lt;`로 인코딩되어 나타남(raw HTML 미주입).
-- 삭제·수정 정합성(finding): admin 삭제·수정이 낙관적 CAS(`status`+`updatedAt`)로 전이돼, approve/cancel/타 admin 수정과 동시 실행 시 0행 충돌로 막혀 usedDays가 어긋나지 않음(CAS 성공 후에만 보정; APPROVED 삭제만 decrement).
+- 삭제·수정·승인 정합성(finding): admin 삭제·수정·**승인(approveTx)**이 모두 낙관적 CAS(`status`+`updatedAt`)로 전이돼, 동시 admin 수정과 race 시 0행 충돌로 막혀 usedDays가 stale 값으로 어긋나지 않음(CAS 성공 후에만 보정; PENDING 수정 후 approve가 stale days로 증가하지 않음).
+- 고아 outbox(finding): 발송 직전 `leaveRequest`가 없으면(`findUnique` null — FK 없는 leaveRequestId, 롤백/부분마이그레이션) 발송하지 않고 `CANCELLED`로 종결, `sendMail` 미호출.
 - 캘린더 프라이버시(finding): 같은 부서 동료의 PENDING/REJECTED가 일반 사용자에게 숨겨지고 APPROVED만 보임; 본인 PENDING/REJECTED는 본인에게 보임.
 - 삭제-발송 race(결정 A): soft-delete는 **active SENDING을 건드리지 않고** worker가 정직하게 `SENT`로 finalize. 발송 직전 `deletedAt` 재확인으로 "claim 후 삭제"는 미발송(`CANCELLED`); 발송 진행 중 삭제 잔여 윈도는 `SENT`로 기록되고 요청은 `deletedAt`로 별도 감사(실제 발송을 `CANCELLED`로 지우지 않음).
 
@@ -309,7 +310,8 @@ prisma/seed-permissions.ts                        # 권한 2종 추가
 - admin 연차 작용 권한 = **전사 글로벌**(부서 스코프 없음; §2 팀장흐름 없음·원본과 동일). 대상은 실재·활성만 재검증(위조/삭제 id 거부). — 사용자 결정.
 - 관리자 통지 메일 수신자 = **permission 기반**(`leave.approval:view` 보유자 전원, 전 ACTIVE에 hasPermission 평가; role/override MEMBER 포함). systemRole만으론 안 보냄. — 사용자 결정.
 - 메일 본문은 동적 입력을 **HTML-escape**(저장형 인젝션 차단). — plan finding.
-- admin 삭제·수정 usedDays 보정은 **낙관적 CAS(`status`+`updatedAt`)**로 보호(approve/cancel/동시 수정 race 시 충돌 차단). — plan finding.
+- admin 삭제·수정·**승인** usedDays 보정은 **낙관적 CAS(`status`+`updatedAt`)**로 보호(동시 수정 race 시 충돌 차단; PENDING 수정 후 approve가 stale days로 증가하지 않음). — plan finding.
+- 메일 worker는 발송 직전 `leaveRequest` 부재/삭제(`!req || deletedAt`)를 모두 미발송 처리(고아 outbox 안전). — plan finding.
 - 대원칙: 원본 기능을 그대로 포팅(단, 삭제 감사·권한 경계·캘린더 프라이버시는 ops-hub 원칙으로 강화).
 
 ## 15. 미해결(구현 착수 시 확인)
