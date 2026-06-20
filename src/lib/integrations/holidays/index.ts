@@ -1,4 +1,5 @@
 const BASE = "https://apis.data.go.kr/B090041/openapi/service/SpcdeInfoService/getRestDeInfo";
+const FETCH_TIMEOUT_MS = 8_000; // 월별 호출 HTTP 타임아웃(백스톱) — 외부 API 지연/멈춤이 부팅·요청을 무한정 막지 않게.
 
 export interface RawHoliday { date: string; name: string; }
 interface ApiItem { locdate: number | string; dateName: string; isHoliday: string; }
@@ -12,7 +13,7 @@ async function fetchMonth(year: number, month: number, key: string): Promise<Raw
   const mm = String(month).padStart(2, "0");
   // 월별 호출이므로 한국 공휴일은 한 달에 100개 이하 → 페이징 불필요
   const url = `${BASE}?serviceKey=${encodeURIComponent(key)}&solYear=${year}&solMonth=${mm}&_type=json&numOfRows=100`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`특일정보 API ${res.status} (${year}-${mm})`);
   const json = (await res.json()) as { response?: { body?: { items?: unknown } } };
   const items = json.response?.body?.items;
