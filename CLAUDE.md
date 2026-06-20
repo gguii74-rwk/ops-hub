@@ -127,16 +127,19 @@ src/app/{(auth),dashboard,workflows,leave,admin,api}/
 - `Json` 컬럼은 통합 페이로드에 한정: 수신자 목록, 설정, audit metadata, 권한 conditions. 그 외에는 명시적 도메인 모델 선호(AGENTS.md)
 - 생성 파일은 DB에 **경로와 메타데이터만**, 실제 파일은 shared storage(`output`/`Template`/`keys`)에 — git 미포함, 릴리즈와 분리
 - 워크플로 상태 전이: `PENDING → GENERATED → REVIEWED → SENT → HQ_REQUESTED → FINAL_SENT` (+ `CANCELLED`)
+- 메일은 leave·workflows가 **공통 `MailDelivery`(workflows 스키마)** 사용. `MailDeliveryStatus` enum에 값 추가 시 **workflow 소비자도 갱신 필수** — `src/app/(app)/workflows/labels.ts`의 `MailStatus`·`MAIL_LABEL`·`MAIL_VARIANT`가 손수 작성 좁은 union이라 누락하면 typecheck/렌더가 깨진다.
 
 연차 도메인 불변식(`docs/discovery/annual-leave-analysis.md`):
 
 - `LeaveAllocation.usedDays`는 **캐시 필드**. 승인/취소/관리자 수정/삭제는 반드시 **transaction**으로 처리하고, 별도 `recalculate` 작업을 둔다
+- 연차 상태 전이(approve/cancel/reject/관리자 수정·삭제)는 read 후 `updateMany({where:{id,status}})` **status-CAS + count===0 충돌** 패턴(기존 `src/modules/leave/repositories/index.ts` approveTx/cancelTx). 동시 관리자 수정(days 변경)까지 막으려면 `where`에 `updatedAt` 낙관적 락을 추가 — stale read로 usedDays가 어긋나는 것 방지
 - 같은 기간 `PENDING`/`APPROVED` 신청과 중복 불가. 일반 사용자는 과거 날짜 신청·당일/과거 취소 불가(관리자는 가능)
 - 메일 발송은 업무 성공과 분리(background)하되 `MailDelivery` 이력으로 남긴다
 
 ## 코딩 규칙 (AGENTS.md)
 
 - **문서·짧은 주석은 한국어, 식별자·파일명·코드 레벨 이름은 영어.**
+- UI 프리미티브 `Button`(`src/components/ui/button.tsx`)은 `asChild` **미지원**(native button props만) — 링크를 버튼처럼 쓰려면 `<a className={buttonVariants({...})}>`.
 - 변경은 surgical하게, 로컬 구조에 맞춘다. 안 망가진 것을 리팩터링하지 않는다.
 - 스키마가 실행 준비되면 Prisma migration으로 추가한다.
 
