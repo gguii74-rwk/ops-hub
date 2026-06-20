@@ -2,10 +2,12 @@ import { describe, it, expect } from "vitest";
 import { MailDeliveryStatus, Prisma } from "@prisma/client";
 
 describe("Phase 4 schema", () => {
-  it("MailDeliveryStatus enum 3종이 생성되어 있다", () => {
+  it("MailDeliveryStatus enum 5종이 생성되어 있다", () => {
+    expect(MailDeliveryStatus.PENDING).toBe("PENDING");
     expect(MailDeliveryStatus.SENDING).toBe("SENDING");
     expect(MailDeliveryStatus.SENT).toBe("SENT");
     expect(MailDeliveryStatus.FAILED).toBe("FAILED");
+    expect(MailDeliveryStatus.CANCELLED).toBe("CANCELLED");
   });
 
   it("WorkflowTaskEvent 모델이 Prisma DMMF에 존재한다", () => {
