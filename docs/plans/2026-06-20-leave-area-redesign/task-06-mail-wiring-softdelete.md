@@ -14,7 +14,7 @@
 
 ## Prep
 - 엔트리포인트 §SC-4(outbox 계약: insert idempotent·cancel·수신자), §SC-1(writeAudit).
-- Task 03 산출: `insertPendingDelivery(tx, ...)`, `cancelPendingDeliveries(tx, leaveRequestId)`, `getLeaveAdminRecipients()`, `drainLeaveMailOutbox()`, templates(`buildRequestNotification`/`buildApprovedNotification`/`buildRejectedNotification`/`buildAdminCreatedNotification`).
+- Task 03 산출: `insertPendingDelivery(tx, ...)`, `cancelPendingDeliveries(tx, leaveRequestId, now)`, `getLeaveAdminRecipients()`, `drainLeaveMailOutbox()`, templates(`buildRequestNotification`/`buildApprovedNotification`/`buildRejectedNotification`/`buildAdminCreatedNotification`).
 - 기존 repository tx 함수(repositories/index.ts): createPendingRequest:63, createApprovedRequestTx:83, approveTx:110, rejectRequest:130, updateByAdminTx:163, deleteByAdminTx:211, listRequests:12, getRequestById:8.
 - soft-delete 정합성: status를 `CANCELLED`로 전이하면 기존 status 기반 집계(approve/recalc/overlap=PENDING|APPROVED)가 삭제분을 자동 제외한다. 일반 취소(CANCELLED, deletedAt=null)와 구분은 `deletedAt`로 — 전체상태 조회(listRequests/getRequestById)에만 `deletedAt: null` 필터를 추가한다.
 
@@ -182,7 +182,7 @@ export async function deleteByAdminTx(requestId: string, adminId: string, reason
       });
       if (r.count === 0) throw new LeaveConflictError("연차 할당 정보를 찾을 수 없습니다.");
     }
-    await cancelPendingDeliveries(tx, requestId);
+    await cancelPendingDeliveries(tx, requestId, now); // PENDING/FAILED/stale SENDING만 취소(active SENDING은 worker가 정직 finalize — 결정 A)
     await writeAudit(tx, { actorId: adminId, entityType: "LeaveRequest", entityId: requestId, action: "soft_delete", metadata: { reason } });
   });
 }
@@ -202,7 +202,8 @@ import { assertTargetUser } from "../authz";
   const applicant = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
   const recipients = await getLeaveAdminRecipients();
   const reqLike: MailReqLike = { leaveType: input.leaveType, leaveSubType: input.leaveSubType ?? null, quarterStartTime: input.quarterStartTime ?? null, startDate: start, endDate: end, reason: input.reason ?? null };
-  const mailJob = recipients.length ? { recipients, ...buildRequestNotification(applicant?.name ?? "직원", reqLike) } : null;
+  // 수신자 0명(승인권한자 없음/조회 저하)이어도 REQUESTED 행은 **항상** 적재 — durable 기록(spec §8). worker가 "수신자 없음" FAILED로 종결해 운영자가 누락을 본다(finding).
+  const mailJob = { recipients, ...buildRequestNotification(applicant?.name ?? "직원", reqLike) };
   const created = await createPendingRequest({
     userId, leaveType: input.leaveType, leaveSubType: input.leaveSubType,
     quarterStartTime: input.quarterStartTime, startDate: start, endDate: end, days, reason: input.reason,
@@ -285,10 +286,11 @@ export function deleteByAdmin(requestId: string, adminId: string, reason: string
 - `tests/modules/leave/repositories.test.ts`(기존 — **시그니처 변경 반영 필수**): hoisted db에 `leaveRequest.findFirst`(이미 있음)·`mailDelivery: { create: vi.fn() }`·`auditLog: { create: vi.fn() }` 추가, `vi.mock("@/kernel/audit", () => ({ writeAudit: vi.fn() }))`, `vi.mock("@/modules/leave/repositories/mail", () => ({ insertPendingDelivery: vi.fn(), cancelPendingDeliveries: vi.fn() }))`.
   - **기존 케이스 갱신:** `updateByAdminTx`의 `patch` 객체에 `adminId: "admin1"` 추가(타입 필수). `updateByAdminTx`·`deleteByAdminTx`의 내부 read가 `findUnique`→`findFirst`(deletedAt:null, **select에 `updatedAt` 포함**)로 바뀐 점 반영(`h.db.leaveRequest.findFirst.mockResolvedValue({ ..., updatedAt: new Date(...) })`). 둘 다 전이를 `update`가 아니라 **`updateMany`(CAS)**로 하므로 `h.db.leaveRequest.updateMany`로 모킹(count로 CAS 성공/충돌 제어). `updateByAdminTx`는 끝에 `findUniqueOrThrow`로 갱신행 반환 → `h.db.leaveRequest.findUniqueOrThrow` 모킹 추가. `deleteByAdminTx("r1")`→`deleteByAdminTx("r1", "admin1", null)`.
   - **신규 케이스:** createPendingRequest(base, mailJob) → `insertPendingDelivery` 호출(eventType REQUESTED), mailJob 없으면 미호출.
-  - **신규 케이스(delete):** 정상 → `leaveRequest.updateMany`가 `where`에 `status`+`updatedAt`(CAS)·`deletedAt: null` 포함, `data`에 `deletedAt`/`status: "CANCELLED"` 포함 + `cancelPendingDeliveries(tx, "r1")`(now 인자 없음)·`writeAudit` 호출; **CAS 충돌**(updateMany count 0) → `LeaveConflictError`("처리 중 상태 변경") 그리고 `leaveAllocation.updateMany` **미호출**(보정 안 함); 이미 삭제분(findFirst null) → `LeaveConflictError`; APPROVED 삭제만 `leaveAllocation` decrement.
+  - **신규 케이스(delete):** 정상 → `leaveRequest.updateMany`가 `where`에 `status`+`updatedAt`(CAS)·`deletedAt: null` 포함, `data`에 `deletedAt`/`status: "CANCELLED"` 포함 + `cancelPendingDeliveries(tx, "r1", <now>)`(now 인자 포함)·`writeAudit` 호출; **CAS 충돌**(updateMany count 0) → `LeaveConflictError`("처리 중 상태 변경") 그리고 `leaveAllocation.updateMany` **미호출**(보정 안 함); 이미 삭제분(findFirst null) → `LeaveConflictError`; APPROVED 삭제만 `leaveAllocation` decrement.
   - **신규 케이스(update CAS):** 정상 APPROVED 수정 → `leaveRequest.updateMany` `where`에 `status`+`updatedAt` 포함하고 usedDays 보정(diff) 호출; **CAS 충돌**(updateMany count 0, 동시 approve/타 admin 수정 모사) → `LeaveConflictError`이고 `leaveAllocation.updateMany` **미호출**(stale read로 보정 안 됨).
 - `tests/modules/leave/mail-wiring.test.ts`: service 레벨 — `vi.mock("@/modules/leave/services/mail", () => ({ getLeaveAdminRecipients: vi.fn(async () => ["a@x.com"]), drainLeaveMailOutbox: vi.fn() }))`, repo·prisma·templates 사용. 케이스:
   - createLeaveRequest → createPendingRequest가 mailJob(recipients 포함)과 함께 호출, drain 호출됨.
+  - **createLeaveRequest(승인권한자 0명, getLeaveAdminRecipients→[])** → createPendingRequest가 여전히 mailJob(`recipients: []`)과 함께 호출됨(REQUESTED 행 항상 적재; null 아님 — finding).
   - createLeaveRequestByAdmin(sendNotification=false) → mailJob null, drain 미호출; (true) → ADMIN_CREATED mailJob + drain.
   - assertTargetUser: 비활성/없는 user면 ForbiddenError.
 - `tests/modules/leave/requests-service.test.ts`: 기존 케이스가 깨지지 않게 `services/mail`·`mail-templates`·`authz`·`@/lib/prisma`(user.findUnique) mock 보강. 기존 단언 유지.
