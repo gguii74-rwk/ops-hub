@@ -12,7 +12,7 @@ vi.mock("@/modules/leave/repositories", () => ({
   cancelTx: vi.fn(), updateByAdminTx: vi.fn(), deleteByAdminTx: vi.fn(),
 }));
 
-import { createLeaveRequest, cancel, getRequest } from "@/modules/leave/services/requests";
+import { createLeaveRequest, createLeaveRequestByAdmin, cancel, getRequest } from "@/modules/leave/services/requests";
 import { LeaveConflictError, LeaveValidationError } from "@/modules/leave/errors";
 import { ForbiddenError } from "@/kernel/access";
 import * as holidaysMod from "@/kernel/holidays";
@@ -42,6 +42,7 @@ beforeEach(() => { vi.clearAllMocks(); holidays.mockResolvedValue(new Set()); ge
 describe("createLeaveRequest", () => {
   const input = { leaveType: "ANNUAL" as const, startDate: "2999-08-14", endDate: "2999-08-14" };
   it("할당 없으면 LeaveValidationError", async () => {
+    getUnsyncedYears.mockResolvedValue([]);
     repo.findActiveAllocation.mockResolvedValue(null);
     await expect(createLeaveRequest("u1", input)).rejects.toBeInstanceOf(LeaveValidationError);
   });
@@ -62,6 +63,7 @@ describe("createLeaveRequest", () => {
       .rejects.toBeInstanceOf(LeaveValidationError);
   });
   it("필요 연도 공휴일 미적재면 차단(fail-closed)", async () => {
+    repo.findActiveAllocation.mockResolvedValue({ allocatedDays: 15, carriedOverDays: 0, usedDays: 0 } as any);
     getUnsyncedYears.mockResolvedValue([2999]);
     await expect(createLeaveRequest("u1", input)).rejects.toBeInstanceOf(LeaveValidationError);
   });
@@ -92,6 +94,17 @@ describe("cancel", () => {
     repo.getRequestById.mockResolvedValue({ userId: "other", status: "APPROVED", startDate: new Date("2000-01-01T00:00:00Z") } as any);
     await cancel("r1", adminCtx, null);
     expect(repo.cancelTx).toHaveBeenCalled();
+  });
+});
+
+describe("createLeaveRequestByAdmin", () => {
+  const input = { leaveType: "ANNUAL" as const, startDate: "2999-08-14", endDate: "2999-08-14" };
+  it("미적재 연도 → warn-only, createApprovedRequestTx 호출(관리자 override)", async () => {
+    getUnsyncedYears.mockResolvedValue([2999]);
+    repo.findOverlap.mockResolvedValue(null);
+    repo.createApprovedRequestTx.mockResolvedValue({ id: "r1" } as any);
+    await createLeaveRequestByAdmin("admin1", "u2", input);
+    expect(repo.createApprovedRequestTx).toHaveBeenCalledWith(expect.objectContaining({ userId: "u2" }));
   });
 });
 
