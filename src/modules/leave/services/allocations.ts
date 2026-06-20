@@ -33,7 +33,7 @@ export async function getAllocationSummary(
     totalDays,
     usedDays,
     pendingDays,
-    remainingDays: totalDays - usedDays - pendingDays,
+    remainingDays: totalDays - usedDays - Number(pendingDays ?? 0),
     carriedOverExpiryDate: alloc.carriedOverExpiryDate ?? null,
   };
 }

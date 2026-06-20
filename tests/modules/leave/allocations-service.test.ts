@@ -4,6 +4,7 @@ vi.mock("@/modules/leave/repositories");
 
 import {
   getAllocationSummary,
+  setAllocation,
   adjustAllocation,
   recalculate,
 } from "@/modules/leave/services/allocations";
@@ -32,6 +33,8 @@ describe("getAllocationSummary", () => {
     mockRepo.sumPendingDays.mockResolvedValue(2);
     const s = await getAllocationSummary("u1", 2026);
     expect(s).toMatchObject({
+      allocatedDays: 15,
+      carriedOverDays: 3,
       totalDays: 18,
       usedDays: 5,
       pendingDays: 2,
@@ -41,6 +44,45 @@ describe("getAllocationSummary", () => {
   it("할당 없으면 null", async () => {
     mockRepo.findActiveAllocation.mockResolvedValue(null);
     expect(await getAllocationSummary("u1", 2026)).toBeNull();
+  });
+});
+
+describe("setAllocation", () => {
+  it("with carriedOverExpiryDate: parses string to Date", async () => {
+    mockRepo.upsertAllocation.mockResolvedValue({});
+    setAllocation("u1", 2026, {
+      allocatedDays: 15,
+      carriedOverDays: 3,
+      carriedOverExpiryDate: "2026-06-30",
+    });
+    expect(mockRepo.upsertAllocation).toHaveBeenCalledWith(
+      "u1",
+      2026,
+      expect.objectContaining({
+        allocatedDays: 15,
+        carriedOverDays: 3,
+        carriedOverExpiryDate: expect.any(Date),
+      })
+    );
+    const call = mockRepo.upsertAllocation.mock.calls[0];
+    const passedDate = call[2].carriedOverExpiryDate;
+    expect(passedDate.toISOString().slice(0, 10)).toBe("2026-06-30");
+  });
+  it("without carriedOverExpiryDate: passes null", async () => {
+    mockRepo.upsertAllocation.mockResolvedValue({});
+    setAllocation("u1", 2026, {
+      allocatedDays: 15,
+      carriedOverDays: 3,
+    });
+    expect(mockRepo.upsertAllocation).toHaveBeenCalledWith(
+      "u1",
+      2026,
+      expect.objectContaining({
+        allocatedDays: 15,
+        carriedOverDays: 3,
+        carriedOverExpiryDate: null,
+      })
+    );
   });
 });
 
@@ -61,6 +103,7 @@ describe("adjustAllocation", () => {
       expect.objectContaining({
         userId: "u1",
         changeDays: 2,
+        changeType: "ADD",
         adminId: "admin1",
       })
     );
