@@ -207,7 +207,7 @@ export async function deleteByAdminTx(requestId: string, adminId: string, reason
 
 `services/requests.ts` import 추가:
 ```ts
-import { getLeaveAdminRecipients, drainLeaveMailOutbox } from "./mail";
+import { getLeaveAdminRecipients, triggerLeaveMailDrain } from "./mail"; // triggerLeaveMailDrain = drain().catch() 래퍼(unhandled rejection 방지)
 import { buildRequestNotification, buildApprovedNotification, buildRejectedNotification, buildAdminCreatedNotification, type MailReqLike } from "../mail-templates";
 import { assertTargetUser } from "../authz";
 import { QUARTER_START_TIMES } from "../labels"; // effective-state 교차검증(반반차 화이트리스트)
@@ -225,7 +225,7 @@ import { QUARTER_START_TIMES } from "../labels"; // effective-state 교차검증
     userId, leaveType: input.leaveType, leaveSubType: input.leaveSubType,
     quarterStartTime: input.quarterStartTime, startDate: start, endDate: end, days, reason: input.reason,
   }, mailJob);
-  void drainLeaveMailOutbox();
+  triggerLeaveMailDrain();
   return created;
 ```
 
@@ -241,7 +241,7 @@ import { QUARTER_START_TIMES } from "../labels"; // effective-state 교차검증
     userId: targetUserId, adminId, leaveType: input.leaveType, leaveSubType: input.leaveSubType,
     quarterStartTime: input.quarterStartTime, startDate: start, endDate: end, days, reason: input.reason, adminActionNote,
   }, mailJob);
-  if (mailJob) void drainLeaveMailOutbox();
+  if (mailJob) triggerLeaveMailDrain();
   return created;
 ```
 
@@ -253,7 +253,7 @@ export async function approve(requestId: string, adminId: string) {
   const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { email: true } });
   const mailJob = user?.email ? { recipients: [user.email], ...buildApprovedNotification(req) } : null;
   await approveTx(requestId, adminId, mailJob);
-  void drainLeaveMailOutbox();
+  triggerLeaveMailDrain();
 }
 export async function reject(requestId: string, adminId: string, rejectionReason: string) {
   const req = await getRequestById(requestId);
@@ -261,7 +261,7 @@ export async function reject(requestId: string, adminId: string, rejectionReason
   const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { email: true } });
   const mailJob = user?.email ? { recipients: [user.email], ...buildRejectedNotification(req, rejectionReason) } : null;
   await rejectRequest(requestId, adminId, rejectionReason, mailJob);
-  void drainLeaveMailOutbox();
+  triggerLeaveMailDrain();
 }
 ```
 (`rejectRequest`는 기존 `../repositories` import에 이미 있고 service 함수명은 `reject`라 이름 충돌이 없다. service의 `reject`는 repo `rejectRequest`를 호출한다.)
@@ -314,10 +314,10 @@ export function deleteByAdmin(requestId: string, adminId: string, reason: string
   - **신규 케이스(delete):** 정상 → `leaveRequest.updateMany`가 `where`에 `status`+`updatedAt`(CAS)·`deletedAt: null` 포함, `data`에 `deletedAt`/`status: "CANCELLED"` 포함 + `cancelPendingDeliveries(tx, "r1", <now>)`(now 인자 포함)·`writeAudit` 호출; **CAS 충돌**(updateMany count 0) → `LeaveConflictError`("처리 중 상태 변경") 그리고 `leaveAllocation.updateMany` **미호출**(보정 안 함); 이미 삭제분(findFirst null) → `LeaveConflictError`; APPROVED 삭제만 `leaveAllocation` decrement.
   - **신규 케이스(update CAS):** 정상 APPROVED 수정 → `leaveRequest.updateMany` `where`에 `status`+`updatedAt` 포함하고 usedDays 보정(diff) 호출; **CAS 충돌**(updateMany count 0, 동시 approve/타 admin 수정 모사) → `LeaveConflictError`이고 `leaveAllocation.updateMany` **미호출**(stale read로 보정 안 됨).
   - **기존 케이스 갱신(approveTx):** `approveTx`의 `findUnique` mock select에 `updatedAt` 포함, `updateMany` `where`에 `status: "PENDING"`+`updatedAt` 포함 단언. **신규 케이스:** 동시 수정 모사(updateMany count 0) → `LeaveConflictError`이고 `leaveAllocation.updateMany`(usedDays increment) **미호출**(stale days로 증가 안 됨). 시그니처에 `mailJob?` 추가 반영.
-- `tests/modules/leave/mail-wiring.test.ts`: service 레벨 — `vi.mock("@/modules/leave/services/mail", () => ({ getLeaveAdminRecipients: vi.fn(async () => ["a@x.com"]), drainLeaveMailOutbox: vi.fn() }))`, repo·prisma·templates 사용. 케이스:
-  - createLeaveRequest → createPendingRequest가 mailJob(recipients 포함)과 함께 호출, drain 호출됨.
+- `tests/modules/leave/mail-wiring.test.ts`: service 레벨 — `vi.mock("@/modules/leave/services/mail", () => ({ getLeaveAdminRecipients: vi.fn(async () => ["a@x.com"]), triggerLeaveMailDrain: vi.fn() }))`, repo·prisma·templates 사용. 케이스:
+  - createLeaveRequest → createPendingRequest가 mailJob(recipients 포함)과 함께 호출, `triggerLeaveMailDrain` 호출됨.
   - **createLeaveRequest(승인권한자 0명, getLeaveAdminRecipients→[])** → createPendingRequest가 여전히 mailJob(`recipients: []`)과 함께 호출됨(REQUESTED 행 항상 적재; null 아님 — finding).
-  - createLeaveRequestByAdmin(sendNotification=false) → mailJob null, drain 미호출; (true) → ADMIN_CREATED mailJob + drain.
+  - createLeaveRequestByAdmin(sendNotification=false) → mailJob null, `triggerLeaveMailDrain` 미호출; (true) → ADMIN_CREATED mailJob + `triggerLeaveMailDrain`.
   - assertTargetUser: 비활성/없는 user면 ForbiddenError.
 - `tests/modules/leave/requests-service.test.ts`: 기존 케이스가 깨지지 않게 `services/mail`·`mail-templates`·`authz`·`@/lib/prisma`(user.findUnique) mock 보강. 기존 단언 유지. **신규(effective-state 교차검증, finding):** `updateByAdmin`에 existing=ANNUAL 행으로 `leaveType: "HALF"`만(leaveSubType 미전달) → `LeaveValidationError`이고 `updateByAdminTx` 미호출; `leaveType: "QUARTER"`만(quarterStartTime 미전달/비화이트리스트) → `LeaveValidationError`; 올바른 입력(HALF+leaveSubType, QUARTER+화이트리스트 시각) → 정상 호출.
 
@@ -330,7 +330,7 @@ export function deleteByAdmin(requestId: string, adminId: string, reason: string
 
 ## Cautions
 - **Don't** outbox insert를 tx 밖(커밋 후)에서 하지 마라. 이유: 커밋과 발송 예약이 원자적이지 않으면 "커밋됐는데 메일 행 없음"이 생긴다(spec §8 트랜잭션 계약).
-- **Don't** `drainLeaveMailOutbox()`를 `await`하지 마라. 이유: 발송 지연/실패가 연차 API 응답을 막으면 안 된다(연차 도메인 불변식). `void`로 fire-and-forget.
+- **Don't** drain을 `await`하거나 `.catch` 없이 `void drainLeaveMailOutbox()`로 부르지 마라. 이유: (a) 발송 지연/실패가 연차 API 응답을 막으면 안 된다(연차 도메인 불변식), (b) `.catch` 없는 fire-and-forget은 DB/SMTP 거부 시 **unhandled rejection**이 된다(finding). 반드시 `.catch` 래퍼 `triggerLeaveMailDrain()`을 쓴다.
 - **Don't** soft-delete에서 물리 `delete`를 남기지 마라. 이유: ops-hub 감사 원칙(deletedBy/At·사유·AuditLog 보존).
 - **Don't** `recalculateUsedDaysTx`/`sumPendingDays`/overlap에 `deletedAt` 필터를 추가하지 마라. 이유: soft-delete가 status를 `CANCELLED`로 바꾸므로 status 필터로 이미 제외된다(중복·과조정 방지). `deletedAt` 필터는 전체상태 조회(listRequests/getRequestById)에만.
 - **Don't** 관리자 직접입력에서 `assertTargetUser`를 건너뛰지 마라. 이유: 드롭다운 우회 위조 userId를 막는다(존재·ACTIVE 재검증). admin은 전사 글로벌이라 부서 대조는 없지만, 실재·활성 검증은 필수(spec §7).
