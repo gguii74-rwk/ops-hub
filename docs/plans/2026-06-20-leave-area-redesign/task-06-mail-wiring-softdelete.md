@@ -210,6 +210,8 @@ export async function deleteByAdminTx(requestId: string, adminId: string, reason
 import { getLeaveAdminRecipients, drainLeaveMailOutbox } from "./mail";
 import { buildRequestNotification, buildApprovedNotification, buildRejectedNotification, buildAdminCreatedNotification, type MailReqLike } from "../mail-templates";
 import { assertTargetUser } from "../authz";
+import { QUARTER_START_TIMES } from "../labels"; // effective-state 교차검증(반반차 화이트리스트)
+// `LeaveValidationError`는 기존 requests.ts import에 있으면 재사용, 없으면 `../errors`에서 추가.
 ```
 
 **(a) createLeaveRequest** — 끝부분 `return createPendingRequest(...)`를 교체:
@@ -265,18 +267,26 @@ export async function reject(requestId: string, adminId: string, rejectionReason
 (`rejectRequest`는 기존 `../repositories` import에 이미 있고 service 함수명은 `reject`라 이름 충돌이 없다. service의 `reject`는 repo `rejectRequest`를 호출한다.)
 `getRequestById`가 반환하는 LeaveRequest는 `buildApprovedNotification`의 `MailReqLike`(leaveType/leaveSubType/quarterStartTime/startDate/endDate/reason)를 구조적으로 만족한다.
 
-**(d) updateByAdmin(requestId, input, adminId)** — 시그니처에 `adminId` 추가, `updateByAdminTx(requestId, { adminId, ...patch })`로 전달:
+**(d) updateByAdmin(requestId, input, adminId)** — 시그니처에 `adminId` 추가. **부분 patch + 기존 행 fallback으로 만든 effective state를 서버에서 교차검증**(finding, high): update zod 스키마가 부분 patch를 허용하므로, 예컨대 ANNUAL→HALF인데 `leaveSubType` 미전달이면 fallback이 null로 남아 **유효하지 않은 행이 저장**된다. 그래서 effective 값을 계산한 뒤 `updateByAdminTx` 호출 **전에** 검증한다:
 ```ts
+  const effSubType = leaveType === "HALF" ? (input.leaveSubType ?? existing.leaveSubType) : null;
+  const effQuarter = leaveType === "QUARTER" ? (input.quarterStartTime ?? existing.quarterStartTime) : null;
+  // 교차검증(effective state): HALF엔 leaveSubType, QUARTER엔 화이트리스트 quarterStartTime 필수.
+  if (leaveType === "HALF" && !effSubType) throw new LeaveValidationError("반차는 오전/오후 구분이 필요합니다.");
+  if (leaveType === "QUARTER" && (!effQuarter || !QUARTER_START_TIMES.includes(effQuarter))) {
+    throw new LeaveValidationError("반반차는 허용된 시간대(6종) 중 하나가 필요합니다.");
+  }
   return updateByAdminTx(requestId, {
     adminId,
     leaveType,
-    leaveSubType: leaveType === "HALF" ? (input.leaveSubType ?? existing.leaveSubType) : null,
-    quarterStartTime: leaveType === "QUARTER" ? (input.quarterStartTime ?? existing.quarterStartTime) : null,
+    leaveSubType: effSubType,
+    quarterStartTime: effQuarter,
     startDate: start, endDate: end, newDays,
     reason: input.reason !== undefined ? input.reason : existing.reason,
     adminActionNote: input.adminActionNote ?? null,
   });
 ```
+import 추가: `LeaveValidationError`(`../errors`), `QUARTER_START_TIMES`(`../labels`, Task 02). (`newDays`도 effective type/날짜로 재계산되는 기존 로직을 따른다 — QUARTER/HALF는 단일일.)
 
 **(e) deleteByAdmin(requestId, adminId, reason)**:
 ```ts
@@ -309,7 +319,7 @@ export function deleteByAdmin(requestId: string, adminId: string, reason: string
   - **createLeaveRequest(승인권한자 0명, getLeaveAdminRecipients→[])** → createPendingRequest가 여전히 mailJob(`recipients: []`)과 함께 호출됨(REQUESTED 행 항상 적재; null 아님 — finding).
   - createLeaveRequestByAdmin(sendNotification=false) → mailJob null, drain 미호출; (true) → ADMIN_CREATED mailJob + drain.
   - assertTargetUser: 비활성/없는 user면 ForbiddenError.
-- `tests/modules/leave/requests-service.test.ts`: 기존 케이스가 깨지지 않게 `services/mail`·`mail-templates`·`authz`·`@/lib/prisma`(user.findUnique) mock 보강. 기존 단언 유지.
+- `tests/modules/leave/requests-service.test.ts`: 기존 케이스가 깨지지 않게 `services/mail`·`mail-templates`·`authz`·`@/lib/prisma`(user.findUnique) mock 보강. 기존 단언 유지. **신규(effective-state 교차검증, finding):** `updateByAdmin`에 existing=ANNUAL 행으로 `leaveType: "HALF"`만(leaveSubType 미전달) → `LeaveValidationError`이고 `updateByAdminTx` 미호출; `leaveType: "QUARTER"`만(quarterStartTime 미전달/비화이트리스트) → `LeaveValidationError`; 올바른 입력(HALF+leaveSubType, QUARTER+화이트리스트 시각) → 정상 호출.
 
 ## Acceptance Criteria
 - `npm test` → 전체 green(기존 + 신규).
