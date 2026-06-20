@@ -6,10 +6,11 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { QUARTER_TIME_SLOTS } from "@/modules/leave/labels";
 
 type LeaveType = "ANNUAL" | "HALF" | "QUARTER";
 interface FormState { leaveType: LeaveType; leaveSubType: "MORNING" | "AFTERNOON"; quarterStartTime: string; startDate: string; endDate: string; reason: string; }
-const initial: FormState = { leaveType: "ANNUAL", leaveSubType: "MORNING", quarterStartTime: "09:00", startDate: "", endDate: "", reason: "" };
+const initial = (date?: string): FormState => ({ leaveType: "ANNUAL", leaveSubType: "MORNING", quarterStartTime: "09:00", startDate: date ?? "", endDate: "", reason: "" });
 
 async function submit(state: FormState) {
   const single = state.leaveType !== "ANNUAL";
@@ -25,15 +26,16 @@ async function submit(state: FormState) {
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `신청 실패 (${res.status})`);
 }
 
-export function LeaveRequestForm() {
-  const [state, setState] = useState<FormState>(initial);
+export function LeaveRequestForm({ defaultDate }: { defaultDate?: string }) {
+  const [state, setState] = useState<FormState>(initial(defaultDate));
   const qc = useQueryClient();
   const m = useMutation({
     mutationFn: () => submit(state),
-    onSuccess: () => { setState(initial); qc.invalidateQueries({ queryKey: ["leave"] }); },
+    onSuccess: () => { setState(initial()); qc.invalidateQueries({ queryKey: ["leave"] }); },
   });
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setState((s) => ({ ...s, [k]: v }));
   const single = state.leaveType !== "ANNUAL";
+  const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
 
   return (
     <Card className="space-y-3 p-4">
@@ -41,8 +43,7 @@ export function LeaveRequestForm() {
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label htmlFor="lt">유형</Label>
-          <select id="lt" className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-            value={state.leaveType} onChange={(e) => set("leaveType", e.target.value as LeaveType)}>
+          <select id="lt" className={selectCls} value={state.leaveType} onChange={(e) => set("leaveType", e.target.value as LeaveType)}>
             <option value="ANNUAL">연차</option>
             <option value="HALF">반차(0.5)</option>
             <option value="QUARTER">반반차(0.25)</option>
@@ -51,17 +52,18 @@ export function LeaveRequestForm() {
         {state.leaveType === "HALF" && (
           <div className="space-y-1">
             <Label htmlFor="st">반차 시간대</Label>
-            <select id="st" className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-              value={state.leaveSubType} onChange={(e) => set("leaveSubType", e.target.value as "MORNING" | "AFTERNOON")}>
-              <option value="MORNING">오전</option>
-              <option value="AFTERNOON">오후</option>
+            <select id="st" className={selectCls} value={state.leaveSubType} onChange={(e) => set("leaveSubType", e.target.value as "MORNING" | "AFTERNOON")}>
+              <option value="MORNING">오전 반차</option>
+              <option value="AFTERNOON">오후 반차</option>
             </select>
           </div>
         )}
         {state.leaveType === "QUARTER" && (
           <div className="space-y-1">
-            <Label htmlFor="qt">시작 시각</Label>
-            <Input id="qt" type="time" value={state.quarterStartTime} onChange={(e) => set("quarterStartTime", e.target.value)} />
+            <Label htmlFor="qt">시간대</Label>
+            <select id="qt" className={selectCls} value={state.quarterStartTime} onChange={(e) => set("quarterStartTime", e.target.value)}>
+              {QUARTER_TIME_SLOTS.map((s) => <option key={s.start} value={s.start}>{s.label}</option>)}
+            </select>
           </div>
         )}
         <div className="space-y-1">
@@ -77,7 +79,7 @@ export function LeaveRequestForm() {
       </div>
       <div className="space-y-1">
         <Label htmlFor="rs">사유(선택)</Label>
-        <Textarea id="rs" value={state.reason} onChange={(e) => set("reason", e.target.value)} rows={2} />
+        <Textarea id="rs" value={state.reason} onChange={(e) => set("reason", e.target.value)} rows={2} maxLength={500} />
       </div>
       {m.isError && <p className="text-sm text-destructive">{(m.error as Error).message}</p>}
       <Button disabled={m.isPending || !state.startDate || (!single && !state.endDate)} onClick={() => m.mutate()}>
