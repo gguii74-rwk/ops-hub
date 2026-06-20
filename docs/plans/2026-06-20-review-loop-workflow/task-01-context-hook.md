@@ -206,9 +206,8 @@ export function decideNudge({ ratio, threshold, stopHookActive, alreadyNudged })
     shouldNudge: true,
     reason:
       `컨텍스트 사용량이 약 ${pct}%로 임계(${thr}%)를 넘었습니다. 멈추기 전에: ` +
-      `(1) .remember/remember.md에 현재 작업 상태를 핸드오프로 작성하세요 ` +
-      `(review-loop 중이면 phase·iteration·base·미해결 finding 포함). ` +
-      `(2) 사용자에게 "이어서 진행하려면 /clear 후 동일 작업(또는 /review-loop --resume)을 다시 호출하세요"라고 안내하세요. ` +
+      `(1) .remember/remember.md에 현재 작업 상태(무엇을 하던 중인지·다음 할 일·미해결 항목)를 핸드오프로 작성하세요. ` +
+      `(2) 사용자에게 "이어서 진행하려면 /clear 후 같은 작업을 다시 시작하세요"라고 안내하세요. ` +
       `자가 /clear는 불가하므로 실제 초기화는 사용자가 합니다.`,
   };
 }
