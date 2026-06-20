@@ -1,4 +1,4 @@
-// 서버 부팅 시 현재+익년 공휴일을 보장한다. 재시작마다 도므로 연도 경과 시 내후년 자동 적재.
+// 서버 부팅 시 현재+익년 공휴일을 보장한다. 재시작마다 돌므로 연도 경과 시 내후년 자동 적재.
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
   try {

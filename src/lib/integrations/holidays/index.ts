@@ -10,6 +10,7 @@ function locdateToKey(locdate: number | string): string {
 
 async function fetchMonth(year: number, month: number, key: string): Promise<RawHoliday[]> {
   const mm = String(month).padStart(2, "0");
+  // 월별 호출이므로 한국 공휴일은 한 달에 100개 이하 → 페이징 불필요
   const url = `${BASE}?serviceKey=${encodeURIComponent(key)}&solYear=${year}&solMonth=${mm}&_type=json&numOfRows=100`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`특일정보 API ${res.status} (${year}-${mm})`);
