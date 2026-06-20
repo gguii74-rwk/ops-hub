@@ -113,9 +113,14 @@ export async function listAllRequestsWithUser(filter: { userId?: string; statuse
 export async function getRequest(id: string, ctx: LeaveCtx) {
   const req = await getRequestById(id);
   if (!req) return null;
-  const canManage = ctx.isOwner || ctx.permissionKeys.has("leave.approval:view");
-  if (req.userId !== ctx.userId && !canManage) throw new ForbiddenError("본인 신청만 조회할 수 있습니다.");
-  return req;
+  if (req.userId === ctx.userId) return req; // 본인 → 전 상태
+  // 타인 신청의 cross-user 가시성 경계(spec §4): 전체이력 권한(admin:view/시스템 OWNER) → 전 상태,
+  // 승인 큐 권한(approval:view)은 처리 대상인 PENDING만. approval:view는 read-all 자격이 아니다
+  // (전체이력 목록은 task-05가 admin:view로 잠갔으나 단건 상세 경로가 누락돼 있었음).
+  const canViewAll = ctx.isOwner || ctx.permissionKeys.has("leave.admin:view");
+  const canViewPending = ctx.permissionKeys.has("leave.approval:view") && req.status === "PENDING";
+  if (canViewAll || canViewPending) return req;
+  throw new ForbiddenError("본인 신청만 조회할 수 있습니다.");
 }
 
 export async function approve(requestId: string, adminId: string) {

@@ -2,6 +2,8 @@
 
 **목적:** `LeaveRequest`만 그리는 월간 캘린더. 일반 사용자는 본인(전 상태) + 같은 부서 타인(APPROVED만, 사유·세부 마스킹)을 보고, 부서가 없으면 self-only fail-closed. status/admin 권한자는 전체·전 상태 + 부서 필터. 날짜 클릭 → 신청 prefill.
 
+> **Impl 적대검증 정정(2026-06-21, codex high #2):** 아래 본문은 status/admin을 한 묶음(`canCrossUserAllStatuses`)으로 전 상태·마스킹 해제했으나, **status:view에 전원의 사유(reason)·비APPROVED가 노출되는 과노출**이라 분리한다. **admin:view만** 전체·전 상태·마스킹 해제(`canViewAllStatuses`), **status:view**는 부서 경계만 넘되(`canCrossDepartment`) **타인 APPROVED-only·사유/세부 마스킹**. 라우트/서비스/테스트가 실제 구현. (spec §4: cross-user 가시성은 status/admin이되 reason 등 민감정보는 admin 전용.)
+
 ## Files
 - Create: `src/modules/leave/services/calendar.ts`
 - Create: `src/app/api/leave/calendar/route.ts`

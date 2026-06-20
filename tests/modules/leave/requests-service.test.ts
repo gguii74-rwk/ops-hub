@@ -162,8 +162,31 @@ describe("updateByAdmin (effective-state 교차검증)", () => {
 });
 
 describe("getRequest", () => {
+  const approverCtx = { userId: "ap", isOwner: false, permissionKeys: new Set(["leave.approval:view"]) };
+  const adminViewCtx = { userId: "av", isOwner: false, permissionKeys: new Set(["leave.admin:view"]) };
+
   it("타인 신청을 권한 없이 조회 → ForbiddenError", async () => {
-    repo.getRequestById.mockResolvedValue({ id: "r1", userId: "other" } as any);
+    repo.getRequestById.mockResolvedValue({ id: "r1", userId: "other", status: "PENDING" } as any);
     await expect(getRequest("r1", employeeCtx)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+  it("본인 신청은 상태 무관 조회 가능", async () => {
+    repo.getRequestById.mockResolvedValue({ id: "r1", userId: "u1", status: "REJECTED" } as any);
+    await expect(getRequest("r1", employeeCtx)).resolves.toMatchObject({ id: "r1" });
+  });
+  it("approval:view는 타인 PENDING(승인 큐) 조회 가능", async () => {
+    repo.getRequestById.mockResolvedValue({ id: "r1", userId: "other", status: "PENDING" } as any);
+    await expect(getRequest("r1", approverCtx)).resolves.toMatchObject({ id: "r1" });
+  });
+  it("approval:view가 타인 non-PENDING(APPROVED) 조회 → ForbiddenError(읽기-전체 자격 아님)", async () => {
+    repo.getRequestById.mockResolvedValue({ id: "r1", userId: "other", status: "APPROVED" } as any);
+    await expect(getRequest("r1", approverCtx)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+  it("admin:view는 타인 전 상태(APPROVED 등) 조회 가능", async () => {
+    repo.getRequestById.mockResolvedValue({ id: "r1", userId: "other", status: "APPROVED" } as any);
+    await expect(getRequest("r1", adminViewCtx)).resolves.toMatchObject({ id: "r1" });
+  });
+  it("시스템 OWNER는 타인 전 상태 조회 가능", async () => {
+    repo.getRequestById.mockResolvedValue({ id: "r1", userId: "other", status: "CANCELLED" } as any);
+    await expect(getRequest("r1", adminCtx)).resolves.toMatchObject({ id: "r1" });
   });
 });

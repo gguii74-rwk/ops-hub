@@ -51,4 +51,28 @@ describe("GET /api/leave/calendar", () => {
     const res = await GET(new Request("http://x/api/leave/calendar"));
     expect(res.status).toBe(403);
   });
+
+  it("일반 사용자는 canViewAllStatuses=false·canCrossDepartment=false, department 무시", async () => {
+    h.getPermissionSummary.mockResolvedValueOnce({ keys: [] });
+    await GET(new Request("http://x/api/leave/calendar?department=개발"));
+    expect(h.getLeaveCalendar).toHaveBeenCalledWith(
+      expect.objectContaining({ canViewAllStatuses: false, canCrossDepartment: false, filterDepartment: null }),
+    );
+  });
+
+  it("status:view는 canCrossDepartment=true이지만 canViewAllStatuses=false(전상태·마스킹 해제 금지)", async () => {
+    h.getPermissionSummary.mockResolvedValueOnce({ keys: ["leave.status:view"] });
+    await GET(new Request("http://x/api/leave/calendar?department=개발"));
+    expect(h.getLeaveCalendar).toHaveBeenCalledWith(
+      expect.objectContaining({ canViewAllStatuses: false, canCrossDepartment: true, filterDepartment: "개발" }),
+    );
+  });
+
+  it("admin:view는 canViewAllStatuses=true·canCrossDepartment=true", async () => {
+    h.getPermissionSummary.mockResolvedValueOnce({ keys: ["leave.admin:view"] });
+    await GET(new Request("http://x/api/leave/calendar"));
+    expect(h.getLeaveCalendar).toHaveBeenCalledWith(
+      expect.objectContaining({ canViewAllStatuses: true, canCrossDepartment: true }),
+    );
+  });
 });
