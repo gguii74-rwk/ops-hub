@@ -329,6 +329,16 @@ model AuditLog {
   @@schema("kernel")
 }
 
+model Holiday {
+  date      DateTime @id @db.Date
+  name      String
+  year      Int
+  createdAt DateTime @default(now())
+
+  @@index([year])
+  @@schema("kernel")
+}
+
 model WorkflowType {
   id                String       @id
   kind              WorkflowKind @unique
