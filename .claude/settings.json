@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'node \"$CLAUDE_PROJECT_DIR/scripts/context-threshold-hook.mjs\"'"
+          }
+        ]
+      }
+    ]
+  }
+}
