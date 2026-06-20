@@ -78,9 +78,9 @@ describe("cancelPendingDeliveries", () => {
 describe("claimDelivery", () => {
   it("count 1이면 SENDING+lease+attempts++ 후 데이터(leaveRequestId 포함) 반환", async () => {
     h.db.mailDelivery.updateMany.mockResolvedValue({ count: 1 });
-    h.db.mailDelivery.findUnique.mockResolvedValue({ id: "m1", leaveRequestId: "r1", recipients: ["a@x.com"], subject: "s", bodyHtml: "<p>b</p>", workerId: "w1", status: "SENDING" });
+    h.db.mailDelivery.findUnique.mockResolvedValue({ id: "m1", leaveRequestId: "r1", eventType: "REQUESTED", recipients: ["a@x.com"], subject: "s", bodyHtml: "<p>b</p>", workerId: "w1", status: "SENDING" });
     const out = await claimDelivery("m1", "w1", new Date());
-    expect(out).toEqual({ id: "m1", leaveRequestId: "r1", recipients: ["a@x.com"], subject: "s", bodyHtml: "<p>b</p>" });
+    expect(out).toEqual({ id: "m1", leaveRequestId: "r1", eventType: "REQUESTED", recipients: ["a@x.com"], subject: "s", bodyHtml: "<p>b</p>" });
     expect(h.db.mailDelivery.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: "SENDING", workerId: "w1", attempts: { increment: 1 } }),
     }));
@@ -210,7 +210,7 @@ export async function listDueDeliveryIds(now: Date, limit: number): Promise<stri
   return rows.map((r) => r.id);
 }
 
-export interface ClaimedDelivery { id: string; leaveRequestId: string; recipients: string[]; subject: string; bodyHtml: string; }
+export interface ClaimedDelivery { id: string; leaveRequestId: string; eventType: LeaveMailEvent; recipients: string[]; subject: string; bodyHtml: string; }
 
 // atomic 조건부 claim: 후보 조건이 여전히 참일 때만 SENDING+lease+workerId+attempts++. 0행=선점 → null.
 export async function claimDelivery(id: string, workerId: string, now: Date): Promise<ClaimedDelivery | null> {
@@ -220,12 +220,13 @@ export async function claimDelivery(id: string, workerId: string, now: Date): Pr
   });
   if (count !== 1) return null;
   const d = await prisma.mailDelivery.findUnique({
-    where: { id }, select: { id: true, leaveRequestId: true, recipients: true, subject: true, bodyHtml: true, workerId: true, status: true },
+    where: { id }, select: { id: true, leaveRequestId: true, eventType: true, recipients: true, subject: true, bodyHtml: true, workerId: true, status: true },
   });
   if (!d || d.status !== "SENDING" || d.workerId !== workerId || !d.leaveRequestId) return null;
   return {
     id: d.id,
     leaveRequestId: d.leaveRequestId,
+    eventType: d.eventType as LeaveMailEvent, // dueWhere가 eventType not null·leave 스코프를 보장 → 4종 중 하나
     recipients: Array.isArray(d.recipients) ? (d.recipients as string[]) : [],
     subject: d.subject,
     bodyHtml: d.bodyHtml ?? "",
@@ -327,7 +328,7 @@ beforeEach(() => {
 describe("drainLeaveMailOutbox", () => {
   it("claim→발송→SENT finalize 성공 시 sent++", async () => {
     r.list.mockResolvedValue(["m1"]);
-    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
+    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", eventType: "APPROVED", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
     send.mockResolvedValue({ providerMessageId: "pm" });
     r.fin.mockResolvedValue(true);
     expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 1, failed: 0, skipped: 0 });
@@ -341,7 +342,7 @@ describe("drainLeaveMailOutbox", () => {
   });
   it("SMTP 실패면 FAILED finalize + failed++", async () => {
     r.list.mockResolvedValue(["m1"]);
-    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
+    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", eventType: "APPROVED", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
     send.mockRejectedValue(new Error("smtp down"));
     r.fin.mockResolvedValue(true);
     expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 0, failed: 1, skipped: 0 });
@@ -349,14 +350,14 @@ describe("drainLeaveMailOutbox", () => {
   });
   it("발송 성공했지만 finalize 0행(그 사이 CANCELLED)이면 skipped++(SENT로 안 침)", async () => {
     r.list.mockResolvedValue(["m1"]);
-    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
+    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", eventType: "APPROVED", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
     send.mockResolvedValue({ providerMessageId: "pm" });
     r.fin.mockResolvedValue(false);
     expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 0, failed: 0, skipped: 1 });
   });
   it("발송 직전 요청이 soft-delete돼 있으면 미발송 + CANCELLED finalize + skipped++", async () => {
     r.list.mockResolvedValue(["m1"]);
-    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
+    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", eventType: "APPROVED", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
     vi.mocked(prisma.leaveRequest.findUnique).mockResolvedValue({ deletedAt: new Date() } as never);
     expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 0, failed: 0, skipped: 1 });
     expect(send).not.toHaveBeenCalled();
@@ -364,7 +365,7 @@ describe("drainLeaveMailOutbox", () => {
   });
   it("발송 직전 요청이 없으면(고아 outbox, findUnique null) 미발송 + CANCELLED finalize + skipped++", async () => {
     r.list.mockResolvedValue(["m1"]);
-    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
+    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", eventType: "APPROVED", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
     vi.mocked(prisma.leaveRequest.findUnique).mockResolvedValue(null as never);
     expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 0, failed: 0, skipped: 1 });
     expect(send).not.toHaveBeenCalled();
@@ -374,6 +375,26 @@ describe("drainLeaveMailOutbox", () => {
     r.list.mockResolvedValue([]);
     await drainLeaveMailOutbox("w1");
     expect(r.dead).toHaveBeenCalled();
+  });
+  it("REQUESTED는 발송 직전 getLeaveAdminRecipients로 수신자 재확정(enqueue 스냅샷 무시) — 결정 A", async () => {
+    r.list.mockResolvedValue(["m1"]);
+    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", eventType: "REQUESTED", recipients: ["stale@x.com"], subject: "s", bodyHtml: "b" });
+    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: "u1", email: "now@x.com" }] as never);
+    vi.mocked(hasPermission).mockResolvedValue(true as never);
+    send.mockResolvedValue({ providerMessageId: "pm" });
+    r.fin.mockResolvedValue(true);
+    expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 1, failed: 0, skipped: 0 });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: ["now@x.com"] })); // 스냅샷 stale@x.com 아님 — 현재 권한자
+  });
+  it("REQUESTED인데 발송 시점 승인권한자 0명(전원 회수)이면 미발송 + FAILED", async () => {
+    r.list.mockResolvedValue(["m1"]);
+    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", eventType: "REQUESTED", recipients: ["stale@x.com"], subject: "s", bodyHtml: "b" });
+    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: "u1", email: "x@x.com" }] as never);
+    vi.mocked(hasPermission).mockResolvedValue(false as never); // 재확정 결과 [] → stale 스냅샷으로 발송하지 않음
+    r.fin.mockResolvedValue(true);
+    expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 0, failed: 1, skipped: 0 });
+    expect(send).not.toHaveBeenCalled();
+    expect(r.fin).toHaveBeenCalledWith("m1", "w1", { status: "FAILED", errorMessage: "수신자 없음" });
   });
 });
 
@@ -409,6 +430,8 @@ import { listDueDeliveryIds, claimDelivery, finalizeDelivery, deadLetterStaleSen
 const DRAIN_BATCH = 50;
 
 // 통지 수신자(REQUESTED용): **permission 기반**(결정) — leave.approval:view 유효 보유자 전원.
+// **발송 시점 재확정의 SSOT**: drain이 REQUESTED 발송 직전 이 함수를 다시 호출해 '현재' 권한 보유자에게만 보낸다
+// (enqueue 시 저장된 스냅샷을 신뢰하지 않음 — claim~발송 사이 권한을 잃은 사람에게 상세가 새는 것 차단, finding/high).
 // 전 active 사용자에 hasPermission을 평가 → role/override로 권한 받은 MEMBER도 포함, 승인권한 없는 MANAGER는 제외.
 // (systemRole prefilter는 role/override 부여자를 누락시켜 알림 유실 — finding, 제거.) hasPermission이 fail-closed 우선순위(override DENY/ALLOW)를 그대로 적용하므로 권한 로직을 재구현하지 않는다.
 // 규모 전제: 사내 도구라 active 사용자 수가 작다(수십). 인원이 크게 늘면 권한 테이블 직접 조회로 단일 쿼리화.
@@ -438,14 +461,18 @@ export async function drainLeaveMailOutbox(workerId: string = randomUUID()): Pro
       await finalizeDelivery(id, workerId, { status: "CANCELLED", errorMessage: req ? "요청 삭제됨(발송 전 확인)" : "요청 없음(고아 outbox)" });
       skipped++; continue;
     }
-    if (claimed.recipients.length === 0) { // 수신자 없음(예: 승인권한자 0명) → FAILED 확정, 무한 재시도 방지
+    // 권한 경계는 '발송 시점'에 강제(결정 A): REQUESTED 통지 수신자(승인권한자)는 enqueue 스냅샷이 아니라
+    // 발송 직전 getLeaveAdminRecipients()로 재확정 — claim 후 그 사이 leave.approval:view를 잃은 사람에겐 안 보낸다(finding/high).
+    // APPROVED/REJECTED/ADMIN_CREATED는 신청 당사자 대상이라 스냅샷(claimed.recipients) 그대로.
+    const recipients = claimed.eventType === "REQUESTED" ? await getLeaveAdminRecipients() : claimed.recipients;
+    if (recipients.length === 0) { // 수신자 없음(승인권한자 0명·전원 권한 회수, 또는 당사자 이메일 없음) → FAILED 확정, 무한 재시도 방지
       await finalizeDelivery(id, workerId, { status: "FAILED", errorMessage: "수신자 없음" });
       failed++; continue;
     }
     let providerMessageId: string | null = null;
     try {
       // sendMail엔 idempotency 키 인자가 없다 — stale reclaim/크래시 후 드문 중복 발송 허용(at-least-once). providerMessageId는 감사용.
-      ({ providerMessageId } = await sendMail({ to: claimed.recipients, subject: claimed.subject, html: claimed.bodyHtml }));
+      ({ providerMessageId } = await sendMail({ to: recipients, subject: claimed.subject, html: claimed.bodyHtml }));
     } catch (e) {
       await finalizeDelivery(id, workerId, { status: "FAILED", errorMessage: e instanceof Error ? e.message : String(e) });
       failed++; continue;
@@ -499,6 +526,7 @@ at-least-once는 "커밋 후 fire-and-forget drain"만으로는 보장되지 않
 - `npx vitest run tests/modules/leave/mail-outbox.test.ts tests/modules/leave/mail-drain.test.ts tests/modules/leave/mail-templates.test.ts` → all passed.
 - 코드 점검: 메일 `bodyHtml`의 동적 텍스트(reason/rejectionReason/name)가 모두 `esc()`로 인코딩됨(raw `<`/`>` 미포함).
 - 코드 점검: 모든 요청-트리거 drain이 `triggerLeaveMailDrain()`(`.catch` 래퍼)로 호출됨 — raw `void drainLeaveMailOutbox()` 직접 호출 없음(unhandled rejection 방지).
+- 코드 점검: REQUESTED 발송 수신자가 **발송 시점 `getLeaveAdminRecipients()` 재확정**(enqueue 스냅샷 `claimed.recipients`를 그대로 쓰지 않음) — claim~발송 사이 권한 잃은 사람 미수신(결정 A). APPROVED/REJECTED/ADMIN_CREATED만 스냅샷 사용. `mail-drain.test.ts`에 재확정·권한0명 케이스 green.
 - 배포 점검(§6b): 스케줄러가 `POST /api/leave/mail/drain`을 주기 호출하도록 등록·문서화됐고, stale `PENDING`/dead-letter `FAILED` 행 모니터링 경로가 있음. (배포 산출물 — 환경별.)
 - `npm test` → 회귀 없음.
 - `npm run typecheck` → 0 errors.
@@ -509,3 +537,4 @@ at-least-once는 "커밋 후 fire-and-forget drain"만으로는 보장되지 않
 - **Don't** `listDueDeliveryIds`/`claimDelivery`에서 `leaveRequestId: { not: null }` 조건을 빼지 마라. 이유: 공유 테이블의 workflow 발송 행(`taskId` 기반)을 leave worker가 집어 오염시킨다.
 - **Don't** drain 라우트를 세션 권한으로만 막지 마라. 이유: cron은 세션이 없다 — 공유 토큰 필수.
 - **Don't** `attempts` 증가를 claim에서 빼지 마라. 이유: stale SENDING reclaim이 무한 재발송된다(`attempts < N` 게이트가 무력화).
+- **Don't** REQUESTED 통지를 `claimed.recipients`(enqueue 스냅샷)로 바로 발송하지 마라. 이유: claim~발송 사이 `leave.approval:view`를 잃은 사람에게 연차 상세가 샌다(finding/high) — REQUESTED는 발송 직전 `getLeaveAdminRecipients()`로 재확정한다(결정 A). 단 APPROVED/REJECTED/ADMIN_CREATED는 신청 당사자 대상이라 스냅샷 그대로다.

@@ -11,6 +11,7 @@
 - Modify: `tests/modules/leave/repositories.test.ts` (soft-delete/outbox 케이스 추가)
 - Modify: `tests/modules/leave/requests-service.test.ts` (메일/target mock 추가)
 - Create: `tests/modules/leave/mail-wiring.test.ts`
+- Create: `tests/app/admin-leave-request-delete-route.test.ts` (DELETE 사유 필수 400 + 서비스 미호출)
 
 ## Prep
 - 엔트리포인트 §SC-4(outbox 계약: insert idempotent·cancel·수신자), §SC-1(writeAudit).
@@ -174,7 +175,7 @@ export async function updateByAdminTx(requestId: string, patch: {
 
 **(g) deleteByAdminTx → soft-delete(requestId, adminId, reason)**:
 ```ts
-export async function deleteByAdminTx(requestId: string, adminId: string, reason: string | null) {
+export async function deleteByAdminTx(requestId: string, adminId: string, reason: string) {
   const now = new Date();
   await prisma.$transaction(async (tx) => {
     const existing = await tx.leaveRequest.findFirst({
@@ -186,7 +187,7 @@ export async function deleteByAdminTx(requestId: string, adminId: string, reason
     // → 충돌로 막아 usedDays 정합성 보호(read-then-update race + days-ABA 방지, finding). updatedAt(@updatedAt)이 days 변경도 잡음.
     const transition = await tx.leaveRequest.updateMany({
       where: { id: requestId, deletedAt: null, status: existing.status, updatedAt: existing.updatedAt },
-      data: { status: "CANCELLED", deletedByAdminId: adminId, deletedAt: now, deleteReason: reason, cancelledAt: now, cancellationReason: reason ?? "관리자 삭제" },
+      data: { status: "CANCELLED", deletedByAdminId: adminId, deletedAt: now, deleteReason: reason, cancelledAt: now, cancellationReason: reason },
     });
     if (transition.count === 0) throw new LeaveConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요.");
     // 실제 전이된 status에만 usedDays 보정 — CAS 성공이 곧 APPROVED 유지를 보증(approve와 race 시 위 0행으로 차단됨).
@@ -217,6 +218,8 @@ import { QUARTER_START_TIMES } from "../labels"; // effective-state 교차검증
 **(a) createLeaveRequest** — 끝부분 `return createPendingRequest(...)`를 교체:
 ```ts
   const applicant = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
+  // enqueue 스냅샷: REQUESTED 행을 항상 적재하기 위한 durable 기록. 단 **실제 발송 수신자 결정의 SSOT는 drain**이며,
+  // worker가 REQUESTED 발송 직전 getLeaveAdminRecipients()로 재확정한다(결정 A, Task 03) — claim~발송 사이 권한 변동 반영.
   const recipients = await getLeaveAdminRecipients();
   const reqLike: MailReqLike = { leaveType: input.leaveType, leaveSubType: input.leaveSubType ?? null, quarterStartTime: input.quarterStartTime ?? null, startDate: start, endDate: end, reason: input.reason ?? null };
   // 수신자 0명(승인권한자 없음/조회 저하)이어도 REQUESTED 행은 **항상** 적재 — durable 기록(spec §8). worker가 "수신자 없음" FAILED로 종결해 운영자가 누락을 본다(finding).
@@ -288,9 +291,9 @@ export async function reject(requestId: string, adminId: string, rejectionReason
 ```
 import 추가: `LeaveValidationError`(`../errors`), `QUARTER_START_TIMES`(`../labels`, Task 02). (`newDays`도 effective type/날짜로 재계산되는 기존 로직을 따른다 — QUARTER/HALF는 단일일.)
 
-**(e) deleteByAdmin(requestId, adminId, reason)**:
+**(e) deleteByAdmin(requestId, adminId, reason)**: `reason`은 **필수 비어있지 않은 문자열**(라우트에서 검증). 시그니처를 `string`으로 좁혀 호출부가 null을 넘길 수 없게 한다.
 ```ts
-export function deleteByAdmin(requestId: string, adminId: string, reason: string | null) {
+export function deleteByAdmin(requestId: string, adminId: string, reason: string) {
   return deleteByAdminTx(requestId, adminId, reason);
 }
 ```
@@ -298,18 +301,23 @@ export function deleteByAdmin(requestId: string, adminId: string, reason: string
 ### 4. 라우트 시그니처 반영
 - `api/admin/leave/requests/route.ts` POST: `const { userId, sendNotification, ...input } = parsed.data;` → `createLeaveRequestByAdmin(session.user.id, userId, input, null, sendNotification)`.
 - `api/admin/leave/requests/[id]/route.ts` PATCH: `updateByAdmin(id, parsed.data, session.user.id)`.
-- 동 DELETE: body에서 reason 파싱 후 `deleteByAdmin(id, session.user.id, reason)`:
+- 동 DELETE: body에서 reason 파싱 + **필수 검증**(누락·공백이면 400, 서비스 미호출). UI 사유필수는 UX일 뿐 API도 같은 enforcement(접근제어 규칙 #1) — `leave.request:delete` 권한자가 API를 직접 쳐도 사유 없는 soft-delete/usedDays 보정/outbox 취소/AuditLog가 남지 않게 한다(finding/high). PATCH와 동일한 `safeParse→400` + `mapError` 관례:
 ```ts
-  let reason: string | null = null;
-  try { const b = await _req.json(); reason = typeof b?.reason === "string" ? b.reason : null; } catch { /* body 없음 허용 */ }
-  await requirePermission(session.user.id, "leave.request", "delete");
-  await deleteByAdmin(id, session.user.id, reason);
+  let body: unknown;
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid json" }, { status: 400 }); }
+  const parsed = deleteLeaveSchema.safeParse(body);
+  if (!parsed.success) return NextResponse.json({ error: "삭제 사유는 필수입니다." }, { status: 400 });
+  try {
+    await requirePermission(session.user.id, "leave.request", "delete");
+    await deleteByAdmin(id, session.user.id, parsed.data.reason);
+    return NextResponse.json({ ok: true });
+  } catch (error) { return mapError(error); }
 ```
-(`_req`를 `req`로 바꿔 body를 읽는다.)
+(`_req`를 `req`로 바꿔 body를 읽는다. import 추가: `deleteLeaveSchema`(`@/modules/leave/validations`, Task 02). body 파싱·검증은 `try/catch(mapError)` **밖**에서 해 400을 그대로 반환한다.)
 
 ### 5. 테스트
 - `tests/modules/leave/repositories.test.ts`(기존 — **시그니처 변경 반영 필수**): hoisted db에 `leaveRequest.findFirst`(이미 있음)·`mailDelivery: { create: vi.fn() }`·`auditLog: { create: vi.fn() }` 추가, `vi.mock("@/kernel/audit", () => ({ writeAudit: vi.fn() }))`, `vi.mock("@/modules/leave/repositories/mail", () => ({ insertPendingDelivery: vi.fn(), cancelPendingDeliveries: vi.fn() }))`.
-  - **기존 케이스 갱신:** `updateByAdminTx`의 `patch` 객체에 `adminId: "admin1"` 추가(타입 필수). `updateByAdminTx`·`deleteByAdminTx`의 내부 read가 `findUnique`→`findFirst`(deletedAt:null, **select에 `updatedAt` 포함**)로 바뀐 점 반영(`h.db.leaveRequest.findFirst.mockResolvedValue({ ..., updatedAt: new Date(...) })`). 둘 다 전이를 `update`가 아니라 **`updateMany`(CAS)**로 하므로 `h.db.leaveRequest.updateMany`로 모킹(count로 CAS 성공/충돌 제어). `updateByAdminTx`는 끝에 `findUniqueOrThrow`로 갱신행 반환 → `h.db.leaveRequest.findUniqueOrThrow` 모킹 추가. `deleteByAdminTx("r1")`→`deleteByAdminTx("r1", "admin1", null)`.
+  - **기존 케이스 갱신:** `updateByAdminTx`의 `patch` 객체에 `adminId: "admin1"` 추가(타입 필수). `updateByAdminTx`·`deleteByAdminTx`의 내부 read가 `findUnique`→`findFirst`(deletedAt:null, **select에 `updatedAt` 포함**)로 바뀐 점 반영(`h.db.leaveRequest.findFirst.mockResolvedValue({ ..., updatedAt: new Date(...) })`). 둘 다 전이를 `update`가 아니라 **`updateMany`(CAS)**로 하므로 `h.db.leaveRequest.updateMany`로 모킹(count로 CAS 성공/충돌 제어). `updateByAdminTx`는 끝에 `findUniqueOrThrow`로 갱신행 반환 → `h.db.leaveRequest.findUniqueOrThrow` 모킹 추가. `deleteByAdminTx("r1")`→`deleteByAdminTx("r1", "admin1", "관리자 삭제")`(reason은 이제 필수 `string`).
   - **신규 케이스:** createPendingRequest(base, mailJob) → `insertPendingDelivery` 호출(eventType REQUESTED), mailJob 없으면 미호출.
   - **신규 케이스(delete):** 정상 → `leaveRequest.updateMany`가 `where`에 `status`+`updatedAt`(CAS)·`deletedAt: null` 포함, `data`에 `deletedAt`/`status: "CANCELLED"` 포함 + `cancelPendingDeliveries(tx, "r1", <now>)`(now 인자 포함)·`writeAudit` 호출; **CAS 충돌**(updateMany count 0) → `LeaveConflictError`("처리 중 상태 변경") 그리고 `leaveAllocation.updateMany` **미호출**(보정 안 함); 이미 삭제분(findFirst null) → `LeaveConflictError`; APPROVED 삭제만 `leaveAllocation` decrement.
   - **신규 케이스(update CAS):** 정상 APPROVED 수정 → `leaveRequest.updateMany` `where`에 `status`+`updatedAt` 포함하고 usedDays 보정(diff) 호출; **CAS 충돌**(updateMany count 0, 동시 approve/타 admin 수정 모사) → `LeaveConflictError`이고 `leaveAllocation.updateMany` **미호출**(stale read로 보정 안 됨).
@@ -319,6 +327,54 @@ export function deleteByAdmin(requestId: string, adminId: string, reason: string
   - **createLeaveRequest(승인권한자 0명, getLeaveAdminRecipients→[])** → createPendingRequest가 여전히 mailJob(`recipients: []`)과 함께 호출됨(REQUESTED 행 항상 적재; null 아님 — finding).
   - createLeaveRequestByAdmin(sendNotification=false) → mailJob null, `triggerLeaveMailDrain` 미호출; (true) → ADMIN_CREATED mailJob + `triggerLeaveMailDrain`.
   - assertTargetUser: 비활성/없는 user면 ForbiddenError.
+- `tests/app/admin-leave-request-delete-route.test.ts`(Task 05 라우트 테스트 패턴): DELETE의 사유 필수 enforcement를 라우트 레벨로 검증.
+```ts
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const authMock = vi.fn();
+const requirePermissionMock = vi.fn();
+const deleteByAdminMock = vi.fn();
+vi.mock("@/lib/auth", () => ({ auth: authMock }));
+vi.mock("@/kernel/access", () => ({ requirePermission: requirePermissionMock, ForbiddenError: class ForbiddenError extends Error {} }));
+vi.mock("@/modules/leave/services/requests", () => ({ updateByAdmin: vi.fn(), deleteByAdmin: deleteByAdminMock }));
+
+import { DELETE } from "@/app/api/admin/leave/requests/[id]/route";
+const params = Promise.resolve({ id: "r1" });
+const req = (body?: unknown) => new Request("http://t/api/admin/leave/requests/r1", {
+  method: "DELETE", headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
+});
+
+beforeEach(() => vi.clearAllMocks());
+
+describe("DELETE /api/admin/leave/requests/[id]", () => {
+  it("미인증이면 401", async () => {
+    authMock.mockResolvedValue(null);
+    expect((await DELETE(req({ reason: "x" }), { params })).status).toBe(401);
+  });
+  it("사유 누락이면 400 + 서비스 미호출", async () => {
+    authMock.mockResolvedValue({ user: { id: "u1" } });
+    const res = await DELETE(req({}), { params });
+    expect(res.status).toBe(400);
+    expect(deleteByAdminMock).not.toHaveBeenCalled();
+    expect(requirePermissionMock).not.toHaveBeenCalled();
+  });
+  it("공백만인 사유면 400 + 서비스 미호출", async () => {
+    authMock.mockResolvedValue({ user: { id: "u1" } });
+    const res = await DELETE(req({ reason: "   " }), { params });
+    expect(res.status).toBe(400);
+    expect(deleteByAdminMock).not.toHaveBeenCalled();
+  });
+  it("정상 사유면 권한검사 후 deleteByAdmin(id, actorId, reason) 호출", async () => {
+    authMock.mockResolvedValue({ user: { id: "u1" } });
+    requirePermissionMock.mockResolvedValue(undefined);
+    deleteByAdminMock.mockResolvedValue(undefined);
+    const res = await DELETE(req({ reason: "오기재 정정" }), { params });
+    expect(requirePermissionMock).toHaveBeenCalledWith("u1", "leave.request", "delete");
+    expect(deleteByAdminMock).toHaveBeenCalledWith("r1", "u1", "오기재 정정");
+    expect(res.status).toBe(200);
+  });
+});
+```
 - `tests/modules/leave/requests-service.test.ts`: 기존 케이스가 깨지지 않게 `services/mail`·`mail-templates`·`authz`·`@/lib/prisma`(user.findUnique) mock 보강. 기존 단언 유지. **신규(effective-state 교차검증, finding):** `updateByAdmin`에 existing=ANNUAL 행으로 `leaveType: "HALF"`만(leaveSubType 미전달) → `LeaveValidationError`이고 `updateByAdminTx` 미호출; `leaveType: "QUARTER"`만(quarterStartTime 미전달/비화이트리스트) → `LeaveValidationError`; 올바른 입력(HALF+leaveSubType, QUARTER+화이트리스트 시각) → 정상 호출.
 
 ## Acceptance Criteria
@@ -326,6 +382,7 @@ export function deleteByAdmin(requestId: string, adminId: string, reason: string
 - `npm run typecheck` / `npm run lint` / `npm run build` → 통과.
 - 코드 점검: 4개 이벤트(REQUESTED/APPROVED/REJECTED/ADMIN_CREATED) 모두 tx **내부**에서 insert, 커밋 후 `void drainLeaveMailOutbox()`; 삭제는 물리삭제 아님(`deletedAt` set + AuditLog + outbox cancel).
 - 코드 점검: `approveTx`·`deleteByAdminTx`·`updateByAdminTx` 전이가 모두 **낙관적 CAS**(`updateMany` `where`에 `status`+`updatedAt`, count 0 충돌)이고 usedDays 보정은 CAS 성공 이후에만 적용.
+- 코드 점검: DELETE 라우트가 `deleteLeaveSchema.safeParse`로 **사유를 서버에서 필수**로 강제(누락·공백 → 400, `deleteByAdmin` 미호출). `deleteByAdmin`/`deleteByAdminTx` 시그니처가 `reason: string`(`string | null` 아님)이라 호출부가 null을 넘길 수 없다. `tests/app/admin-leave-request-delete-route.test.ts` green.
 - 코드 점검: `cancelPendingDeliveries`는 **`PENDING`/`FAILED`/stale `SENDING`(lockedUntil < now)만** CANCELLED로 하고 **active SENDING(lease 유효)은 건드리지 않는다**(결정 A — worker가 정직하게 finalize). active SENDING 행이 그대로 남는 테스트 포함.
 
 ## Cautions
