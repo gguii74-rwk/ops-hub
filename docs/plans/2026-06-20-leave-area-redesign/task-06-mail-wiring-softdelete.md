@@ -107,11 +107,26 @@ export function createPendingRequest(data: {
     return created;
 ```
 
-**(d) approveTx(requestId, adminId, mailJob?)** — 상태 전이 후 insert(APPROVED). line 127 직전(tx 종료 전)에 추가:
+**(d) approveTx(requestId, adminId, mailJob?)** — mailJob insert + **updatedAt CAS로 stale-days 방지**(finding, high). 시그니처: `export async function approveTx(requestId: string, adminId: string, mailJob?: MailJob | null)`.
+
+`approveTx`는 현재 `req`를 읽고(`status/userId/startDate/days`) `updateMany({where:{id,status:"PENDING"}})` 후 `usedDays += req.days` 한다. PENDING 상태인 신청을 admin이 **수정**할 수 있으므로(updateByAdminTx), approve의 read와 CAS 사이에 days/연도가 바뀌면 status는 PENDING 그대로라 status-only CAS를 통과해 **stale days로 usedDays가 증가**한다(balance drift). 그래서 update/delete와 동일하게 **`updatedAt`을 read select에 추가하고 CAS `where`에 건다**:
+```ts
+    const req = await tx.leaveRequest.findUnique({
+      where: { id: requestId }, select: { status: true, userId: true, startDate: true, days: true, updatedAt: true },
+    });
+    if (!req) throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
+    if (req.status !== "PENDING") throw new LeaveConflictError("이미 처리된 신청입니다.");
+    const updated = await tx.leaveRequest.updateMany({
+      where: { id: requestId, status: "PENDING", updatedAt: req.updatedAt },
+      data: { status: "APPROVED", reviewedById: adminId, reviewedAt: new Date() },
+    });
+    if (updated.count === 0) throw new LeaveConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요.");
+```
+   CAS 성공이 `req.days`의 유효성을 보증하므로 이어지는 `usedDays += req.days`가 정확하다(동시 수정 시 0행 충돌로 막힘). tx 종료 전(allocation 증가 후) APPROVED outbox insert:
 ```ts
     if (mailJob) await insertPendingDelivery(tx, { leaveRequestId: requestId, eventType: "APPROVED", ...mailJob });
 ```
-시그니처: `export async function approveTx(requestId: string, adminId: string, mailJob?: MailJob | null)`.
+   (approve 메일 본문은 service가 `getRequestById`로 읽어 구성 — 동시 수정 시 본문이 약간 stale할 수 있으나 알림용이라 best-effort 허용. usedDays 정합성은 위 CAS로 보장.)
 
 **(e) rejectRequest → tx화(requestId, adminId, rejectionReason, mailJob?)** — outbox를 같은 tx로 묶는다:
 ```ts
@@ -288,6 +303,7 @@ export function deleteByAdmin(requestId: string, adminId: string, reason: string
   - **신규 케이스:** createPendingRequest(base, mailJob) → `insertPendingDelivery` 호출(eventType REQUESTED), mailJob 없으면 미호출.
   - **신규 케이스(delete):** 정상 → `leaveRequest.updateMany`가 `where`에 `status`+`updatedAt`(CAS)·`deletedAt: null` 포함, `data`에 `deletedAt`/`status: "CANCELLED"` 포함 + `cancelPendingDeliveries(tx, "r1", <now>)`(now 인자 포함)·`writeAudit` 호출; **CAS 충돌**(updateMany count 0) → `LeaveConflictError`("처리 중 상태 변경") 그리고 `leaveAllocation.updateMany` **미호출**(보정 안 함); 이미 삭제분(findFirst null) → `LeaveConflictError`; APPROVED 삭제만 `leaveAllocation` decrement.
   - **신규 케이스(update CAS):** 정상 APPROVED 수정 → `leaveRequest.updateMany` `where`에 `status`+`updatedAt` 포함하고 usedDays 보정(diff) 호출; **CAS 충돌**(updateMany count 0, 동시 approve/타 admin 수정 모사) → `LeaveConflictError`이고 `leaveAllocation.updateMany` **미호출**(stale read로 보정 안 됨).
+  - **기존 케이스 갱신(approveTx):** `approveTx`의 `findUnique` mock select에 `updatedAt` 포함, `updateMany` `where`에 `status: "PENDING"`+`updatedAt` 포함 단언. **신규 케이스:** 동시 수정 모사(updateMany count 0) → `LeaveConflictError`이고 `leaveAllocation.updateMany`(usedDays increment) **미호출**(stale days로 증가 안 됨). 시그니처에 `mailJob?` 추가 반영.
 - `tests/modules/leave/mail-wiring.test.ts`: service 레벨 — `vi.mock("@/modules/leave/services/mail", () => ({ getLeaveAdminRecipients: vi.fn(async () => ["a@x.com"]), drainLeaveMailOutbox: vi.fn() }))`, repo·prisma·templates 사용. 케이스:
   - createLeaveRequest → createPendingRequest가 mailJob(recipients 포함)과 함께 호출, drain 호출됨.
   - **createLeaveRequest(승인권한자 0명, getLeaveAdminRecipients→[])** → createPendingRequest가 여전히 mailJob(`recipients: []`)과 함께 호출됨(REQUESTED 행 항상 적재; null 아님 — finding).
@@ -299,7 +315,8 @@ export function deleteByAdmin(requestId: string, adminId: string, reason: string
 - `npm test` → 전체 green(기존 + 신규).
 - `npm run typecheck` / `npm run lint` / `npm run build` → 통과.
 - 코드 점검: 4개 이벤트(REQUESTED/APPROVED/REJECTED/ADMIN_CREATED) 모두 tx **내부**에서 insert, 커밋 후 `void drainLeaveMailOutbox()`; 삭제는 물리삭제 아님(`deletedAt` set + AuditLog + outbox cancel).
-- 코드 점검: `deleteByAdminTx`·`updateByAdminTx` 전이가 **낙관적 CAS**(`updateMany` `where`에 `status`+`updatedAt`, count 0 충돌)이고 usedDays 보정은 CAS 성공 이후에만 적용; `cancelPendingDeliveries`가 active SENDING까지 CANCELLED로 바꿔 삭제-발송 race가 안전.
+- 코드 점검: `approveTx`·`deleteByAdminTx`·`updateByAdminTx` 전이가 모두 **낙관적 CAS**(`updateMany` `where`에 `status`+`updatedAt`, count 0 충돌)이고 usedDays 보정은 CAS 성공 이후에만 적용.
+- 코드 점검: `cancelPendingDeliveries`는 **`PENDING`/`FAILED`/stale `SENDING`(lockedUntil < now)만** CANCELLED로 하고 **active SENDING(lease 유효)은 건드리지 않는다**(결정 A — worker가 정직하게 finalize). active SENDING 행이 그대로 남는 테스트 포함.
 
 ## Cautions
 - **Don't** outbox insert를 tx 밖(커밋 후)에서 하지 마라. 이유: 커밋과 발송 예약이 원자적이지 않으면 "커밋됐는데 메일 행 없음"이 생긴다(spec §8 트랜잭션 계약).

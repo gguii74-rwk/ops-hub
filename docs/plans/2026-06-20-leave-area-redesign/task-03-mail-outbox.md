@@ -362,6 +362,14 @@ describe("drainLeaveMailOutbox", () => {
     expect(send).not.toHaveBeenCalled();
     expect(r.fin).toHaveBeenCalledWith("m1", "w1", expect.objectContaining({ status: "CANCELLED" }));
   });
+  it("발송 직전 요청이 없으면(고아 outbox, findUnique null) 미발송 + CANCELLED finalize + skipped++", async () => {
+    r.list.mockResolvedValue(["m1"]);
+    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
+    vi.mocked(prisma.leaveRequest.findUnique).mockResolvedValue(null as never);
+    expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 0, failed: 0, skipped: 1 });
+    expect(send).not.toHaveBeenCalled();
+    expect(r.fin).toHaveBeenCalledWith("m1", "w1", expect.objectContaining({ status: "CANCELLED" }));
+  });
   it("drain 시작 시 stale SENDING dead-letter 스윕 호출", async () => {
     r.list.mockResolvedValue([]);
     await drainLeaveMailOutbox("w1");
@@ -423,10 +431,11 @@ export async function drainLeaveMailOutbox(workerId: string = randomUUID()): Pro
   for (const id of ids) {
     const claimed = await claimDelivery(id, workerId, new Date());
     if (!claimed) { skipped++; continue; }
-    // 발송 직전 재확인: claim 후 요청이 soft-delete됐으면 미발송 종결(결정 A — "claim 후 삭제" 윈도 차단).
+    // 발송 직전 재확인: claim 후 요청이 soft-delete됐거나(결정 A — "claim 후 삭제" 윈도) FK 없는 leaveRequestId라
+    // 요청 자체가 없으면(롤백·수동복구·부분마이그레이션 → 고아 행) 미발송 종결(finding).
     const req = await prisma.leaveRequest.findUnique({ where: { id: claimed.leaveRequestId }, select: { deletedAt: true } });
-    if (req?.deletedAt) {
-      await finalizeDelivery(id, workerId, { status: "CANCELLED", errorMessage: "요청 삭제됨(발송 전 확인)" });
+    if (!req || req.deletedAt) {
+      await finalizeDelivery(id, workerId, { status: "CANCELLED", errorMessage: req ? "요청 삭제됨(발송 전 확인)" : "요청 없음(고아 outbox)" });
       skipped++; continue;
     }
     if (claimed.recipients.length === 0) { // 수신자 없음(예: 승인권한자 0명) → FAILED 확정, 무한 재시도 방지
