@@ -1,6 +1,7 @@
 import "server-only";
 import type { LeaveRequestStatus, LeaveType, LeaveSubType } from "@prisma/client";
 import { ForbiddenError } from "@/kernel/access";
+import { prisma } from "@/lib/prisma";
 import { getHolidaysInRange, ensureYearsSynced, getUnsyncedYears } from "@/kernel/holidays";
 import type { CreateLeaveInput, LeaveCtx } from "../types";
 import { LeaveConflictError, LeaveValidationError } from "../errors";
@@ -68,6 +69,18 @@ export function listMyRequests(userId: string, statuses?: LeaveRequestStatus[]) 
 }
 export function listAllRequests(filter: { userId?: string; statuses?: LeaveRequestStatus[] }) {
   return listRequests(filter);
+}
+
+// 전체(타인 포함) 신청 + 사용자 표시정보. User(kernel)↔LeaveRequest(leave)는 cross-schema relation이
+// 없으므로 userId로 별도 조회해 병합한다(승인 큐·전체 이력 공유).
+export async function listAllRequestsWithUser(filter: { userId?: string; statuses?: LeaveRequestStatus[] }) {
+  const items = await listRequests(filter);
+  const userIds = [...new Set(items.map((i) => i.userId))];
+  const users = userIds.length
+    ? await prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true, department: true, email: true } })
+    : [];
+  const byId = new Map(users.map((u) => [u.id, u]));
+  return items.map((i) => ({ ...i, user: byId.get(i.userId) ?? null }));
 }
 
 export async function getRequest(id: string, ctx: LeaveCtx) {
