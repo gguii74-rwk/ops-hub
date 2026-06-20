@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("@/lib/prisma", () => ({ prisma: {} })); // kernel/access import 시 prisma 로드 회피
+// 신청자/대상 이메일·이름 조회용 user.findUnique를 가진 fake prisma.
+const { userFindUnique } = vi.hoisted(() => ({ userFindUnique: vi.fn((..._a: unknown[]) => Promise.resolve({ name: "직원", email: "u@x.com" })) }));
+vi.mock("@/lib/prisma", () => ({ prisma: { user: { findUnique: (...a: unknown[]) => userFindUnique(...a) } } }));
 vi.mock("@/kernel/holidays", () => ({
   getHolidaysInRange: vi.fn(async () => new Set<string>()),
   ensureYearsSynced: vi.fn(async () => {}),
@@ -11,8 +13,14 @@ vi.mock("@/modules/leave/repositories", () => ({
   createPendingRequest: vi.fn(), createApprovedRequestTx: vi.fn(), approveTx: vi.fn(), rejectRequest: vi.fn(),
   cancelTx: vi.fn(), updateByAdminTx: vi.fn(), deleteByAdminTx: vi.fn(),
 }));
+// 메일 wiring은 mail-wiring.test.ts에서 상세 검증 — 여기선 기존 케이스 무손상용으로 no-op 모킹.
+vi.mock("@/modules/leave/services/mail", () => ({
+  getLeaveAdminRecipients: vi.fn(async () => ["admin@x.com"]),
+  triggerLeaveMailDrain: vi.fn(),
+}));
+vi.mock("@/modules/leave/authz", () => ({ assertTargetUser: vi.fn(async () => {}) }));
 
-import { createLeaveRequest, createLeaveRequestByAdmin, cancel, getRequest } from "@/modules/leave/services/requests";
+import { createLeaveRequest, createLeaveRequestByAdmin, cancel, getRequest, updateByAdmin } from "@/modules/leave/services/requests";
 import { LeaveConflictError, LeaveValidationError } from "@/modules/leave/errors";
 import { ForbiddenError } from "@/kernel/access";
 import * as holidaysMod from "@/kernel/holidays";
@@ -37,7 +45,12 @@ const repo = {
 const employeeCtx = { userId: "u1", isOwner: false, permissionKeys: new Set<string>() };
 const adminCtx = { userId: "admin1", isOwner: true, permissionKeys: new Set<string>() };
 
-beforeEach(() => { vi.clearAllMocks(); holidays.mockResolvedValue(new Set()); getUnsyncedYears.mockResolvedValue([]); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  holidays.mockResolvedValue(new Set());
+  getUnsyncedYears.mockResolvedValue([]);
+  userFindUnique.mockResolvedValue({ name: "직원", email: "u@x.com" });
+});
 
 describe("createLeaveRequest", () => {
   const input = { leaveType: "ANNUAL" as const, startDate: "2999-08-14", endDate: "2999-08-14" };
@@ -56,7 +69,7 @@ describe("createLeaveRequest", () => {
     repo.findOverlap.mockResolvedValue(null);
     repo.createPendingRequest.mockResolvedValue({ id: "r1" } as any);
     await createLeaveRequest("u1", input);
-    expect(repo.createPendingRequest).toHaveBeenCalledWith(expect.objectContaining({ days: 1 }));
+    expect(repo.createPendingRequest).toHaveBeenCalledWith(expect.objectContaining({ days: 1 }), expect.anything());
   });
   it("과거 날짜 거부", async () => {
     await expect(createLeaveRequest("u1", { leaveType: "ANNUAL", startDate: "2000-01-01", endDate: "2000-01-01" }))
@@ -104,7 +117,47 @@ describe("createLeaveRequestByAdmin", () => {
     repo.findOverlap.mockResolvedValue(null);
     repo.createApprovedRequestTx.mockResolvedValue({ id: "r1" } as any);
     await createLeaveRequestByAdmin("admin1", "u2", input);
-    expect(repo.createApprovedRequestTx).toHaveBeenCalledWith(expect.objectContaining({ userId: "u2" }));
+    expect(repo.createApprovedRequestTx).toHaveBeenCalledWith(expect.objectContaining({ userId: "u2" }), null);
+  });
+});
+
+describe("updateByAdmin (effective-state 교차검증)", () => {
+  const existingAnnual = {
+    id: "r1", userId: "u1", status: "PENDING", leaveType: "ANNUAL", leaveSubType: null, quarterStartTime: null,
+    startDate: new Date("2999-08-14T00:00:00Z"), endDate: new Date("2999-08-14T00:00:00Z"), days: 1, reason: null,
+  };
+  it("ANNUAL→HALF인데 leaveSubType 미전달 → LeaveValidationError, updateByAdminTx 미호출", async () => {
+    repo.getRequestById.mockResolvedValue({ ...existingAnnual } as any);
+    await expect(updateByAdmin("r1", { leaveType: "HALF" }, "admin1")).rejects.toBeInstanceOf(LeaveValidationError);
+    expect(repo.updateByAdminTx).not.toHaveBeenCalled();
+  });
+  it("ANNUAL→QUARTER인데 quarterStartTime 미전달 → LeaveValidationError", async () => {
+    repo.getRequestById.mockResolvedValue({ ...existingAnnual } as any);
+    await expect(updateByAdmin("r1", { leaveType: "QUARTER" }, "admin1")).rejects.toBeInstanceOf(LeaveValidationError);
+    expect(repo.updateByAdminTx).not.toHaveBeenCalled();
+  });
+  it("QUARTER인데 비화이트리스트 시각 → LeaveValidationError", async () => {
+    repo.getRequestById.mockResolvedValue({ ...existingAnnual } as any);
+    await expect(updateByAdmin("r1", { leaveType: "QUARTER", quarterStartTime: "08:00" }, "admin1")).rejects.toBeInstanceOf(LeaveValidationError);
+    expect(repo.updateByAdminTx).not.toHaveBeenCalled();
+  });
+  it("HALF+leaveSubType 정상 → updateByAdminTx(adminId·effective값) 호출", async () => {
+    repo.getRequestById.mockResolvedValue({ ...existingAnnual } as any);
+    repo.findOverlap.mockResolvedValue(null);
+    repo.updateByAdminTx.mockResolvedValue({ id: "r1" } as any);
+    await updateByAdmin("r1", { leaveType: "HALF", leaveSubType: "MORNING" }, "admin1");
+    expect(repo.updateByAdminTx).toHaveBeenCalledWith("r1", expect.objectContaining({
+      adminId: "admin1", leaveType: "HALF", leaveSubType: "MORNING", quarterStartTime: null,
+    }));
+  });
+  it("QUARTER+화이트리스트 시각 정상 → updateByAdminTx 호출", async () => {
+    repo.getRequestById.mockResolvedValue({ ...existingAnnual } as any);
+    repo.findOverlap.mockResolvedValue(null);
+    repo.updateByAdminTx.mockResolvedValue({ id: "r1" } as any);
+    await updateByAdmin("r1", { leaveType: "QUARTER", quarterStartTime: "09:00" }, "admin1");
+    expect(repo.updateByAdminTx).toHaveBeenCalledWith("r1", expect.objectContaining({
+      adminId: "admin1", leaveType: "QUARTER", quarterStartTime: "09:00", leaveSubType: null,
+    }));
   });
 });
 

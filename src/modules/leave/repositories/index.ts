@@ -2,16 +2,19 @@ import "server-only";
 import type { LeaveRequestStatus, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { LeaveConflictError } from "../errors";
+import { insertPendingDelivery, cancelPendingDeliveries, type MailJob } from "./mail";
+import { writeAudit } from "@/kernel/audit";
 
 // ── 조회 ──
 
 export function getRequestById(id: string) {
-  return prisma.leaveRequest.findUnique({ where: { id } });
+  return prisma.leaveRequest.findFirst({ where: { id, deletedAt: null } });
 }
 
 export function listRequests(filter: { userId?: string; statuses?: LeaveRequestStatus[] }) {
   return prisma.leaveRequest.findMany({
     where: {
+      deletedAt: null,
       ...(filter.userId ? { userId: filter.userId } : {}),
       ...(filter.statuses?.length ? { status: { in: filter.statuses } } : {}),
     },
@@ -64,10 +67,10 @@ export function createPendingRequest(data: {
   userId: string; leaveType: "ANNUAL" | "HALF" | "QUARTER";
   leaveSubType?: "MORNING" | "AFTERNOON" | null; quarterStartTime?: string | null;
   startDate: Date; endDate: Date; days: number; reason?: string | null;
-}) {
+}, mailJob?: MailJob | null) {
   return prisma.$transaction(async (tx) => {
     await lockUserAndAssertNoOverlap(tx, data.userId, data.startDate, data.endDate);
-    return tx.leaveRequest.create({
+    const req = await tx.leaveRequest.create({
       data: {
         userId: data.userId, leaveType: data.leaveType,
         leaveSubType: data.leaveType === "HALF" ? data.leaveSubType ?? null : null,
@@ -76,6 +79,8 @@ export function createPendingRequest(data: {
         reason: data.reason ?? null, status: "PENDING",
       },
     });
+    if (mailJob) await insertPendingDelivery(tx, { leaveRequestId: req.id, eventType: "REQUESTED", ...mailJob });
+    return req;
   });
 }
 
@@ -84,7 +89,7 @@ export async function createApprovedRequestTx(data: {
   userId: string; adminId: string; leaveType: "ANNUAL" | "HALF" | "QUARTER";
   leaveSubType?: "MORNING" | "AFTERNOON" | null; quarterStartTime?: string | null;
   startDate: Date; endDate: Date; days: number; reason?: string | null; adminActionNote?: string | null;
-}) {
+}, mailJob?: MailJob | null) {
   const year = data.startDate.getUTCFullYear();
   return prisma.$transaction(async (tx) => {
     await lockUserAndAssertNoOverlap(tx, data.userId, data.startDate, data.endDate);
@@ -92,47 +97,56 @@ export async function createApprovedRequestTx(data: {
       where: { userId: data.userId, year }, data: { usedDays: { increment: data.days } },
     });
     if (alloc.count === 0) throw new LeaveConflictError(`${year}년도 연차 할당 정보가 없습니다.`);
-    return tx.leaveRequest.create({
+    const created = await tx.leaveRequest.create({
       data: {
         userId: data.userId, leaveType: data.leaveType,
         leaveSubType: data.leaveType === "HALF" ? data.leaveSubType ?? null : null,
         quarterStartTime: data.leaveType === "QUARTER" ? data.quarterStartTime ?? null : null,
         startDate: data.startDate, endDate: data.endDate, days: data.days, reason: data.reason ?? null,
         status: "APPROVED", reviewedById: data.adminId, reviewedAt: new Date(),
+        createdByAdminId: data.adminId, createdByAdminAt: new Date(),
         adminActionNote: data.adminActionNote ?? "관리자 직접입력",
       },
     });
+    if (mailJob) await insertPendingDelivery(tx, { leaveRequestId: created.id, eventType: "ADMIN_CREATED", ...mailJob });
+    return created;
   });
 }
 
 // ── 전이 tx (상태 가드 + 원자 증감) ──
 
-export async function approveTx(requestId: string, adminId: string) {
+export async function approveTx(requestId: string, adminId: string, mailJob?: MailJob | null) {
   await prisma.$transaction(async (tx) => {
+    // updatedAt을 함께 읽어 CAS where에 건다 — PENDING 신청을 admin이 수정(days/연도 변경)할 수 있으므로
+    // status-only CAS만으론 stale days로 usedDays가 증가할 수 있다(balance drift). updatedAt 낙관락이 막는다.
     const req = await tx.leaveRequest.findUnique({
-      where: { id: requestId }, select: { status: true, userId: true, startDate: true, days: true },
+      where: { id: requestId }, select: { status: true, userId: true, startDate: true, days: true, updatedAt: true },
     });
     if (!req) throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
     if (req.status !== "PENDING") throw new LeaveConflictError("이미 처리된 신청입니다.");
     const updated = await tx.leaveRequest.updateMany({
-      where: { id: requestId, status: "PENDING" },
+      where: { id: requestId, status: "PENDING", updatedAt: req.updatedAt },
       data: { status: "APPROVED", reviewedById: adminId, reviewedAt: new Date() },
     });
-    if (updated.count === 0) throw new LeaveConflictError("이미 처리된 신청입니다.");
+    if (updated.count === 0) throw new LeaveConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요.");
     const alloc = await tx.leaveAllocation.updateMany({
       where: { userId: req.userId, year: req.startDate.getUTCFullYear() },
       data: { usedDays: { increment: req.days } },
     });
     if (alloc.count === 0) throw new LeaveConflictError("연차 할당 정보를 찾을 수 없습니다.");
+    if (mailJob) await insertPendingDelivery(tx, { leaveRequestId: requestId, eventType: "APPROVED", ...mailJob });
   });
 }
 
-export async function rejectRequest(requestId: string, adminId: string, rejectionReason: string) {
-  const updated = await prisma.leaveRequest.updateMany({
-    where: { id: requestId, status: "PENDING" },
-    data: { status: "REJECTED", reviewedById: adminId, reviewedAt: new Date(), rejectionReason },
+export async function rejectRequest(requestId: string, adminId: string, rejectionReason: string, mailJob?: MailJob | null) {
+  await prisma.$transaction(async (tx) => {
+    const updated = await tx.leaveRequest.updateMany({
+      where: { id: requestId, status: "PENDING" },
+      data: { status: "REJECTED", reviewedById: adminId, reviewedAt: new Date(), rejectionReason },
+    });
+    if (updated.count === 0) throw new LeaveConflictError("이미 처리된 신청입니다.");
+    if (mailJob) await insertPendingDelivery(tx, { leaveRequestId: requestId, eventType: "REJECTED", ...mailJob });
   });
-  if (updated.count === 0) throw new LeaveConflictError("이미 처리된 신청입니다.");
 }
 
 // 취소 — CANCELLED + (APPROVED였으면) usedDays decrement.
@@ -161,26 +175,31 @@ export async function cancelTx(requestId: string, cancellationReason: string | n
 
 // 관리자 수정 — days 재계산 결과를 받아 같은/교차 연도 usedDays 보정.
 export async function updateByAdminTx(requestId: string, patch: {
-  leaveType: "ANNUAL" | "HALF" | "QUARTER"; leaveSubType: "MORNING" | "AFTERNOON" | null;
+  adminId: string; leaveType: "ANNUAL" | "HALF" | "QUARTER"; leaveSubType: "MORNING" | "AFTERNOON" | null;
   quarterStartTime: string | null; startDate: Date; endDate: Date; newDays: number;
   reason: string | null; adminActionNote: string | null;
 }) {
   return prisma.$transaction(async (tx) => {
-    const existing = await tx.leaveRequest.findUnique({
-      where: { id: requestId }, select: { status: true, userId: true, startDate: true, days: true },
+    // 소프트삭제 제외 + updatedAt 낙관락용 스냅샷.
+    const existing = await tx.leaveRequest.findFirst({
+      where: { id: requestId, deletedAt: null }, select: { status: true, userId: true, startDate: true, days: true, updatedAt: true },
     });
     if (!existing) throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
     await lockUserAndAssertNoOverlap(tx, existing.userId, patch.startDate, patch.endDate, requestId);
-    const updated = await tx.leaveRequest.update({
-      where: { id: requestId },
+    // 본문 전이는 CAS updateMany — 관찰한 status·updatedAt(=days 변경 포함)·미삭제일 때만. 0행이면 그 사이 approve/cancel/타 admin 수정/삭제됨
+    // → 충돌로 막아 usedDays 정합성 보호(read-then-update race + days-ABA 방지). updatedAt(@updatedAt)이 status 불변·days만 바뀐 수정도 잡는다.
+    const transition = await tx.leaveRequest.updateMany({
+      where: { id: requestId, deletedAt: null, status: existing.status, updatedAt: existing.updatedAt },
       data: {
         leaveType: patch.leaveType,
         leaveSubType: patch.leaveType === "HALF" ? patch.leaveSubType : null,
         quarterStartTime: patch.leaveType === "QUARTER" ? patch.quarterStartTime : null,
         startDate: patch.startDate, endDate: patch.endDate, days: patch.newDays,
         reason: patch.reason, adminActionNote: patch.adminActionNote ?? "관리자 수정",
+        modifiedByAdminId: patch.adminId, modifiedByAdminAt: new Date(),
       },
     });
+    if (transition.count === 0) throw new LeaveConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요.");
     if (existing.status === "APPROVED") {
       const oldYear = existing.startDate.getUTCFullYear();
       const newYear = patch.startDate.getUTCFullYear();
@@ -204,24 +223,36 @@ export async function updateByAdminTx(requestId: string, patch: {
         if (rNew.count === 0) throw new LeaveConflictError(`${newYear}년도 연차 할당 정보가 없습니다.`);
       }
     }
-    return updated;
+    return tx.leaveRequest.findUniqueOrThrow({ where: { id: requestId } });
   });
 }
 
-export async function deleteByAdminTx(requestId: string) {
+// 관리자 삭제 = soft-delete(deletedAt+감사). 물리삭제 아님. status를 CANCELLED로 전이해 기존 status 기반 집계가 자동 제외.
+export async function deleteByAdminTx(requestId: string, adminId: string, reason: string) {
+  const now = new Date();
   await prisma.$transaction(async (tx) => {
-    const existing = await tx.leaveRequest.findUnique({
-      where: { id: requestId }, select: { status: true, userId: true, startDate: true, days: true },
+    const existing = await tx.leaveRequest.findFirst({
+      where: { id: requestId, deletedAt: null }, select: { status: true, userId: true, startDate: true, days: true, updatedAt: true },
     });
     if (!existing) throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
-    if (existing.status === "APPROVED") {
+    const wasApproved = existing.status === "APPROVED";
+    // 낙관적 CAS: 관찰한 status·days(=updatedAt)·미삭제일 때만 전이. 0행이면 그 사이 approve/cancel/타 admin 수정/삭제됨
+    // → 충돌로 막아 usedDays 정합성 보호(read-then-update race + days-ABA 방지). updatedAt(@updatedAt)이 days 변경도 잡는다.
+    const transition = await tx.leaveRequest.updateMany({
+      where: { id: requestId, deletedAt: null, status: existing.status, updatedAt: existing.updatedAt },
+      data: { status: "CANCELLED", deletedByAdminId: adminId, deletedAt: now, deleteReason: reason, cancelledAt: now, cancellationReason: reason },
+    });
+    if (transition.count === 0) throw new LeaveConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요.");
+    // 실제 전이된 status에만 usedDays 보정 — CAS 성공이 곧 APPROVED 유지를 보증(approve와 race 시 위 0행으로 차단됨).
+    if (wasApproved) {
       const r = await tx.leaveAllocation.updateMany({
         where: { userId: existing.userId, year: existing.startDate.getUTCFullYear() },
         data: { usedDays: { decrement: existing.days } },
       });
       if (r.count === 0) throw new LeaveConflictError("연차 할당 정보를 찾을 수 없습니다.");
     }
-    await tx.leaveRequest.delete({ where: { id: requestId } });
+    await cancelPendingDeliveries(tx, requestId, now); // PENDING/FAILED/stale SENDING만 취소(active SENDING은 worker가 정직 finalize — 결정 A)
+    await writeAudit(tx, { actorId: adminId, entityType: "LeaveRequest", entityId: requestId, action: "soft_delete", metadata: { reason } });
   });
 }
 

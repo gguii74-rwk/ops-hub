@@ -28,10 +28,10 @@ export async function POST(req: Request) {
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid json" }, { status: 400 }); }
   const parsed = adminCreateLeaveSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "invalid input" }, { status: 400 });
-  const { userId, ...input } = parsed.data;
+  const { userId, sendNotification, ...input } = parsed.data;
   try {
     await requirePermission(session.user.id, "leave.approval", "approve"); // 직접입력은 자동 승인 → approve 권한
-    const created = await createLeaveRequestByAdmin(session.user.id, userId, input);
+    const created = await createLeaveRequestByAdmin(session.user.id, userId, input, null, sendNotification);
     return NextResponse.json({ id: created.id }, { status: 201 });
   } catch (error) {
     return mapError(error);

@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const h = vi.hoisted(() => {
   const db = {
     leaveRequest: {
-      findUnique: vi.fn(), findMany: vi.fn(), findFirst: vi.fn(),
+      findUnique: vi.fn(), findMany: vi.fn(), findFirst: vi.fn(), findUniqueOrThrow: vi.fn(),
       create: vi.fn(), update: vi.fn(), updateMany: vi.fn(),
       delete: vi.fn(), aggregate: vi.fn(),
     },
@@ -13,6 +13,8 @@ const h = vi.hoisted(() => {
       update: vi.fn(), create: vi.fn(), findMany: vi.fn(),
     },
     leaveAllocationHistory: { create: vi.fn(), findMany: vi.fn() },
+    mailDelivery: { create: vi.fn(), updateMany: vi.fn() },
+    auditLog: { create: vi.fn() },
     $queryRaw: vi.fn(),
   };
   const prisma = { ...db, $transaction: vi.fn(async (cb: (tx: typeof db) => unknown) => cb(db)) };
@@ -20,28 +22,61 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock("@/lib/prisma", () => ({ prisma: h.prisma }));
+// outbox insert/cancel·audit는 별도 단위로 검증 — 여기선 호출 여부/인자만 단언한다.
+const insertPendingDeliveryMock = vi.fn();
+const cancelPendingDeliveriesMock = vi.fn();
+const writeAuditMock = vi.fn();
+vi.mock("@/modules/leave/repositories/mail", () => ({
+  insertPendingDelivery: (...a: unknown[]) => insertPendingDeliveryMock(...a),
+  cancelPendingDeliveries: (...a: unknown[]) => cancelPendingDeliveriesMock(...a),
+}));
+vi.mock("@/kernel/audit", () => ({ writeAudit: (...a: unknown[]) => writeAuditMock(...a) }));
 
 import { approveTx, cancelTx, updateByAdminTx, adjustAllocationTx, findOverlap, createPendingRequest, createApprovedRequestTx, deleteByAdminTx, recalculateUsedDaysTx } from "@/modules/leave/repositories";
 import { LeaveConflictError } from "@/modules/leave/errors";
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  insertPendingDeliveryMock.mockReset();
+  cancelPendingDeliveriesMock.mockReset();
+  writeAuditMock.mockReset();
+});
 
 describe("approveTx", () => {
-  it("PENDING이면 APPROVED + usedDays increment", async () => {
-    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "PENDING", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1 });
+  const updatedAt = new Date("2026-08-01T00:00:00Z");
+  it("PENDING이면 APPROVED + usedDays increment (CAS where에 status+updatedAt)", async () => {
+    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "PENDING", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1, updatedAt });
     h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
     h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 1 });
     await approveTx("r1", "admin1");
+    expect(h.db.leaveRequest.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "r1", status: "PENDING", updatedAt },
+    }));
     expect(h.db.leaveAllocation.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { userId: "u1", year: 2026 }, data: { usedDays: { increment: 1 } },
     }));
   });
+  it("mailJob 주어지면 APPROVED outbox insert(allocation 증가 이후)", async () => {
+    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "PENDING", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1, updatedAt });
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
+    h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 1 });
+    await approveTx("r1", "admin1", { recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
+    expect(insertPendingDeliveryMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      leaveRequestId: "r1", eventType: "APPROVED", recipients: ["a@x.com"],
+    }));
+  });
   it("이미 처리됨이면 LeaveConflictError", async () => {
-    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "APPROVED", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1 });
+    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "APPROVED", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1, updatedAt });
     await expect(approveTx("r1", "admin1")).rejects.toBeInstanceOf(LeaveConflictError);
   });
+  it("CAS 충돌(동시 수정 — updateMany count 0)이면 LeaveConflictError, usedDays 미증가", async () => {
+    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "PENDING", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1, updatedAt });
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 0 }); // 그 사이 days/연도 바뀜 → updatedAt mismatch
+    await expect(approveTx("r1", "admin1")).rejects.toBeInstanceOf(LeaveConflictError);
+    expect(h.db.leaveAllocation.updateMany).not.toHaveBeenCalled();
+  });
   it("할당 없으면 LeaveConflictError(증감 0건)", async () => {
-    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "PENDING", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1 });
+    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "PENDING", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1, updatedAt });
     h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
     h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 0 });
     await expect(approveTx("r1", "admin1")).rejects.toBeInstanceOf(LeaveConflictError);
@@ -67,22 +102,56 @@ describe("cancelTx", () => {
 });
 
 describe("updateByAdminTx", () => {
+  const updatedAt = new Date("2026-07-01T00:00:00Z");
   const patch = {
+    adminId: "admin1",
     leaveType: "ANNUAL" as const, leaveSubType: null, quarterStartTime: null,
     startDate: new Date("2027-01-04T00:00:00Z"), endDate: new Date("2027-01-04T00:00:00Z"),
     newDays: 1, reason: null, adminActionNote: null,
   };
+  // findFirst는 (1) 읽기[deletedAt:null] (2) lockUserAndAssertNoOverlap 두 번 쓰인다 — Once로 읽기, 이후 overlap은 null.
+  it("APPROVED 동일연도 수정: CAS where에 status+updatedAt 포함하고 usedDays diff 보정", async () => {
+    h.db.leaveRequest.findFirst
+      .mockResolvedValueOnce({ status: "APPROVED", userId: "u1", startDate: new Date("2026-08-10T00:00:00Z"), days: 1, updatedAt })
+      .mockResolvedValue(null);
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
+    h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 1 });
+    h.db.leaveRequest.findUniqueOrThrow.mockResolvedValue({ id: "r1" });
+    await updateByAdminTx("r1", { ...patch, startDate: new Date("2026-08-11T00:00:00Z"), endDate: new Date("2026-08-11T00:00:00Z"), newDays: 3 });
+    expect(h.db.leaveRequest.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: "r1", deletedAt: null, status: "APPROVED", updatedAt }),
+    }));
+    expect(h.db.leaveAllocation.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { usedDays: { increment: 2 } }, // 3 - 1
+    }));
+  });
+  it("CAS 충돌(동시 approve/타 admin 수정 — updateMany count 0)이면 LeaveConflictError, usedDays 미보정", async () => {
+    h.db.leaveRequest.findFirst
+      .mockResolvedValueOnce({ status: "APPROVED", userId: "u1", startDate: new Date("2026-08-10T00:00:00Z"), days: 1, updatedAt })
+      .mockResolvedValue(null);
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 0 });
+    await expect(updateByAdminTx("r1", { ...patch, startDate: new Date("2026-08-11T00:00:00Z"), endDate: new Date("2026-08-11T00:00:00Z") })).rejects.toBeInstanceOf(LeaveConflictError);
+    expect(h.db.leaveAllocation.updateMany).not.toHaveBeenCalled();
+  });
+  it("소프트삭제분(findFirst null)이면 LeaveConflictError", async () => {
+    h.db.leaveRequest.findFirst.mockResolvedValue(null);
+    await expect(updateByAdminTx("r1", patch)).rejects.toBeInstanceOf(LeaveConflictError);
+  });
   it("APPROVED 교차연도 수정: 신규연도 할당 없으면 LeaveConflictError(롤백)", async () => {
-    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "APPROVED", userId: "u1", startDate: new Date("2026-12-31T00:00:00Z"), days: 1 });
-    h.db.leaveRequest.update.mockResolvedValue({ id: "r1" });
+    h.db.leaveRequest.findFirst
+      .mockResolvedValueOnce({ status: "APPROVED", userId: "u1", startDate: new Date("2026-12-31T00:00:00Z"), days: 1, updatedAt })
+      .mockResolvedValue(null);
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
     h.db.leaveAllocation.updateMany
       .mockResolvedValueOnce({ count: 1 })  // old year(2026) decrement
       .mockResolvedValueOnce({ count: 0 }); // new year(2027) increment → 할당 없음
     await expect(updateByAdminTx("r1", patch)).rejects.toBeInstanceOf(LeaveConflictError);
   });
   it("APPROVED 동일연도 수정: 할당 없으면 LeaveConflictError", async () => {
-    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "APPROVED", userId: "u1", startDate: new Date("2026-08-10T00:00:00Z"), days: 1 });
-    h.db.leaveRequest.update.mockResolvedValue({ id: "r1" });
+    h.db.leaveRequest.findFirst
+      .mockResolvedValueOnce({ status: "APPROVED", userId: "u1", startDate: new Date("2026-08-10T00:00:00Z"), days: 1, updatedAt })
+      .mockResolvedValue(null);
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
     h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 0 });
     await expect(updateByAdminTx("r1", { ...patch, startDate: new Date("2026-08-11T00:00:00Z"), endDate: new Date("2026-08-11T00:00:00Z") })).rejects.toBeInstanceOf(LeaveConflictError);
   });
@@ -138,6 +207,20 @@ describe("createPendingRequest", () => {
     await expect(createPendingRequest(base)).rejects.toBeInstanceOf(LeaveConflictError);
     expect(h.db.leaveRequest.create).not.toHaveBeenCalled();
   });
+  it("mailJob 주어지면 tx 내에서 REQUESTED outbox insert", async () => {
+    h.db.leaveRequest.findFirst.mockResolvedValue(null);
+    h.db.leaveRequest.create.mockResolvedValue({ id: "r1" });
+    await createPendingRequest(base, { recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
+    expect(insertPendingDeliveryMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      leaveRequestId: "r1", eventType: "REQUESTED", recipients: ["a@x.com"],
+    }));
+  });
+  it("mailJob 없으면 outbox insert 미호출", async () => {
+    h.db.leaveRequest.findFirst.mockResolvedValue(null);
+    h.db.leaveRequest.create.mockResolvedValue({ id: "r1" });
+    await createPendingRequest(base);
+    expect(insertPendingDeliveryMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("createApprovedRequestTx", () => {
@@ -158,11 +241,47 @@ describe("createApprovedRequestTx", () => {
   });
 });
 
-describe("deleteByAdminTx", () => {
+describe("deleteByAdminTx (soft-delete)", () => {
+  const updatedAt = new Date("2026-07-01T00:00:00Z");
+  it("정상 삭제: CAS where(status+updatedAt+deletedAt:null) + data(CANCELLED+deletedAt) + cancelPendingDeliveries(now) + writeAudit", async () => {
+    h.db.leaveRequest.findFirst.mockResolvedValue({ status: "APPROVED", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1, updatedAt });
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
+    h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 1 });
+    await deleteByAdminTx("r1", "admin1", "관리자 삭제");
+    const call = h.db.leaveRequest.updateMany.mock.calls[0][0];
+    expect(call.where).toEqual(expect.objectContaining({ id: "r1", deletedAt: null, status: "APPROVED", updatedAt }));
+    expect(call.data).toEqual(expect.objectContaining({ status: "CANCELLED", deletedByAdminId: "admin1", deleteReason: "관리자 삭제" }));
+    expect(call.data.deletedAt).toBeInstanceOf(Date);
+    expect(cancelPendingDeliveriesMock).toHaveBeenCalledWith(expect.anything(), "r1", expect.any(Date));
+    expect(writeAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      actorId: "admin1", entityType: "LeaveRequest", entityId: "r1", action: "soft_delete", metadata: { reason: "관리자 삭제" },
+    }));
+    expect(h.db.leaveRequest.delete).not.toHaveBeenCalled(); // 물리삭제 아님
+  });
+  it("CAS 충돌(updateMany count 0)이면 LeaveConflictError, usedDays 미보정·cancel/audit 미호출", async () => {
+    h.db.leaveRequest.findFirst.mockResolvedValue({ status: "APPROVED", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1, updatedAt });
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 0 });
+    await expect(deleteByAdminTx("r1", "admin1", "사유")).rejects.toBeInstanceOf(LeaveConflictError);
+    expect(h.db.leaveAllocation.updateMany).not.toHaveBeenCalled();
+    expect(cancelPendingDeliveriesMock).not.toHaveBeenCalled();
+    expect(writeAuditMock).not.toHaveBeenCalled();
+  });
+  it("이미 삭제분(findFirst null)이면 LeaveConflictError", async () => {
+    h.db.leaveRequest.findFirst.mockResolvedValue(null);
+    await expect(deleteByAdminTx("r1", "admin1", "사유")).rejects.toBeInstanceOf(LeaveConflictError);
+  });
+  it("PENDING 삭제는 usedDays 보정 없음(APPROVED만 decrement)", async () => {
+    h.db.leaveRequest.findFirst.mockResolvedValue({ status: "PENDING", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1, updatedAt });
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
+    await deleteByAdminTx("r1", "admin1", "사유");
+    expect(h.db.leaveAllocation.updateMany).not.toHaveBeenCalled();
+    expect(cancelPendingDeliveriesMock).toHaveBeenCalled();
+  });
   it("APPROVED 요청 삭제 시 할당 없으면 LeaveConflictError(감소 0건)", async () => {
-    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "APPROVED", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1 });
+    h.db.leaveRequest.findFirst.mockResolvedValue({ status: "APPROVED", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1, updatedAt });
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
     h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 0 });
-    await expect(deleteByAdminTx("r1")).rejects.toBeInstanceOf(LeaveConflictError);
+    await expect(deleteByAdminTx("r1", "admin1", "사유")).rejects.toBeInstanceOf(LeaveConflictError);
   });
 });
 
