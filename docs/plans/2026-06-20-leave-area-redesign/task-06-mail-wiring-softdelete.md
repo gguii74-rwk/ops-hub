@@ -127,7 +127,7 @@ export async function rejectRequest(requestId: string, adminId: string, rejectio
 }
 ```
 
-**(f) updateByAdminTx** — patch에 `adminId` 추가, `data`에 귀속:
+**(f) updateByAdminTx** — patch에 `adminId` 추가 + **소프트삭제 가드·낙관적 CAS로 read-then-write race 차단**(finding, high). 시그니처:
 ```ts
 export async function updateByAdminTx(requestId: string, patch: {
   adminId: string; leaveType: "ANNUAL" | "HALF" | "QUARTER"; leaveSubType: "MORNING" | "AFTERNOON" | null;
@@ -135,13 +135,27 @@ export async function updateByAdminTx(requestId: string, patch: {
   reason: string | null; adminActionNote: string | null;
 }) {
 ```
-`tx.leaveRequest.update`의 data에 추가:
+변경(기존 `update({where:{id}})`(무조건)을 CAS `updateMany`로):
+1. 내부 read를 `findUnique({where:{id}})` → **`findFirst({ where: { id: requestId, deletedAt: null }, select: { status: true, userId: true, startDate: true, days: true, updatedAt: true } })`** (소프트삭제 제외 + `updatedAt` 추가). 없으면 `LeaveConflictError`.
+2. `lockUserAndAssertNoOverlap`은 그대로(같은 사용자 동시 수정 직렬화).
+3. 본문 `update` → **CAS `updateMany`**:
 ```ts
+    const transition = await tx.leaveRequest.updateMany({
+      where: { id: requestId, deletedAt: null, status: existing.status, updatedAt: existing.updatedAt },
+      data: {
+        leaveType: patch.leaveType,
+        leaveSubType: patch.leaveType === "HALF" ? patch.leaveSubType : null,
+        quarterStartTime: patch.leaveType === "QUARTER" ? patch.quarterStartTime : null,
+        startDate: patch.startDate, endDate: patch.endDate, days: patch.newDays,
+        reason: patch.reason, adminActionNote: patch.adminActionNote ?? "관리자 수정",
         modifiedByAdminId: patch.adminId, modifiedByAdminAt: new Date(),
+      },
+    });
+    if (transition.count === 0) throw new LeaveConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요.");
 ```
-(나머지 usedDays 보정 로직은 그대로.)
-
-**soft-delete 가드(필수):** `updateByAdminTx`의 내부 read를 `findUnique({ where: { id } })` → `findFirst({ where: { id: requestId, deletedAt: null }, ... })`로 바꾼다 — soft-deleted 요청은 수정 대상에서 제외(전사 admin이라도 삭제분 비대상). 없으면 기존대로 `LeaveConflictError`.
+   `updatedAt`(@updatedAt) 조건이 status 변경(approve/cancel/delete) **과** days 변경(타 admin 수정)을 모두 잡는다 — 0행이면 stale read이므로 보정을 적용하지 않고 충돌로 종료(usedDays 드리프트 방지).
+4. usedDays 보정(`existing.status === "APPROVED"`일 때 same-year diff / cross-year)은 **CAS 성공 이후** 기존 로직 그대로 — CAS 성공이 `existing` 스냅샷의 유효성을 보증하므로 delta(`patch.newDays - existing.days`)가 정확.
+5. 반환은 `return tx.leaveRequest.findUniqueOrThrow({ where: { id: requestId } })`(갱신된 행).
 
 **(g) deleteByAdminTx → soft-delete(requestId, adminId, reason)**:
 ```ts
@@ -149,14 +163,14 @@ export async function deleteByAdminTx(requestId: string, adminId: string, reason
   const now = new Date();
   await prisma.$transaction(async (tx) => {
     const existing = await tx.leaveRequest.findFirst({
-      where: { id: requestId, deletedAt: null }, select: { status: true, userId: true, startDate: true, days: true },
+      where: { id: requestId, deletedAt: null }, select: { status: true, userId: true, startDate: true, days: true, updatedAt: true },
     });
     if (!existing) throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
     const wasApproved = existing.status === "APPROVED";
-    // CAS(기존 cancelTx와 동일 패턴): 관찰한 status·미삭제일 때만 전이. 0행이면 그 사이 approve/cancel/삭제됨
-    // → 충돌로 막아 usedDays 정합성 보호(read-then-update race 방지, finding).
+    // 낙관적 CAS: 관찰한 status·days(=updatedAt)·미삭제일 때만 전이. 0행이면 그 사이 approve/cancel/타 admin 수정/삭제됨
+    // → 충돌로 막아 usedDays 정합성 보호(read-then-update race + days-ABA 방지, finding). updatedAt(@updatedAt)이 days 변경도 잡음.
     const transition = await tx.leaveRequest.updateMany({
-      where: { id: requestId, deletedAt: null, status: existing.status },
+      where: { id: requestId, deletedAt: null, status: existing.status, updatedAt: existing.updatedAt },
       data: { status: "CANCELLED", deletedByAdminId: adminId, deletedAt: now, deleteReason: reason, cancelledAt: now, cancellationReason: reason ?? "관리자 삭제" },
     });
     if (transition.count === 0) throw new LeaveConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요.");
@@ -269,8 +283,10 @@ export function deleteByAdmin(requestId: string, adminId: string, reason: string
 
 ### 5. 테스트
 - `tests/modules/leave/repositories.test.ts`(기존 — **시그니처 변경 반영 필수**): hoisted db에 `leaveRequest.findFirst`(이미 있음)·`mailDelivery: { create: vi.fn() }`·`auditLog: { create: vi.fn() }` 추가, `vi.mock("@/kernel/audit", () => ({ writeAudit: vi.fn() }))`, `vi.mock("@/modules/leave/repositories/mail", () => ({ insertPendingDelivery: vi.fn(), cancelPendingDeliveries: vi.fn() }))`.
-  - **기존 케이스 갱신:** `updateByAdminTx`의 `patch` 객체에 `adminId: "admin1"` 추가(타입 필수). `updateByAdminTx`·`deleteByAdminTx`의 내부 read가 `findUnique`→`findFirst`(deletedAt:null)로 바뀐 점 반영(`h.db.leaveRequest.findFirst.mockResolvedValue(...)`). `deleteByAdminTx("r1")` 호출을 `deleteByAdminTx("r1", "admin1", null)`로. deleteByAdminTx는 전이를 `update`가 아니라 **`updateMany`(CAS)**로 하므로 `h.db.leaveRequest.updateMany`로 모킹(count로 CAS 성공/충돌 제어).
-  - **신규 케이스:** createPendingRequest(base, mailJob) → `insertPendingDelivery` 호출(eventType REQUESTED), mailJob 없으면 미호출; deleteByAdminTx 정상 → `leaveRequest.updateMany`가 `where`에 `status`(CAS)·`deletedAt: null` 포함, `data`에 `deletedAt`/`status: "CANCELLED"` 포함 + `cancelPendingDeliveries(tx, "r1")`(now 인자 없음)·`writeAudit` 호출; **CAS 충돌**(updateMany count 0) → `LeaveConflictError`("처리 중 상태 변경"); 이미 삭제분(findFirst null) → `LeaveConflictError`; APPROVED 삭제만 `leaveAllocation.updateMany` decrement.
+  - **기존 케이스 갱신:** `updateByAdminTx`의 `patch` 객체에 `adminId: "admin1"` 추가(타입 필수). `updateByAdminTx`·`deleteByAdminTx`의 내부 read가 `findUnique`→`findFirst`(deletedAt:null, **select에 `updatedAt` 포함**)로 바뀐 점 반영(`h.db.leaveRequest.findFirst.mockResolvedValue({ ..., updatedAt: new Date(...) })`). 둘 다 전이를 `update`가 아니라 **`updateMany`(CAS)**로 하므로 `h.db.leaveRequest.updateMany`로 모킹(count로 CAS 성공/충돌 제어). `updateByAdminTx`는 끝에 `findUniqueOrThrow`로 갱신행 반환 → `h.db.leaveRequest.findUniqueOrThrow` 모킹 추가. `deleteByAdminTx("r1")`→`deleteByAdminTx("r1", "admin1", null)`.
+  - **신규 케이스:** createPendingRequest(base, mailJob) → `insertPendingDelivery` 호출(eventType REQUESTED), mailJob 없으면 미호출.
+  - **신규 케이스(delete):** 정상 → `leaveRequest.updateMany`가 `where`에 `status`+`updatedAt`(CAS)·`deletedAt: null` 포함, `data`에 `deletedAt`/`status: "CANCELLED"` 포함 + `cancelPendingDeliveries(tx, "r1")`(now 인자 없음)·`writeAudit` 호출; **CAS 충돌**(updateMany count 0) → `LeaveConflictError`("처리 중 상태 변경") 그리고 `leaveAllocation.updateMany` **미호출**(보정 안 함); 이미 삭제분(findFirst null) → `LeaveConflictError`; APPROVED 삭제만 `leaveAllocation` decrement.
+  - **신규 케이스(update CAS):** 정상 APPROVED 수정 → `leaveRequest.updateMany` `where`에 `status`+`updatedAt` 포함하고 usedDays 보정(diff) 호출; **CAS 충돌**(updateMany count 0, 동시 approve/타 admin 수정 모사) → `LeaveConflictError`이고 `leaveAllocation.updateMany` **미호출**(stale read로 보정 안 됨).
 - `tests/modules/leave/mail-wiring.test.ts`: service 레벨 — `vi.mock("@/modules/leave/services/mail", () => ({ getLeaveAdminRecipients: vi.fn(async () => ["a@x.com"]), drainLeaveMailOutbox: vi.fn() }))`, repo·prisma·templates 사용. 케이스:
   - createLeaveRequest → createPendingRequest가 mailJob(recipients 포함)과 함께 호출, drain 호출됨.
   - createLeaveRequestByAdmin(sendNotification=false) → mailJob null, drain 미호출; (true) → ADMIN_CREATED mailJob + drain.
@@ -281,7 +297,7 @@ export function deleteByAdmin(requestId: string, adminId: string, reason: string
 - `npm test` → 전체 green(기존 + 신규).
 - `npm run typecheck` / `npm run lint` / `npm run build` → 통과.
 - 코드 점검: 4개 이벤트(REQUESTED/APPROVED/REJECTED/ADMIN_CREATED) 모두 tx **내부**에서 insert, 커밋 후 `void drainLeaveMailOutbox()`; 삭제는 물리삭제 아님(`deletedAt` set + AuditLog + outbox cancel).
-- 코드 점검: `deleteByAdminTx` 전이가 **status CAS**(`updateMany` + count 0 충돌)이고, usedDays 보정은 CAS 성공한 status에만 적용; `cancelPendingDeliveries`가 active SENDING까지 CANCELLED로 바꿔 삭제-발송 race가 안전.
+- 코드 점검: `deleteByAdminTx`·`updateByAdminTx` 전이가 **낙관적 CAS**(`updateMany` `where`에 `status`+`updatedAt`, count 0 충돌)이고 usedDays 보정은 CAS 성공 이후에만 적용; `cancelPendingDeliveries`가 active SENDING까지 CANCELLED로 바꿔 삭제-발송 race가 안전.
 
 ## Cautions
 - **Don't** outbox insert를 tx 밖(커밋 후)에서 하지 마라. 이유: 커밋과 발송 예약이 원자적이지 않으면 "커밋됐는데 메일 행 없음"이 생긴다(spec §8 트랜잭션 계약).
@@ -289,5 +305,4 @@ export function deleteByAdmin(requestId: string, adminId: string, reason: string
 - **Don't** soft-delete에서 물리 `delete`를 남기지 마라. 이유: ops-hub 감사 원칙(deletedBy/At·사유·AuditLog 보존).
 - **Don't** `recalculateUsedDaysTx`/`sumPendingDays`/overlap에 `deletedAt` 필터를 추가하지 마라. 이유: soft-delete가 status를 `CANCELLED`로 바꾸므로 status 필터로 이미 제외된다(중복·과조정 방지). `deletedAt` 필터는 전체상태 조회(listRequests/getRequestById)에만.
 - **Don't** 관리자 직접입력에서 `assertTargetUser`를 건너뛰지 마라. 이유: 드롭다운 우회 위조 userId를 막는다(존재·ACTIVE 재검증). admin은 전사 글로벌이라 부서 대조는 없지만, 실재·활성 검증은 필수(spec §7).
-- **Don't** `deleteByAdminTx` 전이를 `update({where:{id}})`(무조건)로 하지 마라. 이유: status를 읽고→무조건 update하면 approve와 race 시 usedDays가 어긋난다(finding). 기존 `cancelTx`처럼 `updateMany({where:{id,status:관찰값}})` CAS로 0행 충돌을 막는다.
-- **참고(기존 코드·이번 범위 밖):** `updateByAdminTx`도 status 읽고→무조건 `update`라 동일 read-then-update race가 잠재한다(approve 동시 시 usedDays 드리프트 가능). 이번 패스는 flag된 delete만 CAS로 고치고 read에 `deletedAt:null` 가드만 추가한다 — update의 CAS 강화는 pre-existing(미flag) 후속으로 남긴다.
+- **Don't** `deleteByAdminTx`·`updateByAdminTx` 전이를 `update({where:{id}})`(무조건)로 하지 마라. 이유: status/days를 읽고→무조건 update하면 approve/cancel/타 admin 수정과 race 시 usedDays가 어긋난다(finding, high). 둘 다 **CAS `updateMany`**로 `where`에 `status`+`updatedAt`(낙관적 락)을 걸고 0행이면 충돌로 종료한 뒤, usedDays 보정은 CAS 성공 이후에만 적용한다. (`updatedAt`은 status 불변·days만 바뀐 동시 수정의 ABA까지 잡는다.)
