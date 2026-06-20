@@ -59,7 +59,7 @@ export const upsertAllocationSchema = z.object({
 });
 
 export const adjustAllocationSchema = z.object({
-  changeDays: z.number(),
+  changeDays: z.number().positive(), // 양수 크기. 부호는 changeType이 결정(ADD=+, DEDUCT=-)
   changeType: z.enum(["ADD", "DEDUCT"]),
   reason: z.string().min(1).max(200),
   reasonDetail: z.string().max(500).nullish(),
@@ -81,7 +81,7 @@ const db = {
 const prisma = { ...db, $transaction: vi.fn(async (cb: (tx: typeof db) => unknown) => cb(db)) };
 vi.mock("@/lib/prisma", () => ({ prisma }));
 
-import { approveTx, cancelTx, updateByAdminTx, findOverlap } from "@/modules/leave/repositories";
+import { approveTx, cancelTx, updateByAdminTx, adjustAllocationTx, findOverlap } from "@/modules/leave/repositories";
 import { LeaveConflictError } from "@/modules/leave/errors";
 
 beforeEach(() => { vi.clearAllMocks(); });
@@ -154,6 +154,19 @@ describe("findOverlap", () => {
     await findOverlap("u1", new Date("2026-08-14T00:00:00Z"), new Date("2026-08-15T00:00:00Z"));
     expect(db.leaveRequest.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ userId: "u1", status: { in: ["PENDING", "APPROVED"] } }),
+    }));
+  });
+});
+
+describe("adjustAllocationTx", () => {
+  it("DEDUCT는 양수 크기를 차감(부호는 changeType), history는 양수로 기록", async () => {
+    db.leaveAllocation.findUnique.mockResolvedValue({ id: "a1", allocatedDays: 15, carriedOverDays: 0, usedDays: 5 });
+    db.leaveAllocation.update.mockResolvedValue({ id: "a1" });
+    db.leaveAllocationHistory.create.mockResolvedValue({ id: "h1" });
+    await adjustAllocationTx({ userId: "u1", year: 2026, changeDays: 2, changeType: "DEDUCT", reason: "차감", reasonDetail: null, adminId: "admin1" });
+    expect(db.leaveAllocation.update).toHaveBeenCalledWith(expect.objectContaining({ data: { allocatedDays: 13 } }));
+    expect(db.leaveAllocationHistory.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ changeType: "DEDUCT", changeDays: 2, beforeDays: 10, afterDays: 8 }),
     }));
   });
 });
@@ -387,6 +400,8 @@ export async function adjustAllocationTx(input: {
   userId: string; year: number; changeDays: number; changeType: "ADD" | "DEDUCT";
   reason: string; reasonDetail: string | null; adminId: string;
 }) {
+  // changeDays는 양수 크기, 부호는 changeType이 결정(ADD=+, DEDUCT=-).
+  const delta = input.changeType === "DEDUCT" ? -input.changeDays : input.changeDays;
   return prisma.$transaction(async (tx) => {
     let alloc = await tx.leaveAllocation.findUnique({ where: { userId_year: { userId: input.userId, year: input.year } } });
     if (!alloc) {
@@ -394,9 +409,9 @@ export async function adjustAllocationTx(input: {
     }
     const total = Number(alloc.allocatedDays) + Number(alloc.carriedOverDays);
     const beforeDays = total - Number(alloc.usedDays);
-    const newAllocated = Number(alloc.allocatedDays) + input.changeDays;
+    const newAllocated = Number(alloc.allocatedDays) + delta;
     if (newAllocated < 0) throw new LeaveConflictError("할당 연차가 음수가 될 수 없습니다.");
-    const afterDays = beforeDays + input.changeDays;
+    const afterDays = beforeDays + delta;
     const updated = await tx.leaveAllocation.update({
       where: { userId_year: { userId: input.userId, year: input.year } },
       data: { allocatedDays: newAllocated },
@@ -461,3 +476,4 @@ git commit -m "feat(leave): repository(원자 usedDays 증감·전이 tx)·zod �
 - **Don't `reviewedBy`/`modifiedByAdminId`를 쓰지 말 것.** Reason: ops-hub 스키마엔 `reviewedById`만, 수정 흔적은 `adminActionNote`(SC-1).
 - **Don't year를 `getFullYear()`(로컬)로 뽑지 말 것.** Reason: UTC 자정 저장 날짜라 `getUTCFullYear()`가 정확.
 - **Don't 할당 `increment`/`decrement`의 `count`를 무시하지 말 것.** Reason: 대상 할당 행이 없으면 `updateMany`가 0건 no-op인데 request는 커밋돼 `usedDays` 캐시 불변식이 조용히 깨진다. **특히 교차연도 수정**에서 신규연도 할당 부재 시 그렇다 — `approveTx`처럼 모든 할당 증감(`updateByAdminTx`/`cancelTx`/`deleteByAdminTx`/`recalculateUsedDaysTx`)에서 `count===0`이면 `LeaveConflictError`로 throw·롤백(SC-2).
+- **Don't `adjustAllocationTx`에서 `changeDays`를 부호 그대로 더하지 말 것.** Reason: `changeDays`는 **양수 크기**, 부호는 `changeType`이 결정(`DEDUCT`면 `-changeDays`). zod `positive()`와 합쳐 `{DEDUCT, 2}`가 증가하거나 `{ADD, -2}`가 감소하는 오용을 차단. history엔 양수 크기로 기록.

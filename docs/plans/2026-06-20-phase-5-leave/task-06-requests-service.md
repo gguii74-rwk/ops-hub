@@ -70,6 +70,13 @@ describe("createLeaveRequest", () => {
     getUnsyncedYears.mockResolvedValue([2999]);
     await expect(createLeaveRequest("u1", input)).rejects.toBeInstanceOf(LeaveValidationError);
   });
+  it("다년 범위는 중간 연도까지 게이트(inclusive enumeration)", async () => {
+    repo.findActiveAllocation.mockResolvedValue({ allocatedDays: 15, carriedOverDays: 0, usedDays: 0 });
+    repo.findOverlap.mockResolvedValue(null);
+    repo.createPendingRequest.mockResolvedValue({ id: "r1" });
+    await createLeaveRequest("u1", { leaveType: "ANNUAL", startDate: "2999-12-31", endDate: "3001-01-02" });
+    expect(getUnsyncedYears).toHaveBeenCalledWith([2999, 3000, 3001]);
+  });
 });
 
 describe("cancel", () => {
@@ -127,8 +134,12 @@ import {
   cancelTx, updateByAdminTx, deleteByAdminTx,
 } from "../repositories";
 
-// 신청 기간이 걸친 연도(부팅 훅이 못 채운 먼 미래 연도 backstop).
-const spannedYears = (start: Date, end: Date) => Array.from(new Set([start.getUTCFullYear(), end.getUTCFullYear()]));
+// 신청 기간이 걸친 연도(시작~종료 inclusive — 다년 범위의 중간 연도까지 포함).
+const spannedYears = (start: Date, end: Date) => {
+  const years: number[] = [];
+  for (let y = start.getUTCFullYear(); y <= end.getUTCFullYear(); y++) years.push(y);
+  return years;
+};
 
 // 직원 신청 — PENDING. 마이너스 연차 허용(잔여 부족도 거부 안 함).
 export async function createLeaveRequest(userId: string, input: CreateLeaveInput) {

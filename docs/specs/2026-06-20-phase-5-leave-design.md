@@ -138,7 +138,7 @@ model Holiday {
 
 - `getAllocationSummary(userId, year)`: `total = allocated + carriedOver`, `pendingDays = Σ(PENDING days in year)`, `remaining = total - usedDays - pendingDays`. 할당 없으면 null(UI는 "미설정" 표시).
 - `createOrUpdateAllocation(userId, year, allocated, carriedOver, expiry)`: upsert.
-- `adjustAllocation({userId, year, changeDays, changeType, reason, reasonDetail}, adminId)`: `allocatedDays += changeDays`(음수 결과 거부), `LeaveAllocationHistory` 기록(beforeDays/afterDays = 조정 전/후 잔여). 할당 없으면 0으로 생성 후 조정.
+- `adjustAllocation({userId, year, changeDays, changeType, reason, reasonDetail}, adminId)`: `changeDays`는 **양수 크기**(zod `positive()`), 부호는 `changeType`이 결정(ADD=`+`, DEDUCT=`-`) → `allocatedDays += (DEDUCT ? -changeDays : changeDays)`(음수 결과 거부). `LeaveAllocationHistory` 기록(beforeDays/afterDays = 조정 전/후 잔여, changeDays는 양수 크기). 할당 없으면 0으로 생성 후 조정.
 - `getAllocationHistory`, `getAllAllocations(year)`: 조회.
 
 ## 7. 공휴일 인프라 (`kernel/holidays`)
