@@ -162,7 +162,7 @@ export function AdminHistory({
                           })
                         }
                       >
-                        수정
+                        수정·삭제
                       </Button>
                     )}
                   </td>
