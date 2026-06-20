@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { findMany, count, upsert, $transaction, fetchHolidays } = vi.hoisted(() => {
+const { findMany, count, upsert, deleteMany, $transaction, fetchHolidays } = vi.hoisted(() => {
   const findMany = vi.fn();
   const count = vi.fn();
   const upsert = vi.fn();
-  const $transaction = vi.fn(async (cb: (tx: { holiday: { upsert: typeof upsert } }) => unknown) => cb({ holiday: { upsert } }));
+  const deleteMany = vi.fn();
+  const $transaction = vi.fn(async (cb: (tx: { holiday: { upsert: typeof upsert; deleteMany: typeof deleteMany } }) => unknown) => cb({ holiday: { upsert, deleteMany } }));
   const fetchHolidays = vi.fn();
-  return { findMany, count, upsert, $transaction, fetchHolidays };
+  return { findMany, count, upsert, deleteMany, $transaction, fetchHolidays };
 });
 
 vi.mock("@/lib/prisma", () => ({ prisma: { holiday: { findMany, count }, $transaction } }));
@@ -38,6 +39,18 @@ describe("syncHolidaysForYear", () => {
     fetchHolidays.mockResolvedValue([{ date: "2026-01-01", name: "신정" }]);
     $transaction.mockRejectedValueOnce(new Error("tx fail"));
     await expect(syncHolidaysForYear(2026)).rejects.toThrow();
+  });
+  it("출처에 더는 없는 그 해 기존 공휴일을 reconcile로 제거", async () => {
+    fetchHolidays.mockResolvedValue([{ date: "2026-01-01", name: "신정" }]);
+    await syncHolidaysForYear(2026);
+    expect(deleteMany).toHaveBeenCalledWith({
+      where: { year: 2026, date: { notIn: [new Date("2026-01-01T00:00:00.000Z")] } },
+    });
+  });
+  it("fetch 결과가 비면 삭제하지 않음(API 이상 시 전체 wipe 방지)", async () => {
+    fetchHolidays.mockResolvedValue([]);
+    await syncHolidaysForYear(2026);
+    expect(deleteMany).not.toHaveBeenCalled();
   });
 });
 

@@ -7,13 +7,19 @@ export async function getHolidaysInRange(start: Date, end: Date): Promise<Set<st
   return new Set(rows.map((r) => r.date.toISOString().slice(0, 10)));
 }
 
-/** 공공데이터 특일정보에서 해당 연도 공휴일을 가져와 단일 트랜잭션으로 upsert. 반환값은 적재된 공휴일 건수(트랜잭션 커밋 완료 의미, 실패 시 throw). */
+/** 공공데이터 특일정보에서 해당 연도 공휴일을 가져와 단일 트랜잭션으로 전체-연도 reconcile(upsert + 사라진 행 삭제). 반환값은 출처 공휴일 건수(트랜잭션 커밋 완료 의미, 실패 시 throw). */
 export async function syncHolidaysForYear(year: number): Promise<number> {
   const holidays = await fetchHolidays(year); // 네트워크는 트랜잭션 밖에서 먼저
+  const dates = holidays.map((h) => new Date(`${h.date}T00:00:00.000Z`));
   await prisma.$transaction(async (tx) => {
     for (const h of holidays) {
       const date = new Date(`${h.date}T00:00:00.000Z`);
       await tx.holiday.upsert({ where: { date }, update: { name: h.name, year }, create: { date, name: h.name, year } });
+    }
+    // 출처에서 더는 반환되지 않는 그 해 기존 공휴일 제거 — 공휴일 철회/정정 반영.
+    // 단, 응답이 비면(API 이상 가능성) 전체 wipe를 막기 위해 삭제하지 않는다.
+    if (dates.length > 0) {
+      await tx.holiday.deleteMany({ where: { year, date: { notIn: dates } } });
     }
   });
   return holidays.length;

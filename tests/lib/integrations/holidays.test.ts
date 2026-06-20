@@ -45,4 +45,14 @@ describe("fetchHolidays", () => {
     delete process.env.DATA_GO_KR_SERVICE_KEY;
     await expect(fetchHolidays(2026)).rejects.toThrow();
   });
+
+  it("각 월별 fetch에 timeout AbortSignal을 전달(무한정 대기 방지)", async () => {
+    const fetchMock = vi.fn(async (_url?: string, _init?: RequestInit) => okJson("") as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchHolidays(2026);
+    expect(fetchMock).toHaveBeenCalledTimes(12);
+    for (const call of fetchMock.mock.calls) {
+      expect(call[1]).toMatchObject({ signal: expect.any(AbortSignal) });
+    }
+  });
 });
