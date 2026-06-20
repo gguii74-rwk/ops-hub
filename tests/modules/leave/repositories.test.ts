@@ -13,6 +13,7 @@ const h = vi.hoisted(() => {
       update: vi.fn(), create: vi.fn(), findMany: vi.fn(),
     },
     leaveAllocationHistory: { create: vi.fn(), findMany: vi.fn() },
+    $queryRaw: vi.fn(),
   };
   const prisma = { ...db, $transaction: vi.fn(async (cb: (tx: typeof db) => unknown) => cb(db)) };
   return { db, prisma };
@@ -20,7 +21,7 @@ const h = vi.hoisted(() => {
 
 vi.mock("@/lib/prisma", () => ({ prisma: h.prisma }));
 
-import { approveTx, cancelTx, updateByAdminTx, adjustAllocationTx, findOverlap, createApprovedRequestTx, deleteByAdminTx, recalculateUsedDaysTx } from "@/modules/leave/repositories";
+import { approveTx, cancelTx, updateByAdminTx, adjustAllocationTx, findOverlap, createPendingRequest, createApprovedRequestTx, deleteByAdminTx, recalculateUsedDaysTx } from "@/modules/leave/repositories";
 import { LeaveConflictError } from "@/modules/leave/errors";
 
 beforeEach(() => { vi.clearAllMocks(); });
@@ -98,26 +99,62 @@ describe("findOverlap", () => {
 });
 
 describe("adjustAllocationTx", () => {
-  it("DEDUCT는 양수 크기를 차감(부호는 changeType), history는 양수로 기록", async () => {
+  it("DEDUCT는 원자 increment(절대값 쓰기 아님)로 차감, history는 갱신된 행 기준", async () => {
     h.db.leaveAllocation.findUnique.mockResolvedValue({ id: "a1", allocatedDays: 15, carriedOverDays: 0, usedDays: 5 });
-    h.db.leaveAllocation.update.mockResolvedValue({ id: "a1" });
+    h.db.leaveAllocation.update.mockResolvedValue({ id: "a1", allocatedDays: 13, carriedOverDays: 0, usedDays: 5 });
     h.db.leaveAllocationHistory.create.mockResolvedValue({ id: "h1" });
     await adjustAllocationTx({ userId: "u1", year: 2026, changeDays: 2, changeType: "DEDUCT", reason: "차감", reasonDetail: null, adminId: "admin1" });
-    expect(h.db.leaveAllocation.update).toHaveBeenCalledWith(expect.objectContaining({ data: { allocatedDays: 13 } }));
+    expect(h.db.leaveAllocation.update).toHaveBeenCalledWith(expect.objectContaining({ data: { allocatedDays: { increment: -2 } } }));
     expect(h.db.leaveAllocationHistory.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ changeType: "DEDUCT", changeDays: 2, beforeDays: 10, afterDays: 8 }),
     }));
   });
+  it("증감 결과 allocatedDays가 음수면 LeaveConflictError(롤백)", async () => {
+    h.db.leaveAllocation.findUnique.mockResolvedValue({ id: "a1", allocatedDays: 1, carriedOverDays: 0, usedDays: 0 });
+    h.db.leaveAllocation.update.mockResolvedValue({ id: "a1", allocatedDays: -1, carriedOverDays: 0, usedDays: 0 });
+    await expect(adjustAllocationTx({ userId: "u1", year: 2026, changeDays: 2, changeType: "DEDUCT", reason: "차감", reasonDetail: null, adminId: "admin1" }))
+      .rejects.toBeInstanceOf(LeaveConflictError);
+  });
+});
+
+describe("createPendingRequest", () => {
+  const base = {
+    userId: "u1", leaveType: "ANNUAL" as const,
+    startDate: new Date("2026-08-14T00:00:00Z"), endDate: new Date("2026-08-14T00:00:00Z"), days: 1,
+  };
+  it("트랜잭션 내에서 advisory lock을 잡고 overlap을 재확인한 뒤 생성", async () => {
+    h.db.leaveRequest.findFirst.mockResolvedValue(null);
+    h.db.leaveRequest.create.mockResolvedValue({ id: "r1" });
+    await createPendingRequest(base);
+    expect(h.prisma.$transaction).toHaveBeenCalled();
+    expect(h.db.$queryRaw).toHaveBeenCalled();
+    expect(h.db.leaveRequest.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ userId: "u1", status: { in: ["PENDING", "APPROVED"] } }),
+    }));
+    expect(h.db.leaveRequest.create).toHaveBeenCalled();
+  });
+  it("재확인에서 겹치면 LeaveConflictError(생성 안 함)", async () => {
+    h.db.leaveRequest.findFirst.mockResolvedValue({ id: "x" });
+    await expect(createPendingRequest(base)).rejects.toBeInstanceOf(LeaveConflictError);
+    expect(h.db.leaveRequest.create).not.toHaveBeenCalled();
+  });
 });
 
 describe("createApprovedRequestTx", () => {
+  const base = {
+    userId: "u1", adminId: "admin1", leaveType: "ANNUAL" as const,
+    startDate: new Date("2026-08-14T00:00:00Z"), endDate: new Date("2026-08-14T00:00:00Z"),
+    days: 1, reason: null,
+  };
   it("할당 없으면 LeaveConflictError(증감 0건)", async () => {
+    h.db.leaveRequest.findFirst.mockResolvedValue(null);
     h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 0 });
-    await expect(createApprovedRequestTx({
-      userId: "u1", adminId: "admin1", leaveType: "ANNUAL",
-      startDate: new Date("2026-08-14T00:00:00Z"), endDate: new Date("2026-08-14T00:00:00Z"),
-      days: 1, reason: null,
-    })).rejects.toBeInstanceOf(LeaveConflictError);
+    await expect(createApprovedRequestTx(base)).rejects.toBeInstanceOf(LeaveConflictError);
+  });
+  it("tx 내 overlap 재확인에서 겹치면 LeaveConflictError(할당 증가 안 함)", async () => {
+    h.db.leaveRequest.findFirst.mockResolvedValue({ id: "x" });
+    await expect(createApprovedRequestTx(base)).rejects.toBeInstanceOf(LeaveConflictError);
+    expect(h.db.leaveAllocation.updateMany).not.toHaveBeenCalled();
   });
 });
 

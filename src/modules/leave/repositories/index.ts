@@ -1,5 +1,5 @@
 import "server-only";
-import type { LeaveRequestStatus } from "@prisma/client";
+import type { LeaveRequestStatus, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { LeaveConflictError } from "../errors";
 
@@ -34,15 +34,28 @@ export async function sumPendingDays(userId: string, year: number): Promise<numb
   return res._sum.days ? Number(res._sum.days) : 0;
 }
 
+const overlapWhere = (userId: string, start: Date, end: Date, excludeId?: string) => ({
+  userId,
+  ...(excludeId ? { id: { not: excludeId } } : {}),
+  status: { in: ["PENDING", "APPROVED"] as LeaveRequestStatus[] },
+  AND: [{ startDate: { lte: end } }, { endDate: { gte: start } }],
+});
+
 export function findOverlap(userId: string, start: Date, end: Date, excludeId?: string) {
-  return prisma.leaveRequest.findFirst({
-    where: {
-      userId,
-      ...(excludeId ? { id: { not: excludeId } } : {}),
-      status: { in: ["PENDING", "APPROVED"] },
-      AND: [{ startDate: { lte: end } }, { endDate: { gte: start } }],
-    },
-  });
+  return prisma.leaveRequest.findFirst({ where: overlapWhere(userId, start, end, excludeId) });
+}
+
+// leave 도메인 advisory lock 네임스페이스 — 다른 advisory lock 사용처와 키 충돌 방지.
+const LEAVE_OVERLAP_LOCK_NS = 0x6c76; // 'lv'
+
+// 동시 신청의 TOCTOU 이중 등록 방지: 사용자 단위 advisory xact lock으로 직렬화한 뒤 같은 트랜잭션에서 overlap 재확인.
+// 서비스 계층의 사전 findOverlap은 빠른 실패용일 뿐, 권위 있는 검사는 여기(쓰기 트랜잭션 내부)다.
+async function lockUserAndAssertNoOverlap(
+  tx: Prisma.TransactionClient, userId: string, start: Date, end: Date, excludeId?: string,
+) {
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(${LEAVE_OVERLAP_LOCK_NS}::int4, hashtext(${userId}))`;
+  const overlap = await tx.leaveRequest.findFirst({ where: overlapWhere(userId, start, end, excludeId) });
+  if (overlap) throw new LeaveConflictError("해당 기간에 이미 신청된 연차가 있습니다.");
 }
 
 // ── 생성 ──
@@ -52,14 +65,17 @@ export function createPendingRequest(data: {
   leaveSubType?: "MORNING" | "AFTERNOON" | null; quarterStartTime?: string | null;
   startDate: Date; endDate: Date; days: number; reason?: string | null;
 }) {
-  return prisma.leaveRequest.create({
-    data: {
-      userId: data.userId, leaveType: data.leaveType,
-      leaveSubType: data.leaveType === "HALF" ? data.leaveSubType ?? null : null,
-      quarterStartTime: data.leaveType === "QUARTER" ? data.quarterStartTime ?? null : null,
-      startDate: data.startDate, endDate: data.endDate, days: data.days,
-      reason: data.reason ?? null, status: "PENDING",
-    },
+  return prisma.$transaction(async (tx) => {
+    await lockUserAndAssertNoOverlap(tx, data.userId, data.startDate, data.endDate);
+    return tx.leaveRequest.create({
+      data: {
+        userId: data.userId, leaveType: data.leaveType,
+        leaveSubType: data.leaveType === "HALF" ? data.leaveSubType ?? null : null,
+        quarterStartTime: data.leaveType === "QUARTER" ? data.quarterStartTime ?? null : null,
+        startDate: data.startDate, endDate: data.endDate, days: data.days,
+        reason: data.reason ?? null, status: "PENDING",
+      },
+    });
   });
 }
 
@@ -71,6 +87,7 @@ export async function createApprovedRequestTx(data: {
 }) {
   const year = data.startDate.getUTCFullYear();
   return prisma.$transaction(async (tx) => {
+    await lockUserAndAssertNoOverlap(tx, data.userId, data.startDate, data.endDate);
     const alloc = await tx.leaveAllocation.updateMany({
       where: { userId: data.userId, year }, data: { usedDays: { increment: data.days } },
     });
@@ -153,6 +170,7 @@ export async function updateByAdminTx(requestId: string, patch: {
       where: { id: requestId }, select: { status: true, userId: true, startDate: true, days: true },
     });
     if (!existing) throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
+    await lockUserAndAssertNoOverlap(tx, existing.userId, patch.startDate, patch.endDate, requestId);
     const updated = await tx.leaveRequest.update({
       where: { id: requestId },
       data: {
@@ -244,15 +262,15 @@ export async function adjustAllocationTx(input: {
         data: { userId: input.userId, year: input.year, allocatedDays: 0, carriedOverDays: 0, usedDays: 0 },
       });
     }
-    const total = Number(alloc.allocatedDays) + Number(alloc.carriedOverDays);
-    const beforeDays = total - Number(alloc.usedDays);
-    const newAllocated = Number(alloc.allocatedDays) + delta;
-    if (newAllocated < 0) throw new LeaveConflictError("할당 연차가 음수가 될 수 없습니다.");
-    const afterDays = beforeDays + delta;
+    // allocatedDays는 원자 increment로 갱신(동시 조정 시 lost update 방지).
     const updated = await tx.leaveAllocation.update({
       where: { userId_year: { userId: input.userId, year: input.year } },
-      data: { allocatedDays: newAllocated },
+      data: { allocatedDays: { increment: delta } },
     });
+    if (Number(updated.allocatedDays) < 0) throw new LeaveConflictError("할당 연차가 음수가 될 수 없습니다.");
+    // before/after = 갱신된 행 기준 잔여(total - used). 동시성 하에서도 이 트랜잭션의 실제 반영값을 기록.
+    const afterDays = Number(updated.allocatedDays) + Number(updated.carriedOverDays) - Number(updated.usedDays);
+    const beforeDays = afterDays - delta;
     const history = await tx.leaveAllocationHistory.create({
       data: {
         allocationId: alloc.id, userId: input.userId, changeType: input.changeType,
