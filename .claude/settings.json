@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'node \"$CLAUDE_PROJECT_DIR/scripts/context-threshold-hook.mjs\"'"
+            "command": "bash -c 'OPS_HUB_CTX_LIMIT=1000000 node \"$CLAUDE_PROJECT_DIR/scripts/context-threshold-hook.mjs\"'"
           }
         ]
       }
