@@ -10,6 +10,7 @@
 - Modify: `.env.example` (LEAVE_MAIL_DRAIN_TOKEN 추가)
 - Create: `tests/modules/leave/mail-outbox.test.ts`
 - Create: `tests/modules/leave/mail-drain.test.ts`
+- Create: `tests/modules/leave/mail-templates.test.ts` (HTML 이스케이프)
 
 ## Prep
 - 엔트리포인트 §SC-4(메일 outbox 계약) 정독 — 상수·후보조건·claim·finalize·cancel.
@@ -229,29 +230,38 @@ export interface MailReqLike {
   startDate: Date; endDate: Date; reason: string | null;
 }
 
+// HTML 본문에 들어가는 모든 동적 텍스트는 이걸로 이스케이프 — 저장형 HTML 인젝션 차단(finding).
+// 사용자/관리자 입력(reason·rejectionReason·name)은 임의 HTML을 담을 수 있다.
+const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+function esc(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ESC[c]);
+}
+
 function fmtRange(start: Date, end: Date): string {
   const f = (d: Date) => d.toISOString().slice(0, 10);
   return f(start) === f(end) ? f(start) : `${f(start)} ~ ${f(end)}`;
 }
 function detail(req: MailReqLike): string {
-  const type = getFullLeaveText(req.leaveType, req.leaveSubType, req.quarterStartTime);
-  return `<ul><li>유형: ${type}</li><li>기간: ${fmtRange(req.startDate, req.endDate)}</li>${req.reason ? `<li>사유: ${req.reason}</li>` : ""}</ul>`;
+  const type = getFullLeaveText(req.leaveType, req.leaveSubType, req.quarterStartTime); // enum→고정 라벨(안전하나 일관성 위해 esc)
+  return `<ul><li>유형: ${esc(type)}</li><li>기간: ${fmtRange(req.startDate, req.endDate)}</li>${req.reason ? `<li>사유: ${esc(req.reason)}</li>` : ""}</ul>`;
 }
 
 export function buildRequestNotification(applicantName: string, req: MailReqLike) {
   const type = getFullLeaveText(req.leaveType, req.leaveSubType, req.quarterStartTime);
-  return { subject: `[연차 신청] ${applicantName}님의 ${type} 신청`, html: `<p>${applicantName}님이 연차를 신청했습니다.</p>${detail(req)}<p>승인 대기 목록에서 처리해 주세요.</p>` };
+  return { subject: `[연차 신청] ${applicantName}님의 ${type} 신청`, html: `<p>${esc(applicantName)}님이 연차를 신청했습니다.</p>${detail(req)}<p>승인 대기 목록에서 처리해 주세요.</p>` };
 }
 export function buildApprovedNotification(req: MailReqLike) {
   return { subject: `[연차 승인] ${getFullLeaveText(req.leaveType, req.leaveSubType, req.quarterStartTime)} 신청이 승인되었습니다`, html: `<p>연차 신청이 승인되었습니다.</p>${detail(req)}` };
 }
 export function buildRejectedNotification(req: MailReqLike, rejectionReason: string) {
-  return { subject: `[연차 반려] ${getFullLeaveText(req.leaveType, req.leaveSubType, req.quarterStartTime)} 신청이 반려되었습니다`, html: `<p>연차 신청이 반려되었습니다.</p>${detail(req)}<p>반려 사유: ${rejectionReason}</p>` };
+  return { subject: `[연차 반려] ${getFullLeaveText(req.leaveType, req.leaveSubType, req.quarterStartTime)} 신청이 반려되었습니다`, html: `<p>연차 신청이 반려되었습니다.</p>${detail(req)}<p>반려 사유: ${esc(rejectionReason)}</p>` };
 }
 export function buildAdminCreatedNotification(req: MailReqLike) {
   return { subject: `[연차 등록] ${getFullLeaveText(req.leaveType, req.leaveSubType, req.quarterStartTime)}가 등록되었습니다`, html: `<p>관리자가 연차를 등록했습니다.</p>${detail(req)}` };
 }
 ```
+**(TDD) 이스케이프 테스트** — `tests/modules/leave/mail-templates.test.ts`(신규): `reason`/`rejectionReason`/`applicantName`에 `<img src=x onerror=alert(1)>`·`<a href>`·`"`·angle-bracket 페이로드를 넣고 각 빌더의 `html`에 raw `<`/`>`가 없고 `&lt;`/`&gt;`/`&quot;`로 인코딩되는지 검증. (subject는 HTML 아님 → 이스케이프 대상 아님; 본문 `html`만 검사.)
+> 주의: `subject`는 이메일 헤더(HTML 렌더 아님)라 HTML-escape하지 않는다 — 본문 `bodyHtml`만 `esc()` 적용. (헤더 인젝션 방지는 발송기 `sendMail` 책임.)
 
 ### 4. (TDD) drain 서비스 테스트 → FAIL
 
@@ -310,17 +320,18 @@ describe("drainLeaveMailOutbox", () => {
 });
 
 describe("getLeaveAdminRecipients", () => {
-  it("후보 중 leave.approval:view 보유자만(permission 기반 — 승인권한 없는 MANAGER 제외)", async () => {
+  it("전 active 사용자 중 leave.approval:view 보유자만(MEMBER라도 권한 있으면 포함, MANAGER라도 없으면 제외)", async () => {
+    // mgr=권한없는 MANAGER(제외), mem=role/override로 권한 받은 MEMBER(포함)
     vi.mocked(prisma.user.findMany).mockResolvedValue([
-      { id: "u1", email: "a@x.com" }, { id: "u2", email: "b@x.com" },
+      { id: "mgr", email: "mgr@x.com" }, { id: "mem", email: "mem@x.com" },
     ] as never);
-    vi.mocked(hasPermission).mockImplementation((async (id: string) => id === "u1") as never); // u2는 승인권한 없음
-    expect(await getLeaveAdminRecipients()).toEqual(["a@x.com"]);
+    vi.mocked(hasPermission).mockImplementation((async (id: string) => id === "mem") as never);
+    expect(await getLeaveAdminRecipients()).toEqual(["mem@x.com"]);
     expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { status: "ACTIVE", systemRole: { in: ["OWNER", "ADMIN", "MANAGER"] } },
+      where: { status: "ACTIVE" }, // systemRole prefilter 없음(role/override 부여자 누락 방지)
       select: { id: true, email: true },
     }));
-    expect(hasPermission).toHaveBeenCalledWith("u2", "leave.approval", "view");
+    expect(hasPermission).toHaveBeenCalledWith("mgr", "leave.approval", "view");
   });
 });
 ```
@@ -339,12 +350,13 @@ import { listDueDeliveryIds, claimDelivery, finalizeDelivery } from "../reposito
 
 const DRAIN_BATCH = 50;
 
-// 통지 수신자(REQUESTED용): **permission 기반**(결정) — leave.approval:view 유효 보유자만.
-// 후보를 systemRole approver 풀로 좁힌 뒤 hasPermission으로 실권한 확정 → 승인권한 없는 MANAGER 제외(메일로 권한경계 우회 차단).
-// 전제: 승인 권한은 approver 역할로 부여된다(표준 경로). MEMBER에게 override로 부여하는 비표준 경로가 생기면 후보 쿼리를 확장.
+// 통지 수신자(REQUESTED용): **permission 기반**(결정) — leave.approval:view 유효 보유자 전원.
+// 전 active 사용자에 hasPermission을 평가 → role/override로 권한 받은 MEMBER도 포함, 승인권한 없는 MANAGER는 제외.
+// (systemRole prefilter는 role/override 부여자를 누락시켜 알림 유실 — finding, 제거.) hasPermission이 fail-closed 우선순위(override DENY/ALLOW)를 그대로 적용하므로 권한 로직을 재구현하지 않는다.
+// 규모 전제: 사내 도구라 active 사용자 수가 작다(수십). 인원이 크게 늘면 권한 테이블 직접 조회로 단일 쿼리화.
 export async function getLeaveAdminRecipients(): Promise<string[]> {
   const candidates = await prisma.user.findMany({
-    where: { status: "ACTIVE", systemRole: { in: ["OWNER", "ADMIN", "MANAGER"] } },
+    where: { status: "ACTIVE" },
     select: { id: true, email: true },
   });
   const allowed = await Promise.all(
@@ -403,7 +415,8 @@ LEAVE_MAIL_DRAIN_TOKEN=
 ```
 
 ## Acceptance Criteria
-- `npx vitest run tests/modules/leave/mail-outbox.test.ts tests/modules/leave/mail-drain.test.ts` → all passed.
+- `npx vitest run tests/modules/leave/mail-outbox.test.ts tests/modules/leave/mail-drain.test.ts tests/modules/leave/mail-templates.test.ts` → all passed.
+- 코드 점검: 메일 `bodyHtml`의 동적 텍스트(reason/rejectionReason/name)가 모두 `esc()`로 인코딩됨(raw `<`/`>` 미포함).
 - `npm test` → 회귀 없음.
 - `npm run typecheck` → 0 errors.
 - `npm run lint` → 통과(eslint boundaries: `repositories/mail.ts`는 `@/lib/prisma`만; `services/mail.ts`는 repo+integrations+`@/kernel/access`(hasPermission — 수신자 권한 확정)만 import).
