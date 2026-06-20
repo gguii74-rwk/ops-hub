@@ -42,7 +42,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: h.prisma }));
 
 import {
   insertPendingDelivery, cancelPendingDeliveries, listDueDeliveryIds, claimDelivery, finalizeDelivery,
-  MAIL_MAX_ATTEMPTS,
+  deadLetterStaleSending, MAIL_MAX_ATTEMPTS,
 } from "@/modules/leave/repositories/mail";
 
 beforeEach(() => vi.clearAllMocks());
@@ -62,22 +62,25 @@ describe("insertPendingDelivery", () => {
 });
 
 describe("cancelPendingDeliveries", () => {
-  it("PENDING/FAILED/SENDING(active 포함)을 CANCELLED로 — terminal(SENT/CANCELLED)만 제외", async () => {
+  it("PENDING/FAILED/stale SENDING(lease 만료)만 CANCELLED — active SENDING은 건드리지 않음(정직 finalize 보존)", async () => {
     h.db.mailDelivery.updateMany.mockResolvedValue({ count: 2 });
-    await cancelPendingDeliveries(h.db as never, "r1");
-    expect(h.db.mailDelivery.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { leaveRequestId: "r1", status: { in: ["PENDING", "FAILED", "SENDING"] } },
-      data: expect.objectContaining({ status: "CANCELLED", lockedUntil: null }),
-    }));
+    const now = new Date("2026-07-01T00:00:00Z");
+    await cancelPendingDeliveries(h.db as never, "r1", now);
+    const arg = h.db.mailDelivery.updateMany.mock.calls[0][0];
+    expect(arg.where.leaveRequestId).toBe("r1");
+    expect(arg.where.OR).toEqual([
+      { status: "PENDING" }, { status: "FAILED" }, { status: "SENDING", lockedUntil: { lt: now } },
+    ]);
+    expect(arg.data).toMatchObject({ status: "CANCELLED", lockedUntil: null });
   });
 });
 
 describe("claimDelivery", () => {
-  it("count 1이면 SENDING+lease+attempts++ 후 데이터 반환", async () => {
+  it("count 1이면 SENDING+lease+attempts++ 후 데이터(leaveRequestId 포함) 반환", async () => {
     h.db.mailDelivery.updateMany.mockResolvedValue({ count: 1 });
-    h.db.mailDelivery.findUnique.mockResolvedValue({ id: "m1", recipients: ["a@x.com"], subject: "s", bodyHtml: "<p>b</p>", workerId: "w1", status: "SENDING" });
+    h.db.mailDelivery.findUnique.mockResolvedValue({ id: "m1", leaveRequestId: "r1", recipients: ["a@x.com"], subject: "s", bodyHtml: "<p>b</p>", workerId: "w1", status: "SENDING" });
     const out = await claimDelivery("m1", "w1", new Date());
-    expect(out).toEqual({ id: "m1", recipients: ["a@x.com"], subject: "s", bodyHtml: "<p>b</p>" });
+    expect(out).toEqual({ id: "m1", leaveRequestId: "r1", recipients: ["a@x.com"], subject: "s", bodyHtml: "<p>b</p>" });
     expect(h.db.mailDelivery.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: "SENDING", workerId: "w1", attempts: { increment: 1 } }),
     }));
@@ -85,6 +88,17 @@ describe("claimDelivery", () => {
   it("count 0(선점)이면 null", async () => {
     h.db.mailDelivery.updateMany.mockResolvedValue({ count: 0 });
     expect(await claimDelivery("m1", "w1", new Date())).toBeNull();
+  });
+});
+
+describe("deadLetterStaleSending", () => {
+  it("stale SENDING(lease 만료)·attempts>=N을 FAILED로 종결(발송 안 함)", async () => {
+    h.db.mailDelivery.updateMany.mockResolvedValue({ count: 1 });
+    const now = new Date("2026-07-01T00:00:00Z");
+    expect(await deadLetterStaleSending(now)).toBe(1);
+    const arg = h.db.mailDelivery.updateMany.mock.calls[0][0];
+    expect(arg.where).toMatchObject({ status: "SENDING", lockedUntil: { lt: now }, attempts: { gte: MAIL_MAX_ATTEMPTS } });
+    expect(arg.data).toMatchObject({ status: "FAILED", lockedUntil: null });
   });
 });
 
@@ -162,14 +176,31 @@ export async function insertPendingDelivery(
   }
 }
 
-// soft-delete tx 내부: 비-terminal outbox를 모두 CANCELLED로. SENT/CANCELLED만 제외, **active SENDING(lease 유효) 포함**.
-// active SENDING까지 취소해야 worker 조건부 finalize(WHERE status=SENDING)가 0행이 되어 삭제된 요청에 SENT가 안 남는다
-// (삭제-발송 race 안전, spec §8). at-least-once상 그 직전 provider로 이미 나간 메일은 허용(드문 중복 < 누락).
-export async function cancelPendingDeliveries(tx: PrismaTx, leaveRequestId: string): Promise<void> {
+// soft-delete tx 내부: 아직 발송 안 했거나 발송 중이 아닌 행만 CANCELLED — PENDING/FAILED/stale SENDING(lease 만료=크래시).
+// **active SENDING(lease 유효, worker 발송중)은 건드리지 않는다** — 정직한 finalize(SENT/FAILED) 보존(결정 A: 실제 나간 메일을
+// CANCELLED로 지워 감사를 왜곡하지 않음). 삭제는 deletedAt+AuditLog로 별도 감사. worker는 발송 직전 deletedAt 재확인으로
+// 대부분의 "claim 후 삭제"를 미발송 처리한다(drainLeaveMailOutbox). 잔여 윈도(발송 진행 중 삭제)는 SENT로 정직 기록(at-least-once).
+export async function cancelPendingDeliveries(tx: PrismaTx, leaveRequestId: string, now: Date): Promise<void> {
   await tx.mailDelivery.updateMany({
-    where: { leaveRequestId, status: { in: ["PENDING", "FAILED", "SENDING"] } },
+    where: {
+      leaveRequestId,
+      OR: [{ status: "PENDING" }, { status: "FAILED" }, { status: "SENDING", lockedUntil: { lt: now } }],
+    },
     data: { status: "CANCELLED", lockedUntil: null },
   });
+}
+
+// dead-letter: claim이 attempts를 먼저 올리므로, N번째 claim 후 크래시하면 stale SENDING·attempts>=N으로 남아
+// dueWhere(attempts < N)에 안 잡혀 영구 표류한다(finding). 발송하지 않고 FAILED로 종결(운영자 가시·재시도 종료).
+export async function deadLetterStaleSending(now: Date): Promise<number> {
+  const { count } = await prisma.mailDelivery.updateMany({
+    where: {
+      leaveRequestId: { not: null }, eventType: { not: null },
+      status: "SENDING", lockedUntil: { lt: now }, attempts: { gte: MAIL_MAX_ATTEMPTS },
+    },
+    data: { status: "FAILED", errorMessage: "최대 시도 초과(stale SENDING 회수 한도)", lockedUntil: null },
+  });
+  return count;
 }
 
 export async function listDueDeliveryIds(now: Date, limit: number): Promise<string[]> {
@@ -179,7 +210,7 @@ export async function listDueDeliveryIds(now: Date, limit: number): Promise<stri
   return rows.map((r) => r.id);
 }
 
-export interface ClaimedDelivery { id: string; recipients: string[]; subject: string; bodyHtml: string; }
+export interface ClaimedDelivery { id: string; leaveRequestId: string; recipients: string[]; subject: string; bodyHtml: string; }
 
 // atomic 조건부 claim: 후보 조건이 여전히 참일 때만 SENDING+lease+workerId+attempts++. 0행=선점 → null.
 export async function claimDelivery(id: string, workerId: string, now: Date): Promise<ClaimedDelivery | null> {
@@ -189,11 +220,12 @@ export async function claimDelivery(id: string, workerId: string, now: Date): Pr
   });
   if (count !== 1) return null;
   const d = await prisma.mailDelivery.findUnique({
-    where: { id }, select: { id: true, recipients: true, subject: true, bodyHtml: true, workerId: true, status: true },
+    where: { id }, select: { id: true, leaveRequestId: true, recipients: true, subject: true, bodyHtml: true, workerId: true, status: true },
   });
-  if (!d || d.status !== "SENDING" || d.workerId !== workerId) return null;
+  if (!d || d.status !== "SENDING" || d.workerId !== workerId || !d.leaveRequestId) return null;
   return {
     id: d.id,
+    leaveRequestId: d.leaveRequestId,
     recipients: Array.isArray(d.recipients) ? (d.recipients as string[]) : [],
     subject: d.subject,
     bodyHtml: d.bodyHtml ?? "",
@@ -201,8 +233,9 @@ export async function claimDelivery(id: string, workerId: string, now: Date): Pr
 }
 
 // 조건부 finalize: status=SENDING AND workerId=self일 때만. 0행=CANCELLED/선점 → false(terminal 덮지 않음).
+// CANCELLED는 발송 직전 deletedAt 재확인에서 사용(요청 삭제됨 → 미발송 종결).
 export async function finalizeDelivery(id: string, workerId: string, patch: {
-  status: "SENT" | "FAILED"; providerMessageId?: string | null; errorMessage?: string | null;
+  status: "SENT" | "FAILED" | "CANCELLED"; providerMessageId?: string | null; errorMessage?: string | null;
 }): Promise<boolean> {
   const { count } = await prisma.mailDelivery.updateMany({
     where: { id, status: "SENDING", workerId },
@@ -269,10 +302,10 @@ export function buildAdminCreatedNotification(req: MailReqLike) {
 ```ts
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("@/lib/prisma", () => ({ prisma: { user: { findMany: vi.fn() } } }));
+vi.mock("@/lib/prisma", () => ({ prisma: { user: { findMany: vi.fn() }, leaveRequest: { findUnique: vi.fn() } } }));
 vi.mock("@/kernel/access", () => ({ hasPermission: vi.fn() }));
 vi.mock("@/modules/leave/repositories/mail", () => ({
-  listDueDeliveryIds: vi.fn(), claimDelivery: vi.fn(), finalizeDelivery: vi.fn(),
+  listDueDeliveryIds: vi.fn(), claimDelivery: vi.fn(), finalizeDelivery: vi.fn(), deadLetterStaleSending: vi.fn(),
 }));
 vi.mock("@/lib/integrations/mail", () => ({ sendMail: vi.fn() }));
 
@@ -282,15 +315,19 @@ import { sendMail } from "@/lib/integrations/mail";
 import { hasPermission } from "@/kernel/access";
 import { prisma } from "@/lib/prisma";
 
-const r = { list: vi.mocked(repo.listDueDeliveryIds), claim: vi.mocked(repo.claimDelivery), fin: vi.mocked(repo.finalizeDelivery) };
+const r = { list: vi.mocked(repo.listDueDeliveryIds), claim: vi.mocked(repo.claimDelivery), fin: vi.mocked(repo.finalizeDelivery), dead: vi.mocked(repo.deadLetterStaleSending) };
 const send = vi.mocked(sendMail);
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(prisma.leaveRequest.findUnique).mockResolvedValue({ deletedAt: null } as never); // 기본: 삭제 안 됨(발송 진행)
+  r.dead.mockResolvedValue(0);
+});
 
 describe("drainLeaveMailOutbox", () => {
   it("claim→발송→SENT finalize 성공 시 sent++", async () => {
     r.list.mockResolvedValue(["m1"]);
-    r.claim.mockResolvedValue({ id: "m1", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
+    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
     send.mockResolvedValue({ providerMessageId: "pm" });
     r.fin.mockResolvedValue(true);
     expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 1, failed: 0, skipped: 0 });
@@ -304,7 +341,7 @@ describe("drainLeaveMailOutbox", () => {
   });
   it("SMTP 실패면 FAILED finalize + failed++", async () => {
     r.list.mockResolvedValue(["m1"]);
-    r.claim.mockResolvedValue({ id: "m1", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
+    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
     send.mockRejectedValue(new Error("smtp down"));
     r.fin.mockResolvedValue(true);
     expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 0, failed: 1, skipped: 0 });
@@ -312,10 +349,23 @@ describe("drainLeaveMailOutbox", () => {
   });
   it("발송 성공했지만 finalize 0행(그 사이 CANCELLED)이면 skipped++(SENT로 안 침)", async () => {
     r.list.mockResolvedValue(["m1"]);
-    r.claim.mockResolvedValue({ id: "m1", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
+    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
     send.mockResolvedValue({ providerMessageId: "pm" });
     r.fin.mockResolvedValue(false);
     expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 0, failed: 0, skipped: 1 });
+  });
+  it("발송 직전 요청이 soft-delete돼 있으면 미발송 + CANCELLED finalize + skipped++", async () => {
+    r.list.mockResolvedValue(["m1"]);
+    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
+    vi.mocked(prisma.leaveRequest.findUnique).mockResolvedValue({ deletedAt: new Date() } as never);
+    expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 0, failed: 0, skipped: 1 });
+    expect(send).not.toHaveBeenCalled();
+    expect(r.fin).toHaveBeenCalledWith("m1", "w1", expect.objectContaining({ status: "CANCELLED" }));
+  });
+  it("drain 시작 시 stale SENDING dead-letter 스윕 호출", async () => {
+    r.list.mockResolvedValue([]);
+    await drainLeaveMailOutbox("w1");
+    expect(r.dead).toHaveBeenCalled();
   });
 });
 
@@ -346,7 +396,7 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { hasPermission } from "@/kernel/access";
 import { sendMail } from "@/lib/integrations/mail";
-import { listDueDeliveryIds, claimDelivery, finalizeDelivery } from "../repositories/mail";
+import { listDueDeliveryIds, claimDelivery, finalizeDelivery, deadLetterStaleSending } from "../repositories/mail";
 
 const DRAIN_BATCH = 50;
 
@@ -367,12 +417,19 @@ export async function getLeaveAdminRecipients(): Promise<string[]> {
 
 // 하이브리드 worker의 drain 1회. claim→발송→조건부 finalize. SMTP 실패만 FAILED, finalize 0행은 폐기.
 export async function drainLeaveMailOutbox(workerId: string = randomUUID()): Promise<{ sent: number; failed: number; skipped: number }> {
+  await deadLetterStaleSending(new Date()); // 크래시로 표류한 stale SENDING(attempts>=N)을 FAILED로 종결(finding)
   const ids = await listDueDeliveryIds(new Date(), DRAIN_BATCH);
   let sent = 0, failed = 0, skipped = 0;
   for (const id of ids) {
     const claimed = await claimDelivery(id, workerId, new Date());
     if (!claimed) { skipped++; continue; }
-    if (claimed.recipients.length === 0) { // 수신자 없음(예: 관리자 0명) → FAILED 확정, 무한 재시도 방지
+    // 발송 직전 재확인: claim 후 요청이 soft-delete됐으면 미발송 종결(결정 A — "claim 후 삭제" 윈도 차단).
+    const req = await prisma.leaveRequest.findUnique({ where: { id: claimed.leaveRequestId }, select: { deletedAt: true } });
+    if (req?.deletedAt) {
+      await finalizeDelivery(id, workerId, { status: "CANCELLED", errorMessage: "요청 삭제됨(발송 전 확인)" });
+      skipped++; continue;
+    }
+    if (claimed.recipients.length === 0) { // 수신자 없음(예: 승인권한자 0명) → FAILED 확정, 무한 재시도 방지
       await finalizeDelivery(id, workerId, { status: "FAILED", errorMessage: "수신자 없음" });
       failed++; continue;
     }
