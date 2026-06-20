@@ -28,6 +28,11 @@
 - 종료: critical=0 AND high=0. 5회 초과 또는 사용자 의사결정 사항이면 멈추고 사용자 대기.
 - 보수적 수용/비수용 기준은 `review-loop` 스킬과 plan §SC-2 참조.
 
+### 실행 팁 (codex companion)
+- 큰 변경(여러 파일·수천 줄)은 `adversarial-review --wait`를 **`run_in_background: true`**로 띄우고 완료 task-notification을 기다린다(폴링 금지).
+- 결과 파일은 앞부분에 `[codex] …` 실행 로그가 섞여 있다 — 보고서만 추출: `sed -n '/^# Codex Adversarial Review/,$p' <outfile>`.
+- 큰 plan은 매 회 ~2 high가 새 영역에서 나오는 경향(근본 결함 아님). 영역이 코어 정합성→주변부(UI·배포·타입)로 이동하면 impl 전환을 고려.
+
 ## 컨텍스트 규율(자동/수동 경계)
 
 - **자동**: Stop 훅(`scripts/context-threshold-hook.mjs`)이 transcript 사용량을 계산해 40% 초과 시 "핸드오프 쓰고 /clear 안내"를 1회 넛지. review-loop도 같은 시점을 자체 점검.
