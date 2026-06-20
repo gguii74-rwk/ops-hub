@@ -32,7 +32,7 @@ async function act(id: string, kind: "approve" | "reject", rejectionReason?: str
 
 export function ApprovalsClient() {
   const qc = useQueryClient();
-  const { data = [], isLoading } = useQuery({ queryKey: ["admin-leave", "pending"], queryFn: fetchPending });
+  const { data = [], isLoading, isError } = useQuery({ queryKey: ["admin-leave", "pending"], queryFn: fetchPending });
   const m = useMutation({
     mutationFn: (v: { id: string; kind: "approve" | "reject" }) =>
       act(v.id, v.kind, v.kind === "reject" ? "반려" : undefined),
@@ -41,6 +41,7 @@ export function ApprovalsClient() {
   const fmt = (s: string) => new Date(s).toLocaleDateString("ko-KR");
 
   if (isLoading) return <p className="text-sm text-muted-foreground">불러오는 중…</p>;
+  if (isError) return <p className="text-sm text-destructive">목록을 불러오지 못했습니다.</p>;
   if (data.length === 0) return <p className="text-sm text-muted-foreground">대기 중인 신청이 없습니다.</p>;
   return (
     <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">

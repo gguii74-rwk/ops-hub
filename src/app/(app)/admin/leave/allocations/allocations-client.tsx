@@ -45,7 +45,7 @@ export function AllocationsClient({ canConfigure }: { canConfigure: boolean }) {
   const [form, setForm] = useState({ userId: "", allocatedDays: "15", carriedOverDays: "0" });
   const qc = useQueryClient();
 
-  const { data = [], isLoading } = useQuery({
+  const { data = [], isLoading, isError } = useQuery({
     queryKey: ["admin-leave", "allocations", year],
     queryFn: () => fetchAllocations(year),
   });
@@ -75,7 +75,10 @@ export function AllocationsClient({ canConfigure }: { canConfigure: boolean }) {
 
   const syncHolidays = useMutation({
     mutationFn: () => post(`/api/admin/leave/holidays/sync?year=${year}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-leave", "holiday-status"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin-leave", "holiday-status"] });
+      qc.invalidateQueries({ queryKey: ["admin-leave", "allocations"] });
+    },
   });
 
   return (
@@ -150,6 +153,8 @@ export function AllocationsClient({ canConfigure }: { canConfigure: boolean }) {
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">불러오는 중…</p>
+      ) : isError ? (
+        <p className="text-sm text-destructive">목록을 불러오지 못했습니다.</p>
       ) : data.length === 0 ? (
         <Card className="p-4 text-sm text-muted-foreground">{year}년 할당이 없습니다.</Card>
       ) : (
