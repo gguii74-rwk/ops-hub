@@ -12,7 +12,7 @@
 - Create: `src/app/api/admin/leave/allocations/[userId]/[year]/adjust/route.ts` (POST)
 - Create: `src/app/api/admin/leave/allocations/[userId]/[year]/recalculate/route.ts` (POST)
 - Create: `src/app/api/admin/leave/allocations/[userId]/history/route.ts` (GET)
-- Create: `src/app/api/admin/leave/holidays/sync/route.ts` (POST)
+- Create: `src/app/api/admin/leave/holidays/sync/route.ts` (GET 미적재 status, POST sync)
 - Create: `tests/app/api/admin/leave/approve-route.test.ts`
 
 ## Prep
@@ -298,15 +298,29 @@ export async function GET(req: Request, { params }: { params: Promise<{ userId: 
 }
 ```
 
-### 5. 공휴일 수동 sync
-`src/app/api/admin/leave/holidays/sync/route.ts` (POST):
+### 5. 공휴일 미적재 status(GET) + 수동 sync(POST)
+`src/app/api/admin/leave/holidays/sync/route.ts`:
 
 ```ts
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { requirePermission } from "@/kernel/access";
-import { syncHolidaysForYear } from "@/kernel/holidays";
+import { syncHolidaysForYear, getUnsyncedYears } from "@/kernel/holidays";
 import { mapError, parseYear } from "@/app/api/leave/_shared";
+
+// 현재+익년 중 미적재 연도 조회(admin 미적재 알림용). view 권한.
+export async function GET() {
+  const session = await auth();
+  if (!session?.user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
+  const now = new Date().getFullYear();
+  try {
+    await requirePermission(session.user.id, "leave.allocation", "view");
+    const unsynced = await getUnsyncedYears([now, now + 1]);
+    return NextResponse.json({ unsynced }, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    return mapError(error);
+  }
+}
 
 export async function POST(req: Request) {
   const session = await auth();

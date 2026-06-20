@@ -25,7 +25,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@/lib/prisma", () => ({ prisma: {} })); // kernel/access import 시 prisma 로드 회피
 const holidays = vi.fn(async () => new Set<string>());
 const ensureYearsSynced = vi.fn(async () => {});
-vi.mock("@/kernel/holidays", () => ({ getHolidaysInRange: holidays, ensureYearsSynced }));
+const getUnsyncedYears = vi.fn(async () => [] as number[]);
+vi.mock("@/kernel/holidays", () => ({ getHolidaysInRange: holidays, ensureYearsSynced, getUnsyncedYears }));
 const repo = {
   getRequestById: vi.fn(), listRequests: vi.fn(), findActiveAllocation: vi.fn(), findOverlap: vi.fn(),
   createPendingRequest: vi.fn(), createApprovedRequestTx: vi.fn(), approveTx: vi.fn(), rejectRequest: vi.fn(),
@@ -40,7 +41,7 @@ import { ForbiddenError } from "@/kernel/access";
 const employeeCtx = { userId: "u1", isOwner: false, permissionKeys: new Set<string>() };
 const adminCtx = { userId: "admin1", isOwner: true, permissionKeys: new Set<string>() };
 
-beforeEach(() => { vi.clearAllMocks(); holidays.mockResolvedValue(new Set()); });
+beforeEach(() => { vi.clearAllMocks(); holidays.mockResolvedValue(new Set()); getUnsyncedYears.mockResolvedValue([]); });
 
 describe("createLeaveRequest", () => {
   const input = { leaveType: "ANNUAL" as const, startDate: "2999-08-14", endDate: "2999-08-14" };
@@ -64,6 +65,10 @@ describe("createLeaveRequest", () => {
   it("과거 날짜 거부", async () => {
     await expect(createLeaveRequest("u1", { leaveType: "ANNUAL", startDate: "2000-01-01", endDate: "2000-01-01" }))
       .rejects.toBeInstanceOf(LeaveValidationError);
+  });
+  it("필요 연도 공휴일 미적재면 차단(fail-closed)", async () => {
+    getUnsyncedYears.mockResolvedValue([2999]);
+    await expect(createLeaveRequest("u1", input)).rejects.toBeInstanceOf(LeaveValidationError);
   });
 });
 
@@ -109,7 +114,7 @@ npm test -- tests/modules/leave/requests-service   # expect FAIL
 import "server-only";
 import type { LeaveRequestStatus, LeaveType, LeaveSubType } from "@prisma/client";
 import { ForbiddenError } from "@/kernel/access";
-import { getHolidaysInRange, ensureYearsSynced } from "@/kernel/holidays";
+import { getHolidaysInRange, ensureYearsSynced, getUnsyncedYears } from "@/kernel/holidays";
 import type { CreateLeaveInput, LeaveCtx } from "../types";
 import { LeaveConflictError, LeaveValidationError } from "../errors";
 import {
@@ -132,6 +137,8 @@ export async function createLeaveRequest(userId: string, input: CreateLeaveInput
   validateDates(start, end, kstToday(new Date()));
   validateLeaveTypeDates(input.leaveType, start, end);
   await ensureYearsSynced(spannedYears(start, end));
+  const unsynced = await getUnsyncedYears(spannedYears(start, end));
+  if (unsynced.length > 0) throw new LeaveValidationError(`공휴일 데이터가 준비되지 않았습니다(${unsynced.join(", ")}년). 관리자에게 문의하세요.`);
   const days = calculateLeaveDays(input.leaveType, start, end, await getHolidaysInRange(start, end));
 
   const year = start.getUTCFullYear();
@@ -151,6 +158,8 @@ export async function createLeaveRequestByAdmin(adminId: string, targetUserId: s
   validateDatesForAdmin(start, end);
   validateLeaveTypeDates(input.leaveType, start, end);
   await ensureYearsSynced(spannedYears(start, end));
+  const unsynced = await getUnsyncedYears(spannedYears(start, end));
+  if (unsynced.length > 0) console.warn(`[leave] 공휴일 미적재(${unsynced.join(", ")}년) — 관리자 직접입력 일수가 부정확할 수 있음(targetUserId=${targetUserId})`);
   const days = calculateLeaveDays(input.leaveType, start, end, await getHolidaysInRange(start, end));
 
   if (await findOverlap(targetUserId, start, end)) throw new LeaveConflictError("해당 기간에 이미 신청된 연차가 있습니다.");
@@ -208,6 +217,8 @@ export async function updateByAdmin(requestId: string, input: {
   validateDatesForAdmin(start, end);
   validateLeaveTypeDates(leaveType, start, end);
   await ensureYearsSynced(spannedYears(start, end));
+  const unsynced = await getUnsyncedYears(spannedYears(start, end));
+  if (unsynced.length > 0) console.warn(`[leave] 공휴일 미적재(${unsynced.join(", ")}년) — 관리자 수정 일수가 부정확할 수 있음(requestId=${requestId})`);
   const newDays = calculateLeaveDays(leaveType, start, end, await getHolidaysInRange(start, end));
 
   if (await findOverlap(existing.userId, start, end, requestId)) throw new LeaveConflictError("해당 기간에 이미 다른 연차가 있습니다.");
@@ -246,3 +257,5 @@ git commit -m "feat(leave): requests 서비스(신청·승인·취소·관리자
 - **Don't 직원 취소 날짜 게이트를 관리자에도 적용하지 말 것.** Reason: 관리자는 과거 포함 무제한 취소(spec §6). `isManager` 분기 필수.
 - **Don't 권한(`requirePermission`) 검사를 서비스에 넣지 말 것.** Reason: 라우트가 resource:action 검사(SC-8). 서비스는 본인/대상 게이트만(LeaveCtx).
 - **Don't 공휴일 조회를 rules 안에서 하지 말 것.** Reason: rules는 순수. 서비스가 `getHolidaysInRange`로 Set을 만들어 주입.
+- **Don't 직원 신청을 공휴일 미적재인데 통과시키지 말 것.** Reason: 빈 공휴일로 잘못된 `days`가 영속화되면 `recalculate`로도 복구 불가 → `createLeaveRequest`는 `getUnsyncedYears`로 미적재면 `LeaveValidationError`(fail-closed, D8).
+- **Don't 관리자 경로(`createLeaveRequestByAdmin`·`updateByAdmin`)를 공휴일 미적재로 차단하지 말 것.** Reason: fail-closed는 직원 신청만(#1). 관리자는 의도적 보정 주체 → `console.warn`만 하고 통과. 미적재 신호는 admin UI 배너로 노출(task 09/11).
