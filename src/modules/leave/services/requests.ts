@@ -27,8 +27,9 @@ export async function createLeaveRequest(userId: string, input: CreateLeaveInput
   const end = parseLeaveDate(input.endDate);
   validateDates(start, end, kstToday(new Date()));
   validateLeaveTypeDates(input.leaveType, start, end);
-  await ensureYearsSynced(spannedYears(start, end));
-  const unsynced = await getUnsyncedYears(spannedYears(start, end));
+  const years = spannedYears(start, end);
+  await ensureYearsSynced(years);
+  const unsynced = await getUnsyncedYears(years);
   if (unsynced.length > 0) throw new LeaveValidationError(`공휴일 데이터가 준비되지 않았습니다(${unsynced.join(", ")}년). 관리자에게 문의하세요.`);
   const days = calculateLeaveDays(input.leaveType, start, end, await getHolidaysInRange(start, end));
 
@@ -48,8 +49,9 @@ export async function createLeaveRequestByAdmin(adminId: string, targetUserId: s
   const end = parseLeaveDate(input.endDate);
   validateDatesForAdmin(start, end);
   validateLeaveTypeDates(input.leaveType, start, end);
-  await ensureYearsSynced(spannedYears(start, end));
-  const unsynced = await getUnsyncedYears(spannedYears(start, end));
+  const years = spannedYears(start, end);
+  await ensureYearsSynced(years);
+  const unsynced = await getUnsyncedYears(years);
   if (unsynced.length > 0) console.warn(`[leave] 공휴일 미적재(${unsynced.join(", ")}년) — 관리자 직접입력 일수가 부정확할 수 있음(targetUserId=${targetUserId})`);
   const days = calculateLeaveDays(input.leaveType, start, end, await getHolidaysInRange(start, end));
 
@@ -107,8 +109,9 @@ export async function updateByAdmin(requestId: string, input: {
   const leaveType = input.leaveType ?? existing.leaveType;
   validateDatesForAdmin(start, end);
   validateLeaveTypeDates(leaveType, start, end);
-  await ensureYearsSynced(spannedYears(start, end));
-  const unsynced = await getUnsyncedYears(spannedYears(start, end));
+  const years = spannedYears(start, end);
+  await ensureYearsSynced(years);
+  const unsynced = await getUnsyncedYears(years);
   if (unsynced.length > 0) console.warn(`[leave] 공휴일 미적재(${unsynced.join(", ")}년) — 관리자 수정 일수가 부정확할 수 있음(requestId=${requestId})`);
   const newDays = calculateLeaveDays(leaveType, start, end, await getHolidaysInRange(start, end));
 
