@@ -20,7 +20,7 @@ const h = vi.hoisted(() => {
 
 vi.mock("@/lib/prisma", () => ({ prisma: h.prisma }));
 
-import { approveTx, cancelTx, updateByAdminTx, adjustAllocationTx, findOverlap } from "@/modules/leave/repositories";
+import { approveTx, cancelTx, updateByAdminTx, adjustAllocationTx, findOverlap, createApprovedRequestTx, deleteByAdminTx, recalculateUsedDaysTx } from "@/modules/leave/repositories";
 import { LeaveConflictError } from "@/modules/leave/errors";
 
 beforeEach(() => { vi.clearAllMocks(); });
@@ -107,5 +107,32 @@ describe("adjustAllocationTx", () => {
     expect(h.db.leaveAllocationHistory.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ changeType: "DEDUCT", changeDays: 2, beforeDays: 10, afterDays: 8 }),
     }));
+  });
+});
+
+describe("createApprovedRequestTx", () => {
+  it("할당 없으면 LeaveConflictError(증감 0건)", async () => {
+    h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 0 });
+    await expect(createApprovedRequestTx({
+      userId: "u1", adminId: "admin1", leaveType: "ANNUAL",
+      startDate: new Date("2026-08-14T00:00:00Z"), endDate: new Date("2026-08-14T00:00:00Z"),
+      days: 1, reason: null,
+    })).rejects.toBeInstanceOf(LeaveConflictError);
+  });
+});
+
+describe("deleteByAdminTx", () => {
+  it("APPROVED 요청 삭제 시 할당 없으면 LeaveConflictError(감소 0건)", async () => {
+    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "APPROVED", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1 });
+    h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 0 });
+    await expect(deleteByAdminTx("r1")).rejects.toBeInstanceOf(LeaveConflictError);
+  });
+});
+
+describe("recalculateUsedDaysTx", () => {
+  it("할당 없으면 LeaveConflictError(업데이트 0건)", async () => {
+    h.db.leaveRequest.aggregate.mockResolvedValue({ _sum: { days: 2 } });
+    h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 0 });
+    await expect(recalculateUsedDaysTx("u1", 2026)).rejects.toBeInstanceOf(LeaveConflictError);
   });
 });
