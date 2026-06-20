@@ -45,6 +45,8 @@ model Holiday {
 
 `usedDays`/`days` 등은 `Prisma.Decimal`이다. 산술은 **DB atomic `increment`/`decrement`** (`{ usedDays: { increment: days } }`)로 하고, 비교·합산이 필요한 순수 로직에서는 `Number(d)` 또는 `new Prisma.Decimal(...)`로 다룬다. 일수 계산 결과(0.5/0.25/정수)는 number로 계산해 Prisma가 Decimal로 저장한다. **read-then-write(`allocation.usedDays + days`)는 금지** — 동시성 경합(D2).
 
+증감 대상 할당 행이 없으면 `updateMany().count===0`이다. 따라서 모든 전이·조정 tx(approve/createApproved/cancel/update/delete/recalculate)는 **할당 증감 결과 `count`를 검사해 0이면 `LeaveConflictError`로 throw·롤백**한다 — 특히 **교차연도 수정의 신규연도 할당 부재**(request는 갱신됐는데 새 연도 `usedDays`가 그대로 남아 캐시 불변식이 조용히 깨지는 경우)를 막는다. approveTx와 동일 가드를 update/cancel/delete/recalculate에 일관 적용.
+
 ### SC-3. 도메인 타입 (DTO)
 
 `src/modules/leave/types.ts`에 정의(task 03에서 생성, 이후 태스크가 import):
@@ -128,13 +130,14 @@ export function fetchHolidays(year: number): Promise<RawHoliday[]>;     // getRe
 
 // src/kernel/holidays/index.ts
 export function getHolidaysInRange(start: Date, end: Date): Promise<Set<string>>;  // "YYYY-MM-DD"(UTC) Set
-export function syncHolidaysForYear(year: number): Promise<number>;     // fetch→upsert, 반환=건수
+export function syncHolidaysForYear(year: number): Promise<number>;     // fetch(트랜잭션 밖)→연도 전량을 단일 $transaction으로 upsert(부분 적재 방지), 반환=건수
 export function ensureYearsSynced(years: number[]): Promise<void>;      // 미적재(count===0) 연도만 sync, 실패는 로그 후 진행
 ```
 
 - 환경변수: `DATA_GO_KR_SERVICE_KEY`(공공데이터포털 인증키). `.env.example`에 추가.
 - 자동 트리거: `src/instrumentation.ts`의 `register()`가 부팅 시 `ensureYearsSynced([currentYear, currentYear+1])`. 시드(task 01)·요청 backstop(task 06)·admin(task 09/11)도 호출.
 - `getHolidaysInRange`는 테이블만 읽는다(sync 안 함). day-calc는 항상 테이블 기준 → 결정적.
+- `syncHolidaysForYear`는 fetch(네트워크) 후 연도 전체를 **단일 트랜잭션**으로 write → 부분 적재 시 롤백되어 `count===0` 유지. 일부만 적재된 채 실패해 `count>0`로 `ensureYearsSynced`가 영구 skip(누락 공휴일이 평일 처리돼 연차 과다 차감)하는 일을 차단한다.
 
 ### SC-7. 권한 키 (task 07이 보강·부여)
 
