@@ -54,6 +54,20 @@ describe("deliver", () => {
     await expect(deliver({ taskId: "t1", step: "send", msg: { to: ["a@x"], subject: "s", html: "h" }, sentById: "u1" })).rejects.toBeInstanceOf(ConflictError);
     expect(send).not.toHaveBeenCalled();
   });
+
+  // SMTP가 메일을 수락한 뒤 SENT 확정만 실패하면, FAILED로 둔갑시키지 않고(중복 발송 위험) 에러를 전파해
+  // 행을 SENDING으로 남긴다(admin resolve 대상). SMTP 실패와 DB 확정 실패는 다른 사건이다.
+  it("SMTP 성공 후 SENT 확정 실패 → 에러 전파(FAILED 변환 금지, SENDING 유지)", async () => {
+    repo.finalizeDelivery.mockImplementation(async (id: string, patch: any) => {
+      if (patch.status === "SENT") throw new Error("db down");
+      return { id, ...patch };
+    });
+    await expect(
+      deliver({ taskId: "t1", step: "send", msg: { to: ["a@x"], subject: "s", html: "h" }, sentById: "u1" }),
+    ).rejects.toThrow("db down");
+    expect(send).toHaveBeenCalled();
+    expect(repo.finalizeDelivery).not.toHaveBeenCalledWith("d1", expect.objectContaining({ status: "FAILED" }));
+  });
 });
 
 describe("retryDelivery", () => {
@@ -106,6 +120,20 @@ describe("retryDelivery", () => {
     await retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.weekly:send"] }));
     expect(send).not.toHaveBeenCalled();
     expect(repo.finalizeDelivery).toHaveBeenCalledWith("d1", expect.objectContaining({ status: "FAILED" }));
+  });
+
+  // deliver와 동일: 재발송 SMTP 수락 후 SENT 확정만 실패하면 FAILED로 되돌리지 않고 에러 전파(SENDING 유지).
+  it("SMTP 성공 후 SENT 확정 실패 → 에러 전파(FAILED 변환 금지, SENDING 유지)", async () => {
+    repo.findDeliveryForAction.mockResolvedValue(failed);
+    repo.finalizeDelivery.mockImplementation(async (id: string, patch: any) => {
+      if (patch.status === "SENT") throw new Error("db down");
+      return { id, ...patch };
+    });
+    await expect(
+      retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.weekly:send"] })),
+    ).rejects.toThrow("db down");
+    expect(send).toHaveBeenCalled();
+    expect(repo.finalizeDelivery).not.toHaveBeenCalledWith("d1", expect.objectContaining({ status: "FAILED" }));
   });
 });
 
