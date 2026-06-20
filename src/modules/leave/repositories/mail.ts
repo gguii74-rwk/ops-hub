@@ -4,6 +4,9 @@ import { prisma, type PrismaTx } from "@/lib/prisma";
 
 export const MAIL_MAX_ATTEMPTS = 3;
 export const MAIL_LEASE_MS = 60_000;
+// FAILED 재시도 전 최소 지연(backoff). transient SMTP 장애에서 즉시 재claim로 attempts가
+// 한 번에 소진되는 것을 막아 자동 복구 여지를 준다(lockedUntil을 retry-not-before로 재사용).
+export const MAIL_RETRY_BACKOFF_MS = 5 * 60_000;
 
 export type LeaveMailEvent = "REQUESTED" | "APPROVED" | "REJECTED" | "ADMIN_CREATED";
 
@@ -17,7 +20,8 @@ function dueWhere(now: Date) {
     eventType: { not: null },
     OR: [
       { status: "PENDING" as const },
-      { status: "FAILED" as const, attempts: { lt: MAIL_MAX_ATTEMPTS } },
+      // FAILED는 backoff 경과분만 재후보 — lockedUntil(retry-not-before)이 null이거나 지났을 때.
+      { status: "FAILED" as const, attempts: { lt: MAIL_MAX_ATTEMPTS }, OR: [{ lockedUntil: null }, { lockedUntil: { lt: now } }] },
       { status: "SENDING" as const, lockedUntil: { lt: now }, attempts: { lt: MAIL_MAX_ATTEMPTS } },
     ],
   };
@@ -103,6 +107,10 @@ export async function claimDelivery(id: string, workerId: string, now: Date): Pr
 export async function finalizeDelivery(id: string, workerId: string, patch: {
   status: "SENT" | "FAILED" | "CANCELLED"; providerMessageId?: string | null; errorMessage?: string | null;
 }): Promise<boolean> {
+  // FAILED는 lockedUntil을 backoff(미래)로 둬 즉시 재claim를 막는다(retry-not-before). attempts < MAX인 행만
+  // backoff 경과 후 dueWhere에 다시 잡혀 재시도되고, MAX 도달 시 attempts 게이트로 terminal이 된다.
+  // SENT/CANCELLED는 terminal이므로 lockedUntil 해제(null).
+  const lockedUntil = patch.status === "FAILED" ? new Date(Date.now() + MAIL_RETRY_BACKOFF_MS) : null;
   const { count } = await prisma.mailDelivery.updateMany({
     where: { id, status: "SENDING", workerId },
     data: {
@@ -110,7 +118,7 @@ export async function finalizeDelivery(id: string, workerId: string, patch: {
       sentAt: patch.status === "SENT" ? new Date() : null,
       providerMessageId: patch.providerMessageId ?? null,
       errorMessage: patch.errorMessage ?? null,
-      lockedUntil: null,
+      lockedUntil,
     },
   });
   return count === 1;
