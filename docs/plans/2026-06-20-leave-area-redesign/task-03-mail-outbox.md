@@ -444,6 +444,7 @@ export async function drainLeaveMailOutbox(workerId: string = randomUUID()): Pro
     }
     let providerMessageId: string | null = null;
     try {
+      // sendMail엔 idempotency 키 인자가 없다 — stale reclaim/크래시 후 드문 중복 발송 허용(at-least-once). providerMessageId는 감사용.
       ({ providerMessageId } = await sendMail({ to: claimed.recipients, subject: claimed.subject, html: claimed.bodyHtml }));
     } catch (e) {
       await finalizeDelivery(id, workerId, { status: "FAILED", errorMessage: e instanceof Error ? e.message : String(e) });

@@ -5,6 +5,8 @@
 ## Files
 - Modify: `prisma/schema.prisma` (LeaveRequest, MailDelivery, MailDeliveryStatus)
 - Modify: `src/kernel/access/catalog.ts` (RESOURCES 배열)
+- Modify: `src/app/(app)/workflows/labels.ts` (공유 enum 확장 호환 — MailStatus·MAIL_LABEL·MAIL_VARIANT)
+- Modify: `tests/prisma/schema-phase4.test.ts` (MailDeliveryStatus 5종 반영)
 - Create: `prisma/migrations/<ts>_leave_area_redesign/migration.sql`
 - Create: `tests/kernel/access/catalog.test.ts`
 
@@ -98,6 +100,23 @@ enum MailDeliveryStatus {
 }
 ```
 
+### 5b. 공유 enum 확장 — workflow 소비자 호환 (finding)
+
+`MailDeliveryStatus`는 **workflows 스키마의 공유 enum**이라 기존 workflow 소비자도 확장값을 타입·렌더에서 커버해야 한다. 확인된 사실:
+- 서비스 `src/modules/workflows/services/tasks.ts`의 `MailView.status`는 **이미 Prisma `MailDeliveryStatus`**를 쓰므로 추가 변경 불필요(확장 시 그대로 wide). repo 인터페이스(`repositories/index.ts`·`mail.ts`)도 Prisma 타입 사용 — 변경 불필요.
+- 깨지는 실제 지점은 (a) **클라이언트** `src/app/(app)/workflows/labels.ts`의 손수 작성 좁은 union·라벨 맵, (b) enum "3종"을 명시한 **테스트**다. (워크플로 태스크는 leave 메일 행(`taskId=null`, `leaveRequestId≠null`)을 조회하지 않으므로 런타임에 PENDING/CANCELLED를 만나진 않지만, 공유 enum 전체를 타입·렌더로 커버해 두는 게 안전.)
+
+**(a) `src/app/(app)/workflows/labels.ts`** — `MailStatus`를 확장하고 라벨/배지를 5종 전체로:
+```ts
+export type MailStatus = "PENDING" | "SENDING" | "SENT" | "FAILED" | "CANCELLED";
+// 메일 배지: SENDING은 '확인 필요'(발송 불확실)로 표시(spec §10). PENDING/CANCELLED는 공유 테이블의 leave 메일용 — 워크플로엔 거의 안 나타나나 타입·렌더 커버.
+export const MAIL_LABEL: Record<MailStatus, string> = { PENDING: "대기 중", SENDING: "확인 필요", SENT: "발송됨", FAILED: "실패", CANCELLED: "취소됨" };
+export const MAIL_VARIANT: Record<MailStatus, BadgeVariant> = { PENDING: "outline", SENDING: "outline", SENT: "default", FAILED: "destructive", CANCELLED: "secondary" };
+```
+(`MAIL_LABEL`/`MAIL_VARIANT`가 `Record<MailStatus,...>`라 union을 넓히면 5종 모두 키가 있어야 typecheck 통과 — 위처럼 추가.)
+
+**(b) `tests/prisma/schema-phase4.test.ts`** — `MailDeliveryStatus`가 5종임을 반영(제목 "3종"→"5종", PENDING/CANCELLED 존재 단언 추가). 기존 SENDING/SENT/FAILED 단언은 유지.
+
 ### 6. migration 생성
 
 **DB 연결이 가능하면(권장):**
@@ -144,7 +163,8 @@ npm run prisma:generate
 ## Acceptance Criteria
 - `npm run prisma:validate` → 스키마 유효(`The schema is valid`).
 - `npx vitest run tests/kernel/access/catalog.test.ts` → 2 passed.
-- `npm run prisma:generate && npm run typecheck` → 에러 0(신규 필드가 `@prisma/client` 타입에 반영).
+- `npm run prisma:generate && npm run typecheck` → 에러 0(신규 필드가 `@prisma/client` 타입에 반영; 공유 `MailDeliveryStatus` 확장 후 workflow `labels.ts`가 5종을 커버해 통과).
+- `npx vitest run tests/prisma/schema-phase4.test.ts` → MailDeliveryStatus 5종 반영 후 passed.
 - `npm run lint` → 통과.
 
 ## Cautions

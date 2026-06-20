@@ -126,7 +126,7 @@ migration: `prisma/migrations/<ts>_leave_area_redesign/migration.sql` 신규(기
 - **발송 직전 재확인(pre-send):** claim 후 `leaveRequest.deletedAt`를 확인 — soft-delete됐으면 발송하지 않고 `CANCELLED`로 finalize("claim 후 삭제" 윈도 차단).
 - **finalize(조건부 — `WHERE id AND status=SENDING AND workerId=self`):** 성공 → `SENT`(+providerMessageId·sentAt·lockedUntil=null), SMTP 실패 → `FAILED`(+errorMessage·lockedUntil=null), 발송 전 삭제 감지 → `CANCELLED`. **영향 0행이면**(그 사이 타 worker 선점/terminal) 결과 폐기, terminal 상태를 덮어쓰지 않음.
 - **cancel(soft-delete tx 내부):** 해당 `leaveRequestId`의 **`PENDING/FAILED/stale SENDING(lockedUntil < now)`만** `CANCELLED`로. **active SENDING(lease 유효)은 건드리지 않음** — worker가 `SENT/FAILED`로 정직하게 finalize(결정 A: 실제 발송된 메일을 `CANCELLED`로 지워 감사를 왜곡하지 않음). 삭제는 `deletedAt`+AuditLog로 별도 감사. worker는 `CANCELLED`를 후보로 보지 않음.
-- **전달 보장:** at-least-once(누락 방지). `SENDING` reclaim도 `attempts++` + `attempts < N` 게이트(무한 재발송 방지), 상한 초과 stale는 dead-letter `FAILED`. provider idempotency는 `providerMessageId`로 기록(드문 중복 허용, exactly-once 비목표). "claim 후 발송 진행 중 삭제"의 잔여 윈도는 `SENT`로 정직 기록(결정 A).
+- **전달 보장:** at-least-once(누락 방지). `SENDING` reclaim도 `attempts++` + `attempts < N` 게이트(무한 재발송 방지), 상한 초과 stale는 dead-letter `FAILED`. **중복 억제:** "이벤트당 행 1개"(`@@unique`)가 우리 측 중복 트리거를 막는다. 단 stale reclaim·크래시 후 재전송으로 **드문 중복 발송은 허용**(exactly-once 비목표). `providerMessageId`는 발송 후 **감사용**으로만 기록 — `sendMail`에 idempotency 키 인자가 없어 재전송을 provider 단에서 막지는 못한다(현재 transport 미지원; 향후 키 지원 시 `leaveRequestId:eventType` 전달 가능). "claim 후 발송 진행 중 삭제"의 잔여 윈도는 `SENT`로 정직 기록(결정 A).
 - **구동(하이브리드):** 연차 작업 라우트가 커밋 성공 후 `void drainLeaveMailOutbox(workerId)`(await 안 함, 실패가 응답을 막지 않음) + `POST /api/leave/mail/drain`(시스템 cron이 주기 호출, 누락 보충).
 
 ### SC-5. 표시 헬퍼·상수 (Task 02; UI 태스크가 import)
