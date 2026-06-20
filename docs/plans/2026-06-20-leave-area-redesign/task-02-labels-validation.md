@@ -133,7 +133,7 @@ export * from "@/modules/leave/labels";
 `tests/modules/leave/validations.test.ts`:
 ```ts
 import { describe, it, expect } from "vitest";
-import { createLeaveSchema, updateLeaveSchema } from "@/modules/leave/validations";
+import { createLeaveSchema, updateLeaveSchema, deleteLeaveSchema } from "@/modules/leave/validations";
 
 const base = { startDate: "2026-07-01", endDate: "2026-07-01" };
 
@@ -165,6 +165,18 @@ describe("updateLeaveSchema — 화이트리스트만(부분 수정)", () => {
   });
   it("빈 패치 허용(부분 수정)", () => {
     expect(updateLeaveSchema.safeParse({}).success).toBe(true);
+  });
+});
+
+describe("deleteLeaveSchema — 삭제 사유 필수", () => {
+  it("사유 누락 거부", () => {
+    expect(deleteLeaveSchema.safeParse({}).success).toBe(false);
+  });
+  it("공백만인 사유 거부(trim 후 빈 문자열)", () => {
+    expect(deleteLeaveSchema.safeParse({ reason: "   " }).success).toBe(false);
+  });
+  it("비어있지 않은 사유 통과", () => {
+    expect(deleteLeaveSchema.safeParse({ reason: "오기재 정정" }).success).toBe(true);
   });
 });
 ```
@@ -222,6 +234,12 @@ export const updateLeaveSchema = z.object({
   endDate: dateStr.optional(),
   reason: z.string().max(1000).nullish(),
   adminActionNote: z.string().max(500).nullish(),
+});
+
+// 관리자 삭제: 사유 필수(되돌릴 수 없는 작업·감사 메타). DELETE 라우트가 safeParse→400으로 강제 —
+// UI 사유필수는 UX일 뿐 API도 같은 검사(접근제어 규칙 #1). trim 후 빈 문자열도 거부.
+export const deleteLeaveSchema = z.object({
+  reason: z.string().trim().min(1, "삭제 사유는 필수입니다.").max(1000),
 });
 ```
 **나머지(rejectSchema/cancelSchema/upsertAllocationSchema/adjustAllocationSchema, line 29~)는 그대로 둔다.**
