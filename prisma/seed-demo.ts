@@ -122,7 +122,15 @@ async function main() {
     create: { id: "sample-leave-1", userId: owner.id, leaveType: "ANNUAL", startDate: day(15), endDate: day(16), days: 2, status: "APPROVED", reason: "데모 연차" },
   });
 
-  console.log("[seed-demo] WorkflowType 3종 + task/event/mail + LeaveRequest 데모 seed 완료(dev 전용).");
+  // 7. 데모 LeaveAllocation — OWNER 귀속(현재 연도). 관리자 할당 화면 시연용.
+  const demoYear = new Date().getFullYear();
+  await prisma.leaveAllocation.upsert({
+    where: { userId_year: { userId: owner.id, year: demoYear } },
+    update: {},
+    create: { userId: owner.id, year: demoYear, allocatedDays: 15, carriedOverDays: 3, usedDays: 0 },
+  });
+
+  console.log("[seed-demo] WorkflowType 3종 + task/event/mail + LeaveRequest + LeaveAllocation 데모 seed 완료(dev 전용).");
 }
 
 main()
