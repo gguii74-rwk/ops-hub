@@ -67,9 +67,6 @@ export async function createLeaveRequestByAdmin(adminId: string, targetUserId: s
 export function listMyRequests(userId: string, statuses?: LeaveRequestStatus[]) {
   return listRequests({ userId, statuses });
 }
-export function listAllRequests(filter: { userId?: string; statuses?: LeaveRequestStatus[] }) {
-  return listRequests(filter);
-}
 
 // 전체(타인 포함) 신청 + 사용자 표시정보. User(kernel)↔LeaveRequest(leave)는 cross-schema relation이
 // 없으므로 userId로 별도 조회해 병합한다(승인 큐·전체 이력 공유).
