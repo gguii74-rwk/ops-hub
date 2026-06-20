@@ -55,4 +55,11 @@ describe("GET /api/leave/requests", () => {
     const res = await GET(new Request("http://x/api/leave/requests"));
     expect(res.status).toBe(401);
   });
+
+  it("정상 조회 200", async () => {
+    h.listMyRequests.mockResolvedValue([]);
+    const res = await GET(new Request("http://x/api/leave/requests"));
+    expect(res.status).toBe(200);
+    expect(h.requirePermission).toHaveBeenCalledWith("u1", "leave.request", "view");
+  });
 });
