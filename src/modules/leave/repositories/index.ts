@@ -151,6 +151,7 @@ export async function rejectRequest(requestId: string, adminId: string, rejectio
 
 // 취소 — CANCELLED + (APPROVED였으면) usedDays decrement.
 export async function cancelTx(requestId: string, cancellationReason: string | null) {
+  const now = new Date();
   await prisma.$transaction(async (tx) => {
     const req = await tx.leaveRequest.findUnique({
       where: { id: requestId }, select: { status: true, userId: true, startDate: true, days: true },
@@ -160,7 +161,7 @@ export async function cancelTx(requestId: string, cancellationReason: string | n
     const wasApproved = req.status === "APPROVED";
     const updated = await tx.leaveRequest.updateMany({
       where: { id: requestId, status: req.status },
-      data: { status: "CANCELLED", cancelledAt: new Date(), cancellationReason },
+      data: { status: "CANCELLED", cancelledAt: now, cancellationReason },
     });
     if (updated.count === 0) throw new LeaveConflictError("상태가 이미 변경되었습니다.");
     if (wasApproved) {
@@ -170,6 +171,9 @@ export async function cancelTx(requestId: string, cancellationReason: string | n
       });
       if (r.count === 0) throw new LeaveConflictError("연차 할당 정보를 찾을 수 없습니다.");
     }
+    // 큐된 통지(REQUESTED/APPROVED) 취소 — 취소된 신청의 stale 메일 발송 차단(soft-delete deleteByAdminTx와 동일 패턴).
+    // active SENDING은 건드리지 않음(결정 A); drain도 발송 직전 status를 재확인해 잔여 윈도를 막는다.
+    await cancelPendingDeliveries(tx, requestId, now);
   });
 }
 

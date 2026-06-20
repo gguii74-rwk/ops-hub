@@ -1,11 +1,20 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
+import type { LeaveRequestStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { hasPermission } from "@/kernel/access";
 import { sendMail } from "@/lib/integrations/mail";
-import { listDueDeliveryIds, claimDelivery, finalizeDelivery, deadLetterStaleSending } from "../repositories/mail";
+import { listDueDeliveryIds, claimDelivery, finalizeDelivery, deadLetterStaleSending, type LeaveMailEvent } from "../repositories/mail";
 
 const DRAIN_BATCH = 50;
+
+// 각 메일 이벤트가 '발송 시점에 유효'하려면 신청이 가져야 할 현재 상태. 어긋나면(취소·재처리 등) stale 통지 → 미발송.
+const EVENT_EXPECTED_STATUS: Record<LeaveMailEvent, LeaveRequestStatus> = {
+  REQUESTED: "PENDING",
+  APPROVED: "APPROVED",
+  REJECTED: "REJECTED",
+  ADMIN_CREATED: "APPROVED",
+};
 
 // 통지 수신자(REQUESTED용): **permission 기반**(결정) — leave.approval:view 유효 보유자 전원.
 // **발송 시점 재확정의 SSOT**: drain이 REQUESTED 발송 직전 이 함수를 다시 호출해 '현재' 권한 보유자에게만 보낸다
@@ -34,9 +43,15 @@ export async function drainLeaveMailOutbox(workerId: string = randomUUID()): Pro
     if (!claimed) { skipped++; continue; }
     // 발송 직전 재확인: claim 후 요청이 soft-delete됐거나(결정 A — "claim 후 삭제" 윈도) FK 없는 leaveRequestId라
     // 요청 자체가 없으면(롤백·수동복구·부분마이그레이션 → 고아 행) 미발송 종결(finding).
-    const req = await prisma.leaveRequest.findUnique({ where: { id: claimed.leaveRequestId }, select: { deletedAt: true } });
+    const req = await prisma.leaveRequest.findUnique({ where: { id: claimed.leaveRequestId }, select: { deletedAt: true, status: true } });
     if (!req || req.deletedAt) {
       await finalizeDelivery(id, workerId, { status: "CANCELLED", errorMessage: req ? "요청 삭제됨(발송 전 확인)" : "요청 없음(고아 outbox)" });
+      skipped++; continue;
+    }
+    // 발송 시점 status 재확인(SSOT): 이벤트가 가리키는 상태와 현재 상태가 어긋나면 미발송 종결. 일반 취소(CANCELLED·deletedAt=null)는
+    // deletedAt 체크에 안 걸리므로 여기서 REQUESTED/APPROVED stale 통지를 차단한다(finding) — cancelTx의 outbox 취소와 이중 안전.
+    if (req.status !== EVENT_EXPECTED_STATUS[claimed.eventType]) {
+      await finalizeDelivery(id, workerId, { status: "CANCELLED", errorMessage: `상태 불일치(${claimed.eventType}↔${req.status}) — 미발송` });
       skipped++; continue;
     }
     // 권한 경계는 '발송 시점'에 강제(결정 A): REQUESTED 통지 수신자(승인권한자)는 enqueue 스냅샷이 아니라

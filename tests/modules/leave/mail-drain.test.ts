@@ -18,7 +18,7 @@ const send = vi.mocked(sendMail);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(prisma.leaveRequest.findUnique).mockResolvedValue({ deletedAt: null } as never); // 기본: 삭제 안 됨(발송 진행)
+  vi.mocked(prisma.leaveRequest.findUnique).mockResolvedValue({ deletedAt: null, status: "APPROVED" } as never); // 기본: 삭제 안 됨·APPROVED(APPROVED 이벤트와 일치 → 발송 진행)
   r.dead.mockResolvedValue(0);
 });
 
@@ -60,6 +60,14 @@ describe("drainLeaveMailOutbox", () => {
     expect(send).not.toHaveBeenCalled();
     expect(r.fin).toHaveBeenCalledWith("m1", "w1", expect.objectContaining({ status: "CANCELLED" }));
   });
+  it("발송 직전 status가 이벤트와 어긋나면(취소된 신청의 APPROVED 통지) 미발송 + CANCELLED + skipped++", async () => {
+    r.list.mockResolvedValue(["m1"]);
+    r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", eventType: "APPROVED", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
+    vi.mocked(prisma.leaveRequest.findUnique).mockResolvedValue({ deletedAt: null, status: "CANCELLED" } as never); // 일반 취소: deletedAt=null이지만 status는 CANCELLED
+    expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 0, failed: 0, skipped: 1 });
+    expect(send).not.toHaveBeenCalled();
+    expect(r.fin).toHaveBeenCalledWith("m1", "w1", expect.objectContaining({ status: "CANCELLED" }));
+  });
   it("발송 직전 요청이 없으면(고아 outbox, findUnique null) 미발송 + CANCELLED finalize + skipped++", async () => {
     r.list.mockResolvedValue(["m1"]);
     r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", eventType: "APPROVED", recipients: ["a@x.com"], subject: "s", bodyHtml: "b" });
@@ -76,6 +84,7 @@ describe("drainLeaveMailOutbox", () => {
   it("REQUESTED는 발송 직전 getLeaveAdminRecipients로 수신자 재확정(enqueue 스냅샷 무시) — 결정 A", async () => {
     r.list.mockResolvedValue(["m1"]);
     r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", eventType: "REQUESTED", recipients: ["stale@x.com"], subject: "s", bodyHtml: "b" });
+    vi.mocked(prisma.leaveRequest.findUnique).mockResolvedValue({ deletedAt: null, status: "PENDING" } as never); // REQUESTED ↔ PENDING 일치
     vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: "u1", email: "now@x.com" }] as never);
     vi.mocked(hasPermission).mockResolvedValue(true as never);
     send.mockResolvedValue({ providerMessageId: "pm" });
@@ -86,6 +95,7 @@ describe("drainLeaveMailOutbox", () => {
   it("REQUESTED인데 발송 시점 승인권한자 0명(전원 회수)이면 미발송 + FAILED", async () => {
     r.list.mockResolvedValue(["m1"]);
     r.claim.mockResolvedValue({ id: "m1", leaveRequestId: "r1", eventType: "REQUESTED", recipients: ["stale@x.com"], subject: "s", bodyHtml: "b" });
+    vi.mocked(prisma.leaveRequest.findUnique).mockResolvedValue({ deletedAt: null, status: "PENDING" } as never); // REQUESTED ↔ PENDING 일치(수신자 갭만 테스트)
     vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: "u1", email: "x@x.com" }] as never);
     vi.mocked(hasPermission).mockResolvedValue(false as never); // 재확정 결과 [] → stale 스냅샷으로 발송하지 않음
     r.fin.mockResolvedValue(true);

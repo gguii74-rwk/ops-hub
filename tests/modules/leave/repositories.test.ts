@@ -92,12 +92,15 @@ describe("cancelTx", () => {
     expect(h.db.leaveAllocation.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       data: { usedDays: { decrement: 2 } },
     }));
+    // 취소 시 큐된 통지도 취소 — stale 메일 차단(soft-delete와 동일).
+    expect(cancelPendingDeliveriesMock).toHaveBeenCalledWith(expect.anything(), "r1", expect.any(Date));
   });
-  it("PENDING 취소 → CANCELLED, usedDays 변화 없음", async () => {
+  it("PENDING 취소 → CANCELLED, usedDays 변화 없음 + 큐된 통지 취소", async () => {
     h.db.leaveRequest.findUnique.mockResolvedValue({ status: "PENDING", userId: "u1", startDate: new Date("2026-08-20T00:00:00Z"), days: 2 });
     h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
     await cancelTx("r1", "이유");
     expect(h.db.leaveAllocation.updateMany).not.toHaveBeenCalled();
+    expect(cancelPendingDeliveriesMock).toHaveBeenCalledWith(expect.anything(), "r1", expect.any(Date));
   });
 });
 
