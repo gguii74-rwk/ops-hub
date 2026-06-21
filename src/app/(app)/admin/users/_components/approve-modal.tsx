@@ -11,15 +11,15 @@ import { SYSTEM_ROLE_LABEL, SYSTEM_ROLE_OPTIONS } from "./labels";
 import type { EmploymentType, JobFunction, SystemRole } from "@/lib/auth/types";
 
 // NF2: name·department는 admin 확정값(승인이 프로필 권위 — 선점 덮어쓰기).
-interface Target { id: string; name: string; email: string; department: string | null; employmentType: EmploymentType; jobFunction: JobFunction; }
+interface Target { id: string; name: string; email: string; department: string | null; employmentType: EmploymentType; jobFunction: JobFunction; systemRole: string; roleKeys: string[]; }
 
 const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
 
 export function ApproveModal({ target, onClose, onDone }: { target: Target; onClose: () => void; onDone: () => void }) {
   const [name, setName] = useState(target.name);
   const [department, setDepartment] = useState(target.department ?? "");
-  const [attr, setAttr] = useState<AttrState>({ employmentType: target.employmentType, jobFunction: target.jobFunction, roleKeys: [] });
-  const [systemRole, setSystemRole] = useState<SystemRole>("MEMBER");
+  const [attr, setAttr] = useState<AttrState>({ employmentType: target.employmentType, jobFunction: target.jobFunction, roleKeys: target.roleKeys });
+  const [systemRole, setSystemRole] = useState<SystemRole>(target.systemRole as SystemRole);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const set = <K extends keyof AttrState>(k: K, v: AttrState[K]) => setAttr((s) => ({ ...s, [k]: v }));
