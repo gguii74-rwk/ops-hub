@@ -1,0 +1,558 @@
+# task-02 — anti-escalation 가드 + 최소 가용성 (D12/D13)
+
+> 위임 `admin`(비-OWNER)이 권한을 자기에게 끌어올리거나 동료 관리자를 lockout 하거나 마지막 가용 관리자/감사조회자를 없애지 못하게, **라우트 권한키 검사와 별개로 서비스 계층에서 강제**하는 가드·최소가용성 불변식을 구현한다.
+
+## Files
+
+**Create**
+- `src/modules/admin/users/policy.ts` — 특권 식별 상수(S3) + `isPrivilegedRoleKey`
+- `src/modules/admin/users/errors.ts` — 도메인 에러 클래스(S4)
+- `src/modules/admin/users/services/guards.ts` — `ActorContext` + 가드 시그니처(S5) 구현
+
+**Test**
+- `tests/modules/admin/users/policy.test.ts`
+- `tests/modules/admin/users/guards.test.ts`
+
+> Modify: 없음. 본 task는 신규 모듈만 추가한다(기존 코드 surgical 미변경).
+
+## Prep
+
+읽기(맥락 확인용, 재인라인 금지 — entrypoint §Shared Contracts가 단일 진실원):
+
+- entrypoint `docs/plans/2026-06-21-user-management.md` §S3·S4·S5 (이 task가 정의하는 계약)
+- `src/kernel/access/decision.ts` — `computeDecision`/`PermissionRule`/`Scope`/`permissionKey` 재사용
+- `src/kernel/access/index.ts` — `ForbiddenError` 패턴, `withinValidity` 유효기간 로직(가드에서 동형 재현)
+- `src/lib/prisma/index.ts` — `PrismaTx = Prisma.TransactionClient`, prisma 싱글톤
+- `src/modules/leave/errors.ts` — 도메인 에러 클래스 패턴(`super(message); this.name = ...`)
+- `src/modules/leave/repositories/index.ts` L51-62 — advisory xact lock 사용 예(`tx.$queryRaw\`SELECT pg_advisory_xact_lock(...)\``)
+- `tests/modules/leave/repositories.test.ts` L1-43 — `vi.hoisted` prisma 모킹 패턴(`$transaction`이 cb에 fake db 주입)
+
+## Deps
+
+- **01** (스키마·마이그레이션): `User.mustChangePassword`/`status` 컬럼과 `UserStatus`(ACTIVE 등), `admin` AccessRole·`admin.users:update`/`admin.audit:view` Permission 시드가 존재해야 `countAvailableByPermission`이 의미를 가진다. 단 본 task의 단위테스트는 prisma를 모킹하므로 DB 없이 통과한다.
+
+## TDD steps
+
+> 규칙: 매 스텝 — 실패 테스트 작성 → 실행(expect FAIL) → 최소 구현 → 실행(expect PASS) → commit. 모든 코드 스텝은 전체 코드 인라인.
+
+### Step 1 — policy 상수 + `isPrivilegedRoleKey` (실패 테스트)
+
+`tests/modules/admin/users/policy.test.ts` 작성:
+
+```ts
+import { describe, expect, it } from "vitest";
+import {
+  PRIVILEGED_ROLE_KEYS,
+  PRIVILEGED_SYSTEM_ROLES,
+  CRITICAL_RESOURCE_PREFIXES,
+  USER_MGMT_PERMISSION,
+  AUDIT_PERMISSION,
+  isPrivilegedRoleKey,
+} from "@/modules/admin/users/policy";
+
+describe("policy 상수", () => {
+  it("특권 역할 키는 pm·admin (D13ⓑ)", () => {
+    expect([...PRIVILEGED_ROLE_KEYS]).toEqual(["pm", "admin"]);
+  });
+  it("특권 systemRole은 OWNER·ADMIN (D12)", () => {
+    expect([...PRIVILEGED_SYSTEM_ROLES]).toEqual(["OWNER", "ADMIN"]);
+  });
+  it("critical prefix는 admin. (D13ⓓ)", () => {
+    expect([...CRITICAL_RESOURCE_PREFIXES]).toEqual(["admin."]);
+  });
+  it("최소가용성 권한 키 (D13ⓔ)", () => {
+    expect(USER_MGMT_PERMISSION).toBe("admin.users:update");
+    expect(AUDIT_PERMISSION).toBe("admin.audit:view");
+  });
+});
+
+describe("isPrivilegedRoleKey (sync, 멤버십 판정 — DB 조회 없음)", () => {
+  it("pm·admin은 특권", () => {
+    expect(isPrivilegedRoleKey("pm")).toBe(true);
+    expect(isPrivilegedRoleKey("admin")).toBe(true);
+  });
+  it("개발/외주 4종은 비특권", () => {
+    expect(isPrivilegedRoleKey("regular-developer")).toBe(false);
+    expect(isPrivilegedRoleKey("contractor-developer")).toBe(false);
+    expect(isPrivilegedRoleKey("contractor-content")).toBe(false);
+    expect(isPrivilegedRoleKey("contractor-civil-response")).toBe(false);
+  });
+  it("미지의 키도 비특권(allowlist 방식)", () => {
+    expect(isPrivilegedRoleKey("unknown")).toBe(false);
+  });
+});
+```
+
+실행: `npm test -- tests/modules/admin/users/policy.test.ts` → **FAIL** (모듈 미존재).
+
+### Step 2 — policy 구현 (PASS)
+
+`src/modules/admin/users/policy.ts`:
+
+```ts
+// 위임 admin(비-OWNER)이 부여/회수할 수 없는 특권 역할 키(OWNER-only). spec D13ⓑ.
+export const PRIVILEGED_ROLE_KEYS = ["pm", "admin"] as const;
+
+// OWNER-only 로 부여 가능한 특권 systemRole. spec D12.
+export const PRIVILEGED_SYSTEM_ROLES = ["OWNER", "ADMIN"] as const;
+
+// 위임 admin이 타인에게 DENY override를 걸 수 없는 critical 리소스 prefix. spec D13ⓓ.
+export const CRITICAL_RESOURCE_PREFIXES = ["admin."] as const;
+
+// "가용 user-management 관리자"로 인정하는 권한 키 (최소 1명 보존). spec D13ⓔ.
+export const USER_MGMT_PERMISSION = "admin.users:update";
+// "가용 감사 조회자"로 인정하는 권한 키 (최소 1명 보존). spec D13ⓔ.
+export const AUDIT_PERMISSION = "admin.audit:view";
+
+// 역할 키가 특권인지 판정. PRIVILEGED_ROLE_KEYS 멤버십만으로 결정한다(DB 조회 없음 — spec D13ⓑ).
+// pm·admin 역할은 "*"/admin.* 권한을 묶으므로 부여·회수를 OWNER로 제한한다.
+export function isPrivilegedRoleKey(key: string): boolean {
+  return (PRIVILEGED_ROLE_KEYS as readonly string[]).includes(key);
+}
+```
+
+실행: `npm test -- tests/modules/admin/users/policy.test.ts` → **PASS**.
+
+commit: `feat(user-mgmt): task-02 특권 식별 상수·isPrivilegedRoleKey (S3)`
+
+### Step 3 — 도메인 에러 클래스 (실패 테스트 + 구현 동시)
+
+> 에러 클래스는 동작이 단순(`name` 설정·`instanceof`)하므로 1스텝으로 묶는다.
+
+`tests/modules/admin/users/guards.test.ts` 상단(에러 부분만 우선)에 추가하는 대신, 에러는 guards 테스트에서 `instanceof`로 간접 검증한다. 별도 에러 전용 테스트는 만들지 않는다(과한 테스트 회피 — leave/errors.ts도 전용 테스트 없음).
+
+`src/modules/admin/users/errors.ts`:
+
+```ts
+// admin/users 도메인 에러. 라우트 매핑(entrypoint §S4):
+// ForbiddenError/EscalationError→403, UserConflictError/MinAvailabilityError→409,
+// UserValidationError/TokenError→400, RateLimitError→429.
+
+export class UserConflictError extends Error {
+  constructor(message: string) { super(message); this.name = "UserConflictError"; }
+}
+export class UserValidationError extends Error {
+  constructor(message: string) { super(message); this.name = "UserValidationError"; }
+}
+export class EscalationError extends Error {
+  constructor(message: string) { super(message); this.name = "EscalationError"; }
+}
+export class MinAvailabilityError extends Error {
+  constructor(message: string) { super(message); this.name = "MinAvailabilityError"; }
+}
+export class RateLimitError extends Error {
+  constructor(message: string) { super(message); this.name = "RateLimitError"; }
+}
+export class TokenError extends Error {
+  constructor(message: string) { super(message); this.name = "TokenError"; }
+}
+```
+
+실행: `npm run typecheck` → **PASS**(타입만 확인; 동작은 Step 5에서 검증).
+
+commit: `feat(user-mgmt): task-02 admin/users 도메인 에러 클래스 (S4)`
+
+### Step 4 — sync 가드 4종 실패 테스트
+
+`tests/modules/admin/users/guards.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import {
+  assertNotSelfMutation,
+  assertCanAssignRoles,
+  assertCanSetSystemRole,
+  assertOverrideWithinActorGrant,
+  type ActorContext,
+} from "@/modules/admin/users/services/guards";
+import { EscalationError } from "@/modules/admin/users/errors";
+
+const owner = (id = "owner1"): ActorContext => ({ userId: id, isOwner: true, permissionKeys: new Set() });
+const delegate = (keys: string[], id = "admin1"): ActorContext => ({
+  userId: id, isOwner: false, permissionKeys: new Set(keys),
+});
+
+describe("assertNotSelfMutation (D13ⓐ)", () => {
+  it("비-OWNER가 자기 자신 mutation → EscalationError", () => {
+    expect(() => assertNotSelfMutation(delegate([], "u1"), "u1")).toThrow(EscalationError);
+  });
+  it("비-OWNER가 타인 mutation → 허용", () => {
+    expect(() => assertNotSelfMutation(delegate([], "u1"), "u2")).not.toThrow();
+  });
+  it("OWNER는 자기 자신도 허용", () => {
+    expect(() => assertNotSelfMutation(owner("u1"), "u1")).not.toThrow();
+  });
+});
+
+describe("assertCanAssignRoles (D13ⓑ)", () => {
+  it("비-OWNER가 특권 역할(pm) 부여 → EscalationError", () => {
+    expect(() => assertCanAssignRoles(delegate([]), ["regular-developer", "pm"])).toThrow(EscalationError);
+  });
+  it("비-OWNER가 특권 역할(admin) 부여 → EscalationError", () => {
+    expect(() => assertCanAssignRoles(delegate([]), ["admin"])).toThrow(EscalationError);
+  });
+  it("비-OWNER가 비특권 역할만 부여 → 허용", () => {
+    expect(() => assertCanAssignRoles(delegate([]), ["regular-developer", "contractor-content"])).not.toThrow();
+  });
+  it("OWNER는 특권 역할도 허용", () => {
+    expect(() => assertCanAssignRoles(owner(), ["pm", "admin"])).not.toThrow();
+  });
+});
+
+describe("assertCanSetSystemRole (D12)", () => {
+  it("비-OWNER가 OWNER 부여 → EscalationError", () => {
+    expect(() => assertCanSetSystemRole(delegate([]), "OWNER")).toThrow(EscalationError);
+  });
+  it("비-OWNER가 ADMIN 부여 → EscalationError", () => {
+    expect(() => assertCanSetSystemRole(delegate([]), "ADMIN")).toThrow(EscalationError);
+  });
+  it("비-OWNER가 MEMBER/MANAGER 부여 → 허용", () => {
+    expect(() => assertCanSetSystemRole(delegate([]), "MEMBER")).not.toThrow();
+    expect(() => assertCanSetSystemRole(delegate([]), "MANAGER")).not.toThrow();
+  });
+  it("newRole null(변경 없음) → 허용", () => {
+    expect(() => assertCanSetSystemRole(delegate([]), null)).not.toThrow();
+  });
+  it("OWNER는 OWNER/ADMIN도 허용", () => {
+    expect(() => assertCanSetSystemRole(owner(), "OWNER")).not.toThrow();
+  });
+});
+
+describe("assertOverrideWithinActorGrant (D13ⓒⓓ)", () => {
+  it("ALLOW: actor가 보유한 권한이면 허용", () => {
+    expect(() =>
+      assertOverrideWithinActorGrant(delegate(["leave.approval:approve"]), "leave.approval:approve", "ALLOW"),
+    ).not.toThrow();
+  });
+  it("ALLOW: actor 미보유 권한이면 EscalationError(가진 것 이상 못 줌)", () => {
+    expect(() =>
+      assertOverrideWithinActorGrant(delegate([]), "leave.approval:approve", "ALLOW"),
+    ).toThrow(EscalationError);
+  });
+  it("DENY: 비-critical 권한은 위임 admin 허용", () => {
+    expect(() =>
+      assertOverrideWithinActorGrant(delegate([]), "leave.approval:approve", "DENY"),
+    ).not.toThrow();
+  });
+  it("DENY: critical(admin.*) 권한은 비-OWNER 거부(lockout 방지)", () => {
+    expect(() =>
+      assertOverrideWithinActorGrant(delegate(["admin.users:update"]), "admin.users:update", "DENY"),
+    ).toThrow(EscalationError);
+  });
+  it("OWNER는 critical DENY·미보유 ALLOW 모두 허용", () => {
+    expect(() => assertOverrideWithinActorGrant(owner(), "admin.users:update", "DENY")).not.toThrow();
+    expect(() => assertOverrideWithinActorGrant(owner(), "leave.approval:approve", "ALLOW")).not.toThrow();
+  });
+});
+```
+
+실행: `npm test -- tests/modules/admin/users/guards.test.ts` → **FAIL** (모듈 미존재).
+
+### Step 5 — sync 가드 + `ActorContext` 구현 (PASS)
+
+> 이 스텝에서 `withAvailabilityLock`/`assertMinAvailability`/`countAvailableByPermission`도 함께 정의한다(같은 파일·async 부분은 Step 6에서 검증). sync 가드는 본 스텝 테스트로 즉시 검증된다.
+
+`src/modules/admin/users/services/guards.ts`:
+
+```ts
+import "server-only";
+import { prisma, type PrismaTx } from "@/lib/prisma";
+import { computeDecision, permissionKey, type PermissionRule, type Scope } from "@/kernel/access/decision";
+import { EscalationError, MinAvailabilityError } from "@/modules/admin/users/errors";
+import {
+  isPrivilegedRoleKey,
+  PRIVILEGED_SYSTEM_ROLES,
+  CRITICAL_RESOURCE_PREFIXES,
+  USER_MGMT_PERMISSION,
+  AUDIT_PERMISSION,
+} from "@/modules/admin/users/policy";
+
+// 행위자 컨텍스트 — 라우트에서 세션 + getPermissionSummary로 구성(entrypoint §S5).
+export interface ActorContext {
+  userId: string;
+  isOwner: boolean;            // systemRole === "OWNER"
+  permissionKeys: Set<string>; // getPermissionSummary().keys
+}
+
+// 전역 직렬화용 advisory lock 키(고정 상수). 모든 availability-affecting mutation을 한 줄로 세운다.
+const AVAILABILITY_LOCK_KEY = 4815162342n;
+
+// 권한 키가 critical(admin.*) prefix에 속하는지.
+function isCriticalKey(key: string): boolean {
+  return CRITICAL_RESOURCE_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+// D13ⓐ — 비-OWNER는 자기 자신을 대상으로 한 권한 mutation을 할 수 없다(자가 상승 차단).
+export function assertNotSelfMutation(actor: ActorContext, targetUserId: string): void {
+  if (actor.isOwner) return;
+  if (actor.userId === targetUserId) {
+    throw new EscalationError("자기 자신의 권한·상태는 변경할 수 없습니다.");
+  }
+}
+
+// D13ⓑ — 특권 역할(pm·admin) 부여·회수는 OWNER만. 위임 admin은 비특권 역할만 다룬다.
+export function assertCanAssignRoles(actor: ActorContext, roleKeys: string[]): void {
+  if (actor.isOwner) return;
+  const privileged = roleKeys.filter(isPrivilegedRoleKey);
+  if (privileged.length > 0) {
+    throw new EscalationError(`특권 역할(${privileged.join(", ")}) 부여는 OWNER만 가능합니다.`);
+  }
+}
+
+// D12 — OWNER/ADMIN systemRole 부여는 OWNER만. newRole이 null이면 변경 없음으로 통과.
+export function assertCanSetSystemRole(actor: ActorContext, newRole: string | null): void {
+  if (actor.isOwner) return;
+  if (newRole === null) return;
+  if ((PRIVILEGED_SYSTEM_ROLES as readonly string[]).includes(newRole)) {
+    throw new EscalationError(`${newRole} systemRole 부여는 OWNER만 가능합니다.`);
+  }
+}
+
+// D13ⓒ — ALLOW override는 actor가 실제 보유한 권한 한도 내에서만(가진 것 이상 못 줌).
+// D13ⓓ — 타인 대상 critical(admin.*) DENY override는 OWNER만(동료 관리자 lockout 방지). 비-critical DENY는 허용.
+export function assertOverrideWithinActorGrant(
+  actor: ActorContext, key: string, effect: "ALLOW" | "DENY",
+): void {
+  if (actor.isOwner) return;
+  if (effect === "ALLOW") {
+    if (!actor.permissionKeys.has(key)) {
+      throw new EscalationError(`보유하지 않은 권한(${key})은 ALLOW로 부여할 수 없습니다.`);
+    }
+    return;
+  }
+  // effect === "DENY"
+  if (isCriticalKey(key)) {
+    throw new EscalationError(`critical 권한(${key})에 대한 DENY는 OWNER만 가능합니다.`);
+  }
+}
+
+// ── 최소 가용성(D13ⓔ) — advisory lock 직렬화 + 커밋 전 재검사 ──
+
+// availability-affecting mutation을 감싸는 트랜잭션 래퍼. 시작에서 전역 advisory xact lock을 잡아
+// 동시 mutation을 한 줄로 직렬화한다(트랜잭션 종료 시 자동 해제 — xact lock).
+export async function withAvailabilityLock<T>(fn: (tx: PrismaTx) => Promise<T>): Promise<T> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${AVAILABILITY_LOCK_KEY})`;
+    return fn(tx);
+  });
+}
+
+// 커밋 전 호출. 가용 user-management 관리자 또는 audit 조회자가 1명 미만이면 거부.
+export async function assertMinAvailability(tx: PrismaTx): Promise<void> {
+  const userMgmt = await countAvailableByPermission(tx, USER_MGMT_PERMISSION);
+  if (userMgmt < 1) {
+    throw new MinAvailabilityError("최소 1명의 가용 사용자 관리자가 남아야 합니다.");
+  }
+  const audit = await countAvailableByPermission(tx, AUDIT_PERMISSION);
+  if (audit < 1) {
+    throw new MinAvailabilityError("최소 1명의 가용 감사 조회자가 남아야 합니다.");
+  }
+}
+
+// 유효기간 내 규칙만 인정(access/index.ts withinValidity와 동형).
+function withinValidity(startsAt: Date | null, endsAt: Date | null, now: Date): boolean {
+  if (startsAt && startsAt > now) return false;
+  if (endsAt && endsAt < now) return false;
+  return true;
+}
+
+// permissionKey가 "resource:action"이라 마지막 ':'로 분리(resource에 '.'은 있으나 ':'은 없음).
+function splitKey(key: string): { resource: string; action: string } {
+  const i = key.lastIndexOf(":");
+  return { resource: key.slice(0, i), action: key.slice(i + 1) };
+}
+
+// "가용(available)" = status==="ACTIVE" && mustChangePassword===false 인 사용자 중,
+// computeDecision(override+role) 또는 OWNER로 permissionKey를 보유한 사람 수.
+// computeDecision을 재사용해 Deny우선·fail-closed 규칙을 권한 엔진과 일치시킨다.
+export async function countAvailableByPermission(tx: PrismaTx, permissionKeyStr: string): Promise<number> {
+  const now = new Date();
+  const { resource, action } = splitKey(permissionKeyStr);
+
+  const permission = await tx.permission.findUnique({
+    where: { resource_action: { resource, action } },
+    select: { id: true },
+  });
+  // 권한 정의 자체가 없으면 OWNER만 보유로 친다(권한 엔진과 동일: 비-OWNER는 미정의 권한 미보유).
+  const permissionId = permission?.id ?? null;
+
+  const candidates = await tx.user.findMany({
+    where: { status: "ACTIVE", mustChangePassword: false },
+    select: {
+      systemRole: true,
+      roleAssignments: { select: { roleId: true, startsAt: true, endsAt: true } },
+      permissionOverrides: permissionId
+        ? {
+            where: { permissionId },
+            select: { effect: true, scope: true, startsAt: true, endsAt: true },
+          }
+        : false,
+    },
+  });
+
+  // 비-OWNER 후보가 보유한 역할 → 해당 permission의 RolePermission 규칙을 한 번에 로드.
+  const roleIds = Array.from(
+    new Set(
+      candidates
+        .filter((u) => u.systemRole !== "OWNER")
+        .flatMap((u) => u.roleAssignments.filter((a) => withinValidity(a.startsAt, a.endsAt, now)).map((a) => a.roleId)),
+    ),
+  );
+  const rolePerms =
+    permissionId && roleIds.length
+      ? await tx.rolePermission.findMany({
+          where: { permissionId, roleId: { in: roleIds } },
+          select: { roleId: true, effect: true, scope: true },
+        })
+      : [];
+  const ruleByRole = new Map<string, PermissionRule[]>();
+  for (const rp of rolePerms) {
+    const list = ruleByRole.get(rp.roleId) ?? [];
+    list.push({ effect: rp.effect, scope: rp.scope as Scope });
+    ruleByRole.set(rp.roleId, list);
+  }
+
+  let count = 0;
+  for (const u of candidates) {
+    if (u.systemRole === "OWNER") {
+      count += 1;
+      continue;
+    }
+    const overrides: PermissionRule[] = (u.permissionOverrides ?? [])
+      .filter((o) => withinValidity(o.startsAt, o.endsAt, now))
+      .map((o) => ({ effect: o.effect, scope: o.scope as Scope }));
+    const roleRules: PermissionRule[] = u.roleAssignments
+      .filter((a) => withinValidity(a.startsAt, a.endsAt, now))
+      .flatMap((a) => ruleByRole.get(a.roleId) ?? []);
+    if (computeDecision({ isOwner: false, overrides, roleRules })) count += 1;
+  }
+  return count;
+}
+
+// permissionKey re-export (라우트/서비스가 키 조립 시 동일 헬퍼 사용 — 일관성).
+export { permissionKey };
+```
+
+실행: `npm test -- tests/modules/admin/users/guards.test.ts` → **PASS** (sync 가드 검증).
+
+commit: `feat(user-mgmt): task-02 anti-escalation sync 가드 + ActorContext (S5 D12/D13ⓐ-ⓓ)`
+
+### Step 6 — `countAvailableByPermission` / `assertMinAvailability` async 테스트 (실패 → 이미 구현됨 → PASS)
+
+> async 부분은 Step 5에서 함께 구현했다. 이 스텝은 **테스트를 추가**해 행동을 고정한다(prisma 모킹). 테스트 없이 구현만 있으면 회귀를 못 잡으므로 별도 스텝으로 둔다.
+
+`tests/modules/admin/users/guards.test.ts`에 이어 추가:
+
+```ts
+import { vi } from "vitest";
+import { countAvailableByPermission, assertMinAvailability } from "@/modules/admin/users/services/guards";
+import { MinAvailabilityError } from "@/modules/admin/users/errors";
+import type { PrismaTx } from "@/lib/prisma";
+
+// permissionId 조회 → user.findMany → rolePermission.findMany 를 모킹한 fake tx.
+function fakeTx(opts: {
+  permissionId: string | null;
+  users: Array<{
+    systemRole: string;
+    roleAssignments?: Array<{ roleId: string; startsAt: Date | null; endsAt: Date | null }>;
+    permissionOverrides?: Array<{ effect: "ALLOW" | "DENY"; scope: string; startsAt: Date | null; endsAt: Date | null }>;
+  }>;
+  rolePerms?: Array<{ roleId: string; effect: "ALLOW" | "DENY"; scope: string }>;
+}): PrismaTx {
+  const tx = {
+    permission: {
+      findUnique: vi.fn(async () => (opts.permissionId ? { id: opts.permissionId } : null)),
+    },
+    user: {
+      findMany: vi.fn(async () =>
+        opts.users.map((u) => ({
+          systemRole: u.systemRole,
+          roleAssignments: u.roleAssignments ?? [],
+          permissionOverrides: u.permissionOverrides ?? [],
+        })),
+      ),
+    },
+    rolePermission: { findMany: vi.fn(async () => opts.rolePerms ?? []) },
+  };
+  return tx as unknown as PrismaTx;
+}
+
+describe("countAvailableByPermission (computeDecision 재사용)", () => {
+  it("OWNER는 권한 미정의여도 보유로 카운트", async () => {
+    const tx = fakeTx({ permissionId: null, users: [{ systemRole: "OWNER" }, { systemRole: "MEMBER" }] });
+    expect(await countAvailableByPermission(tx, "admin.users:update")).toBe(1);
+  });
+  it("역할 ALLOW(all) 보유자 카운트, override DENY는 제외(Deny우선)", async () => {
+    const tx = fakeTx({
+      permissionId: "p1",
+      users: [
+        { systemRole: "MEMBER", roleAssignments: [{ roleId: "r1", startsAt: null, endsAt: null }] },
+        {
+          systemRole: "MEMBER",
+          roleAssignments: [{ roleId: "r1", startsAt: null, endsAt: null }],
+          permissionOverrides: [{ effect: "DENY", scope: "all", startsAt: null, endsAt: null }],
+        },
+      ],
+      rolePerms: [{ roleId: "r1", effect: "ALLOW", scope: "all" }],
+    });
+    expect(await countAvailableByPermission(tx, "admin.users:update")).toBe(1);
+  });
+  it("만료된 역할 부여는 미보유(유효기간 밖)", async () => {
+    const past = new Date("2000-01-01T00:00:00Z");
+    const tx = fakeTx({
+      permissionId: "p1",
+      users: [{ systemRole: "MEMBER", roleAssignments: [{ roleId: "r1", startsAt: null, endsAt: past }] }],
+      rolePerms: [{ roleId: "r1", effect: "ALLOW", scope: "all" }],
+    });
+    expect(await countAvailableByPermission(tx, "admin.users:update")).toBe(0);
+  });
+});
+
+describe("assertMinAvailability (D13ⓔ)", () => {
+  it("user-management 가용 0 → MinAvailabilityError", async () => {
+    const tx = fakeTx({ permissionId: "p1", users: [] }); // 아무도 권한 없음
+    await expect(assertMinAvailability(tx)).rejects.toThrow(MinAvailabilityError);
+  });
+  it("user-management·audit 모두 ≥1 → 통과(OWNER 한 명이 둘 다 충족)", async () => {
+    const tx = fakeTx({ permissionId: null, users: [{ systemRole: "OWNER" }] });
+    await expect(assertMinAvailability(tx)).resolves.toBeUndefined();
+  });
+});
+```
+
+실행: `npm test -- tests/modules/admin/users/guards.test.ts` → **PASS**.
+
+> 주의: `assertMinAvailability`는 내부에서 `countAvailableByPermission`을 **두 번**(USER_MGMT_PERMISSION, AUDIT_PERMISSION) 호출하므로, fake tx의 `permission.findUnique`/`user.findMany`/`rolePermission.findMany`는 호출마다 동일 응답을 반환하면 된다(위 `fakeTx`가 그렇게 동작 — 매 호출 새 결과 생성). 두 권한을 다르게 흉내내려면 mock에 호출 카운터를 둔다(현 테스트는 동일 응답으로 충분).
+
+commit: `test(user-mgmt): task-02 가용성 카운트·최소가용성 단위테스트 (D13ⓔ)`
+
+## Acceptance Criteria
+
+1. **typecheck**
+   ```bash
+   npm run typecheck
+   ```
+   기대: 에러 0건(종료코드 0). `tsc --noEmit` 출력에 `src/modules/admin/users/*` 관련 에러 없음.
+
+2. **단위테스트**
+   ```bash
+   npm test -- tests/modules/admin/users
+   ```
+   기대: `policy.test.ts` + `guards.test.ts`의 모든 케이스 PASS, 실패 0.
+   출력 예: `Test Files  2 passed (2)` / `Tests  NN passed (NN)`.
+
+3. **lint**
+   ```bash
+   npm run lint
+   ```
+   기대: 신규 파일에 eslint(boundaries 포함) 위반 없음. `services/guards.ts`는 `@/kernel/access`·`@/lib/prisma`·동일 모듈만 import → 경계 위반 없음.
+
+## Cautions
+
+- **advisory lock 키는 고정 상수**(`4815162342n`, bigint). leave 도메인의 advisory lock(`LEAVE_OVERLAP_LOCK_NS=0x6c76`, 2-인자 `int4` 형태)과 **다른 시그니처**(1-인자 `bigint`)라 키스페이스가 겹치지 않는다. 전역 직렬화가 목적이므로 사용자/리소스별로 쪼개지 말 것.
+- **`withAvailabilityLock`/`assertMinAvailability`는 본 task에서 정의만** 한다. 실제 호출(repository의 `setStatusTx`/`resetPasswordTx`/`setRoles`/`createOverride`/`updateUserTx` systemRole 강등이 이 래퍼 안에서 커밋 전 `assertMinAvailability(tx)` 호출)은 **task-03**이다 — 여기서 호출처를 만들지 말 것(범위 밖, 미사용 코드 금지 원칙에 걸리지 않게 export만 노출).
+- **`isPrivilegedRoleKey`는 sync·멤버십 판정**(DB 조회 금지, D13ⓑ). 역할의 실제 RolePermission(`"*"`/`admin.*`)을 조회해 판정하지 않는다 — pm·admin은 시드로 고정된 특권 역할이고, 카탈로그 외 역할은 비특권으로 본다(allowlist, fail-safe).
+- **`computeDecision`은 scope="all" ALLOW만 전역 허가로 인정**한다(`decision.ts` 주석). `countAvailableByPermission`은 target 컨텍스트 없는 전역 카운트이므로 own/team/assigned ALLOW는 가용으로 치지 않는다 — 이는 보수적(fail-closed)이라 최소가용성 불변식을 더 강하게 보존한다(의도된 동작).
+- **에러 매핑은 라우트(task-05) 책임**이다. 본 task는 throw만 하고 HTTP 상태로 변환하지 않는다.
+- **surgical**: 기존 파일(`access/*`, `leave/*`)을 수정하지 않는다. 본 task는 신규 모듈 3개 + 테스트 2개만 추가한다.
+- `permissionOverrides`를 조건부 `select`(permissionId 없으면 `false`)로 가져오므로, 코드에서 `u.permissionOverrides ?? []`로 안전 접근한다(타입상 select:false면 필드 부재).

@@ -1,6 +1,6 @@
 # 사용자 관리 — ①계정 수명주기 + 관리자 사용자 관리 (설계 spec)
 
-> 작성일 2026-06-21 · 브랜치 `feat/user-management` · 상태: 설계 확정(구현 전)
+> 작성일 2026-06-21 · 브랜치 `feat/user-management` · 상태: 설계 확정 + plan 단계 결정 반영(자격증명=**C안 하이브리드**, D18=**DB-backed durable**)
 
 ## 1. 배경과 목적
 
@@ -50,7 +50,7 @@
 | **D14** | **비밀번호 재설정(reset-password) 가드**. 대상이 OWNER/ADMIN `systemRole` 또는 특권 역할(`pm`/`admin`) 보유자면 **OWNER만** 재설정 가능(위임 admin 거부). 비-OWNER admin은 자기 자신을 admin 라우트로 재설정 불가. 재설정 성공 후 대상의 **기존 세션 무효화**. D4(임시비번 즉시 ACTIVE·관리자 전달)는 비특권 대상에 한해 유지. **최소관리자 불변식(D13ⓔ)을 reset-password까지 확장** — 재설정이 마지막 가용(비-must-change) user-management 관리자 또는 audit 조회자를 0으로 만들면 거부(OWNER라도). 즉 가용성 불변식은 role/override/status뿐 아니라 `mustChangePassword`·세션무효화를 유발하는 모든 mutation을 포함한다. |
 | **D15** | **비밀번호 변경 인증**. 자발적 변경은 **현재 비밀번호 확인** 필요. 최초 강제변경(`mustChangePassword`)은 현재(임시) 비밀번호 확인 또는 fresh 로그인 필요. 변경/재설정 성공 후 **다른 활성 세션 무효화** — JWT 세션이므로 `passwordChangedAt` 발급시각 비교로 무효화(jwt/session 콜백). |
 | **D13** | **권한 위임 anti-escalation(D12 확장)**. 위임 `admin`(비-OWNER)에 대해: (a) **자가 권한 mutation 금지** — 본인의 역할·override·`systemRole`·`status`를 스스로 변경할 수 없다(OWNER만). → "나에게 `pm` 부여" 차단. (b) **특권 역할 부여는 OWNER만** — `pm`·`admin` 등 시스템 역할 또는 `"*"`/`admin.*`를 포함한 역할의 부여·회수는 OWNER만. 위임 admin은 비특권 역할(개발/외주 4종)만 부여한다. (c) **보유 권한 한도 내 위임** — 위임 admin은 자신이 실제 보유한 권한에 한해서만 ALLOW override를 부여할 수 있다(가진 것 이상 못 줌). (d) **DENY override도 무제한 아님** — 타인 대상 `admin.*`/critical 권한(user-management·audit) DENY는 OWNER만(위임 admin이 동료 관리자를 lockout 못 하게). 비특권 권한 DENY만 위임 admin 허용. (e) **최소 관리자 보존 불변식** — 모든 role/override/status mutation 후 **최소 1명의 가용 user-management 관리자 + 1명의 audit 조회자**가 남아야 한다(아니면 거부). 모든 가드는 **라우트 permission 키 검사와 별개로 서비스 계층에서 강제**한다(권한키 분할 대신). |
-| **D16** | **이메일 소유 검증**. 자가가입은 PENDING 생성 + 검증 토큰(해시 저장)·검증 메일 발송(MailDelivery, D5 알림과 별개 범주). 공개 라우트 `verify-email`이 토큰·만료 검증 후 `emailVerifiedAt` 기록. **승인은 `emailVerifiedAt` 필수**(미검증 승인 거부). **이메일 예약 방지**: 미검증·미승인 PENDING은 7일 후 만료, 중복 충돌 시 기존 행이 만료된 미검증 PENDING이면 교체 허용(D10 보완); 검증완료·활성 이메일은 중복 거부 유지. 관리자 직접추가는 관리자 보증으로 `emailVerifiedAt=now()` 설정. |
+| **D16** | **이메일 소유 검증 + 자가가입 비번 결속(C안)**. 자가가입은 **비밀번호 없이** PENDING 생성(`passwordHash=null`) + set-password 겸 검증 토큰(해시 저장)·검증 메일 발송(MailDelivery, D5 알림과 별개 범주). 공개 라우트 `verify-email`(set-password 겸용)이 토큰·만료 검증 후 **메일 수신자가 입력한 비밀번호를 해시해 `passwordHash`에 기록하고 동시에 `emailVerifiedAt` 기록** — 비밀번호는 메일 수신자만 만들 수 있어 신원이 메일 소유증명에 결속된다(7차 적대검증 finding #1 해소). **승인은 `emailVerifiedAt`(=비번 설정 완료) 필수**(미검증 승인 거부). **이메일 예약 방지**: 미검증·미승인 PENDING은 7일 후 만료, 중복 충돌 시 기존 행이 만료된 미검증 PENDING이면 교체 허용(D10 보완); 검증완료·활성 이메일은 중복 거부 유지. 관리자 직접추가는 D4대로 임시비번 + 관리자 보증으로 `emailVerifiedAt=now()` 설정(set-password 토큰 미사용). |
 | **D17** | **`mustChangePassword` 하드 게이트**. 플래그가 켜진 세션은 UI 리다이렉트에만 의존하지 않고 **API 계층에서 `change-password`·`logout` 외 모든 엔드포인트를 거부**한다. `requirePermission`뿐 아니라 **`getPermissionSummary`로 인가하는 경로도 fail-closed**(must-change 세션이면 빈 summary 반환)여야 하므로, **모든 인증 API가 공유하는 단일 중앙 가드**(세션 해석 계층)에서 강제한다 — 개별 핸들러의 인가 방식에 의존하지 않음. **라우트 열거 테스트**로 allowlist 외 모든 기존 API가 403을 반환함을 증명. |
 | **D18** | **공개 엔드포인트 남용 통제**. `signup`·`resend-verification`은 미인증 공개라 서버측 스로틀이 필수: per-IP·per-email 가입 레이트리밋, 재발송 쿨다운, 미처리 PENDING 생성 상한(bounded creation), 그에 묶인 메일 enqueue 상한. 한도 초과는 **행/메일 생성 전에** 거부. 강제는 **원자적·사전(pre-write)·durable(DB-backed, 다중 인스턴스 안전)**이어야 한다(구체 한도값·윈도우·메커니즘은 plan에서 확정). 테스트로 "한도 초과 후 User/MailDelivery 행 미생성"을 증명. (망 제한이 있어도 내부 미인증 클라이언트의 DB/메일 폭주를 막기 위함 — 7일 만료는 공격 중 쓰기/메일 양을 못 막음.) |
 
@@ -67,21 +67,25 @@ enum UserStatus {
 
 model User {
   // ... 기존 필드 유지
+  passwordHash         String?   // 변경 — 자가가입은 set-password 전까지 null(C안). 관리자추가/시드는 즉시 설정
   // employmentType/jobFunction/department: PENDING이면 '희망값'(비권위), ACTIVE면 관리자 확정값
-  mustChangePassword  Boolean  @default(false)  // 신규
-  passwordChangedAt   DateTime?                  // 신규 — 세션 무효화 기준(D15)
-  emailVerifiedAt     DateTime?                  // 신규 — 이메일 소유 검증(D16)
-  emailVerifyTokenHash String?                   // 신규 — 검증 토큰 해시
-  emailVerifyExpiresAt DateTime?                  // 신규 — 검증 토큰 만료
+  mustChangePassword   Boolean   @default(false)  // 신규
+  passwordChangedAt    DateTime?                   // 신규 — 비번변경 세션 무효화 기준(D15)
+  sessionInvalidatedAt DateTime?                   // 신규 — 비활성화 등 상태전이 세션 무효화 기준
+  emailVerifiedAt      DateTime?                   // 신규 — 이메일 소유 검증(D16)
+  emailVerifyTokenHash String?                    // 신규 — 검증 겸 set-password 토큰 해시(C안)
+  emailVerifyExpiresAt DateTime?                   // 신규 — 토큰 만료
 }
 ```
 
 마이그레이션 작업:
 
 1. `UserStatus`에 `PENDING`, `REJECTED` 값 추가.
-2. `User`에 `mustChangePassword`, `passwordChangedAt`, `emailVerifiedAt`, `emailVerifyTokenHash`, `emailVerifyExpiresAt` 추가.
+2. `User`에 `mustChangePassword`, `passwordChangedAt`, `sessionInvalidatedAt`, `emailVerifiedAt`, `emailVerifyTokenHash`, `emailVerifyExpiresAt` 추가.
+2b. **`User.passwordHash`를 nullable(`String?`)로 변경**(C안) — 자가가입은 set-password 전까지 비번이 없음. 기존 행은 모두 값이 있어 데이터 영향 없음.
 3. **`admin` AccessRole 시드**(`key="admin"`, `isSystem=true`): `admin.users:{view,create,update,approve}` + `admin.settings:configure` + `admin.audit:view`.
-4. **권한 카탈로그 보강**: `admin.users:create`(현재 누락), `admin.users:approve`를 시드에 추가(`admin.users:view`/`:update`는 이미 존재). `catalog.ts`의 `ACTIONS`에 `approve`는 이미 있음.
+4. **권한 카탈로그 보강**: `admin.users:create`(현재 시드 누락), `admin.users:approve`를 시드(`EXTRA_PERMISSIONS`)에 추가(`admin.users:view`는 VIEW_RESOURCES로, `:update`는 이미 존재). `catalog.ts`의 `RESOURCES`에 `admin.users`·`ACTIONS`에 `create`/`approve`는 이미 있음.
+5. **D18 레이트리밋 모델 추가**(DB-backed durable): 공개 엔드포인트 시도 카운트·쿨다운을 원자적·사전·다중 인스턴스 안전하게 강제할 테이블(구체 구조는 plan task-01에서 확정).
 
 > A안 선택 근거: `User.employmentType`/`jobFunction`이 non-null 필수라 PENDING 신청도 어떤 값을 가져야 하는데, ① 로그인이 비-ACTIVE에서 차단되고 ② 승인 전까지 역할이 부여되지 않으므로 희망값이 권한 계산에 절대 반영되지 않는다. 따라서 별도 `requested*` 컬럼이나 분리 엔티티 없이 기존 컬럼 재사용이 안전하며 마이그레이션이 최소다. `status`가 권위 여부의 단일 구분자다.
 
@@ -98,8 +102,8 @@ model User {
 
 전이 규칙:
 
-- **자가 신청**: `∅ → PENDING`(`emailVerifiedAt=null`). 입력 = 이메일·이름·비밀번호 + 희망 고용형태·직무·부서. 비밀번호는 기존 정책(12자+) 재사용. 검증 토큰 발급 + 검증 메일 발송(D16).
-- **이메일 검증**(D16): `verify-email` 라우트가 토큰·만료 확인 후 `emailVerifiedAt` 기록. 검증 메일 재발송 경로 제공.
+- **자가 신청(C안)**: `∅ → PENDING`(`emailVerifiedAt=null`, `passwordHash=null`). 입력 = 이메일·이름 + 희망 고용형태·직무·부서(**비밀번호는 받지 않음**). set-password 겸 검증 토큰 발급 + 검증 메일 발송(D16).
+- **이메일 검증 + 비번 설정**(D16·C안): `verify-email`(set-password 겸용) 라우트가 토큰·만료 확인 후 **메일 수신자가 입력한 비밀번호를 해시해 `passwordHash`에 기록 + `emailVerifiedAt` 기록**(비밀번호 정책 12자+ 재사용). status는 PENDING 유지(승인 전 로그인 불가). 검증/비번설정 메일 재발송 경로 제공.
 - **승인**: `PENDING → ACTIVE`. **`emailVerifiedAt` 필수**(미검증이면 승인 거부). 관리자가 고용형태·직무·`AccessRole`을 확정. 결과 메일 발송.
 - **거절**: `PENDING → REJECTED`. 결과 메일 발송.
 - **직접추가**: `∅ → ACTIVE` (임시비번, `mustChangePassword=true`).
@@ -131,8 +135,8 @@ model User {
 
 | 라우트 | 메서드 | 권한 | 비고 |
 | --- | --- | --- | --- |
-| `/api/auth/signup` | POST | 공개(미인증) | PENDING 생성, 검증 메일 발송, 중복 409 |
-| `/api/auth/verify-email` | GET/POST | 공개(토큰) | 토큰·만료 검증 → `emailVerifiedAt` |
+| `/api/auth/signup` | POST | 공개(미인증) | **비번 없이** PENDING 생성, set-password 토큰·검증 메일 발송, 중복 409 |
+| `/api/auth/verify-email` | GET/POST | 공개(토큰) | GET=토큰 유효성 확인, POST=토큰+비밀번호 검증 → `passwordHash`+`emailVerifiedAt` 설정(C안) |
 | `/api/auth/resend-verification` | POST | 공개 | 검증 메일 재발송 |
 | `/api/auth/change-password` | POST | 인증(본인) | 현재 비번 확인, 후 `mustChangePassword=false`·세션 무효화 |
 | `/api/admin/users` | GET | `admin.users:view` | 목록·필터·페이지네이션 |
@@ -180,6 +184,14 @@ model User {
 - **감사로그**: 각 mutation이 `AuditLog`에 기록되는지.
 
 ## 11. 미해결 / 후속
+
+### plan 단계 확정 결정 (2026-06-21, 7차 적대검증 미해결분 해소)
+
+- **자격증명 발급 모델 = C안 하이브리드**: 자가가입은 set-password 토큰(메일 수신자만 비번 설정 → finding #1 해소), 관리자 직접추가·reset-password는 임시비번 유지(D4/D14). finding #2(발급 관리자가 임시비번 인지)는 **내부·망제한 도구 + 위임 admin이 비특권 대상만 추가/재설정 가능**(D13ⓑ·D14)이라는 맥락에서 수용.
+- **D18 강제 메커니즘 = DB-backed durable**(다중 인스턴스 안전). 구체 한도값·윈도우·테이블은 plan task에서 확정.
+- **#3(최소 가용성 불변식 race-safe 구현)** — plan에서 직렬화/락 모델 확정(섹션 9 참조).
+
+### 그 외
 
 - 신규 신청 인앱 배지의 갱신 주기(폴링 vs 단순 페이지 진입 시 카운트) — 구현 시 단순 진입-시-카운트로 시작.
 - 공개 엔드포인트 레이트리밋·쿨다운(D18)은 본 증분에 포함하되 **구체 한도값·윈도우·DB-backed 강제 메커니즘은 plan에서 확정**(원자적·사전·durable 속성은 D18에 명시).
