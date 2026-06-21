@@ -20,8 +20,8 @@ export function toOverridePayload(s: OverrideFormState) {
     resource: resource ?? "", action: action ?? "",
     effect: s.effect, scope: s.scope,
     reason: s.reason || null,
-    startsAt: s.startsAt ? `${s.startsAt}T00:00:00.000Z` : null,
-    endsAt: s.endsAt ? `${s.endsAt}T23:59:59.999Z` : null,
+    startsAt: s.startsAt ? `${s.startsAt}T00:00:00.000+09:00` : null,
+    endsAt: s.endsAt ? `${s.endsAt}T23:59:59.999+09:00` : null,
   };
 }
 

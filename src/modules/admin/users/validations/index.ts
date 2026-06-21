@@ -14,7 +14,7 @@ const email = z.string().email("올바른 이메일 형식이 아닙니다.");
 const name = z.string().trim().min(1, "이름은 필수입니다.").max(100);
 const department = z.string().trim().max(100).nullish();
 // 토큰·datetime은 문자열로 받고(라우트가 Date로 파싱), 빈 문자열은 거부.
-const isoDateTime = z.string().datetime().nullish();
+const isoDateTime = z.string().datetime({ offset: true }).nullish();
 
 // 공개 자가가입(signupSchema)·set-password(setPasswordSchema)·재발송(resendSchema)은 task-06 `validations/signup.ts`,
 // 비번 변경(changePasswordSchema)은 task-07 `validations/change-password.ts` 소관 — 본 파일에 정의 금지(중복 정의 충돌).

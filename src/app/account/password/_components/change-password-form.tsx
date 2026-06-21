@@ -1,12 +1,10 @@
 "use client";
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 
 export function ChangePasswordForm({ mustChange }: { mustChange: boolean }) {
-  const router = useRouter();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -27,9 +25,9 @@ export function ChangePasswordForm({ mustChange }: { mustChange: boolean }) {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setStatus("done");
-        // 강제변경 완료 후 대시보드로, 자발 변경은 그 자리에서 완료 표시
+        // passwordChangedAt 갱신으로 기존 세션이 무효화되므로 full navigation으로 재로그인
         if (mustChange) {
-          router.push("/dashboard");
+          window.location.href = "/login?changed=1";
         }
       } else {
         setErrorMsg((data as { error?: string }).error ?? "비밀번호 변경에 실패했습니다.");

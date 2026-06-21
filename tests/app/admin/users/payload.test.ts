@@ -12,8 +12,8 @@ describe("override 폼 페이로드 변환", () => {
     expect(p.resource).toBe("admin.users");
     expect(p.action).toBe("view");
     expect(p.effect).toBe("DENY");
-    expect(p.startsAt).toBe("2026-07-01T00:00:00.000Z");
-    expect(p.endsAt).toBe("2026-07-31T23:59:59.999Z");
+    expect(p.startsAt).toBe("2026-07-01T00:00:00.000+09:00");
+    expect(p.endsAt).toBe("2026-07-31T23:59:59.999+09:00");
     expect(p.reason).toBe("임시 회수");
   });
 });
