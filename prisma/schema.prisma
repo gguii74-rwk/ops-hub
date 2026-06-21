@@ -199,6 +199,7 @@ model User {
   @@index([employmentType, jobFunction])
   @@index([systemRole])
   @@index([status])
+  @@index([emailVerifyTokenHash])
   @@schema("kernel")
 }
 

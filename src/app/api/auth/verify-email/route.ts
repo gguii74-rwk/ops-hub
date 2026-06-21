@@ -12,13 +12,22 @@ import { mapAuthError } from "../_shared";
 export async function GET(req: Request) {
   const token = new URL(req.url).searchParams.get("token");
   if (!token) return NextResponse.json({ error: "missing token" }, { status: 400 });
-  const tokenHash = hashToken(token);
-  const user = await prisma.user.findFirst({
-    where: { emailVerifyTokenHash: tokenHash, emailVerifyExpiresAt: { gt: new Date() } },
-    select: { id: true },
-  });
-  if (!user) return NextResponse.json({ error: "유효하지 않거나 만료된 링크입니다." }, { status: 400 });
-  return NextResponse.json({ valid: true }, { headers: { "Cache-Control": "no-store" } });
+  try {
+    // per-IP 레이트리밋 — emailVerifyTokenHash 인덱스 없이 테이블 스캔 DoS 방어
+    const ip = extractClientIp(req);
+    const now = new Date();
+    await enforceRateLimit("verify-token:ip", ip, SIGNUP_IP_LIMIT, now);
+
+    const tokenHash = hashToken(token);
+    const user = await prisma.user.findFirst({
+      where: { emailVerifyTokenHash: tokenHash, emailVerifyExpiresAt: { gt: now } },
+      select: { id: true },
+    });
+    if (!user) return NextResponse.json({ error: "유효하지 않거나 만료된 링크입니다." }, { status: 400 });
+    return NextResponse.json({ valid: true }, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    return mapAuthError(error);
+  }
 }
 
 // POST: 토큰+새 비번 → passwordHash(bcrypt 10)+emailVerifiedAt 기록(setPasswordViaToken). PENDING 유지(승인 전 로그인 불가).

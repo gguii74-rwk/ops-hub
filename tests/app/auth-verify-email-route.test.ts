@@ -46,6 +46,13 @@ describe("GET /api/auth/verify-email (토큰 유효성)", () => {
     const res = await GET(new Request("http://x/api/auth/verify-email"));
     expect(res.status).toBe(400);
   });
+  it("GET 레이트리밋 초과 → 429, findFirst 미호출", async () => {
+    const { RateLimitError } = await import("@/modules/admin/users/errors");
+    m.enforceRateLimit.mockRejectedValueOnce(new RateLimitError("too many"));
+    const res = await GET(new Request("http://x/api/auth/verify-email?token=abc"));
+    expect(res.status).toBe(429);
+    expect(m.userFindFirst).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/auth/verify-email (set-password)", () => {
