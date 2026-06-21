@@ -226,6 +226,11 @@ describe("upsertOverride / removeOverride", () => {
   it("위임 admin이 자기 자신 override → EscalationError", async () => {
     await expect(upsertOverride(delegate(["leave.approval:view"], "admin1"), "admin1", ov)).rejects.toBeInstanceOf(EscalationError);
   });
+  it("NF2: 존재하지 않는 대상에 upsertOverride → UserConflictError, createOverride 미호출", async () => {
+    r.getUserDetail.mockResolvedValue(null as never);
+    await expect(upsertOverride(delegate(["leave.approval:view"]), "u-ghost", ov)).rejects.toBeInstanceOf(UserConflictError);
+    expect(r.createOverride).not.toHaveBeenCalled();
+  });
   it("removeOverride(비-critical DENY 삭제): 자가 아니고 grant 경계 통과면 deleteOverride 호출", async () => {
     // 삭제는 effect 반전: DENY 삭제=ALLOW 복원 → actor가 해당 권한 보유해야 함.
     r.getUserDetail.mockResolvedValue(detail({ overrides: [{ id: "ov1", resource: "leave.approval", action: "view", effect: "DENY", scope: "all", reason: null, startsAt: null, endsAt: null }] }) as never);
@@ -283,6 +288,16 @@ describe("setUserStatus (finding 1 — 특권 대상 OWNER-only + 락 안 rechec
     await setUserStatus(owner, "u1", "ACTIVE");
     expect(r.reactivateRejectedTx).toHaveBeenCalledWith("u1", "owner1", expect.any(Date), expect.any(Function));
     expect(r.setStatusTx).not.toHaveBeenCalled();
+  });
+  it("NF1: :approve 없는 위임 admin이 REJECTED→ACTIVE 재활성 → EscalationError, reactivateRejectedTx 미호출", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ status: "REJECTED", systemRole: "MEMBER", roleKeys: [] }) as never);
+    await expect(setUserStatus(delegate(["admin.users:update"]), "u1", "ACTIVE")).rejects.toBeInstanceOf(EscalationError);
+    expect(r.reactivateRejectedTx).not.toHaveBeenCalled();
+  });
+  it("NF1: :approve 보유 위임 admin이 REJECTED→ACTIVE 재활성 → reactivateRejectedTx 호출", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ status: "REJECTED", systemRole: "MEMBER", roleKeys: [] }) as never);
+    await setUserStatus(delegate(["admin.users:approve"]), "u1", "ACTIVE");
+    expect(r.reactivateRejectedTx).toHaveBeenCalled();
   });
   it("위임 admin 자가 status 변경 → EscalationError", async () => {
     r.getUserDetail.mockResolvedValue(detail({ id: "admin1", status: "ACTIVE" }) as never);

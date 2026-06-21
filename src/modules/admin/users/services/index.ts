@@ -147,6 +147,7 @@ export async function assignRoles(actor: ActorContext, id: string, roleKeys: str
 
 // ── override 생성(D13ⓐ ⓒ ⓓ): 자가 금지 + ALLOW 보유한도/critical DENY 가드 → createOverride. ──
 export async function upsertOverride(actor: ActorContext, id: string, dto: OverrideInputDto): Promise<{ id: string }> {
+  await loadTarget(id);
   assertNotSelfMutation(actor, id);
   assertOverrideWithinActorGrant(actor, permissionKey(dto.resource, dto.action), dto.effect);
   const input: OverrideInput = {
@@ -192,6 +193,9 @@ export async function setUserStatus(actor: ActorContext, id: string, status: "AC
   }
   const now = new Date();
   if (status === "ACTIVE" && target.status === "REJECTED") {
+    if (!actor.isOwner && !actor.permissionKeys.has("admin.users:approve")) {
+      throw new EscalationError("거절된 계정의 재활성은 승인(admin.users:approve) 권한이 필요합니다.");
+    }
     await reactivateRejectedTx(id, actor.userId, now, recheck);
     return;
   }
