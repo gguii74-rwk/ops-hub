@@ -182,6 +182,10 @@ export async function setUserStatus(actor: ActorContext, id: string, status: "AC
       throw new EscalationError("특권 사용자의 상태 변경은 OWNER만 가능합니다.");
     }
   };
+  // F2: PENDING/INVITED 사용자는 status toggle 대상이 아님 — approveTx/rejectTx 경로로만 처리 가능.
+  if (target.status === "PENDING" || target.status === "INVITED") {
+    throw new UserConflictError("승인 대기 중인 사용자는 승인/거절로 처리하세요.");
+  }
   const now = new Date();
   if (status === "ACTIVE" && target.status === "REJECTED") {
     await reactivateRejectedTx(id, actor.userId, now, recheck);

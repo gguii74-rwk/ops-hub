@@ -250,6 +250,19 @@ describe("upsertOverride / removeOverride", () => {
 });
 
 describe("setUserStatus (finding 1 — 특권 대상 OWNER-only + 락 안 recheck)", () => {
+  // F2 regression: PENDING/INVITED 사용자는 승인 플로우로만 처리해야 함 — status toggle 금지
+  it("F2: target.status가 PENDING이면 UserConflictError, setStatusTx·reactivateRejectedTx 미호출", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ status: "PENDING", systemRole: "MEMBER", roleKeys: [] }) as never);
+    await expect(setUserStatus(owner, "u1", "ACTIVE")).rejects.toBeInstanceOf(UserConflictError);
+    expect(r.setStatusTx).not.toHaveBeenCalled();
+    expect(r.reactivateRejectedTx).not.toHaveBeenCalled();
+  });
+  it("F2: target.status가 INVITED이면 UserConflictError, setStatusTx·reactivateRejectedTx 미호출", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ status: "INVITED", systemRole: "MEMBER", roleKeys: [] }) as never);
+    await expect(setUserStatus(owner, "u1", "ACTIVE")).rejects.toBeInstanceOf(UserConflictError);
+    expect(r.setStatusTx).not.toHaveBeenCalled();
+    expect(r.reactivateRejectedTx).not.toHaveBeenCalled();
+  });
   it("DISABLE(비특권 대상): setStatusTx(now·recheck) 호출", async () => {
     r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE", systemRole: "MEMBER", roleKeys: [] }) as never);
     await setUserStatus(owner, "u1", "DISABLED");

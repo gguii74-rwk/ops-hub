@@ -102,7 +102,9 @@ describe("rejectTx", () => {
     h.db.mailDelivery.create.mockResolvedValue({ id: "md1" });
     await rejectTx("u1", "admin1", "사유", mail, updatedAt);
     expect(h.db.user.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: "u1", status: "PENDING", updatedAt }, data: expect.objectContaining({ status: "REJECTED" }),
+      where: { id: "u1", status: "PENDING", updatedAt },
+      // F3 regression: 거절 시 verify 토큰 필드 소거 확인
+      data: expect.objectContaining({ status: "REJECTED", emailVerifyTokenHash: null, emailVerifyExpiresAt: null }),
     }));
     expect(h.db.mailDelivery.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ leaveRequestId: null, eventType: "REJECTED" }),
@@ -117,6 +119,22 @@ describe("rejectTx", () => {
 });
 
 describe("setStatusTx (세션 무효화 동반)", () => {
+  // F2 regression: PENDING 상태 사용자는 status toggle 대상이 아님 — updateMany 미호출
+  it("F2: 현재 status가 PENDING이면 UserConflictError, updateMany 미호출(승인우회 차단)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "PENDING", updatedAt: new Date("2026-06-01T00:00:00Z"), systemRole: "MEMBER", roleAssignments: [] });
+    await expect(setStatusTx("u1", "ACTIVE", "admin1", new Date())).rejects.toBeInstanceOf(UserConflictError);
+    expect(h.db.user.updateMany).not.toHaveBeenCalled();
+  });
+  it("F2: 현재 status가 INVITED이면 UserConflictError, updateMany 미호출", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "INVITED", updatedAt: new Date("2026-06-01T00:00:00Z"), systemRole: "MEMBER", roleAssignments: [] });
+    await expect(setStatusTx("u1", "ACTIVE", "admin1", new Date())).rejects.toBeInstanceOf(UserConflictError);
+    expect(h.db.user.updateMany).not.toHaveBeenCalled();
+  });
+  it("F2: 현재 status가 REJECTED이면 UserConflictError, updateMany 미호출", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "REJECTED", updatedAt: new Date("2026-06-01T00:00:00Z"), systemRole: "MEMBER", roleAssignments: [] });
+    await expect(setStatusTx("u1", "ACTIVE", "admin1", new Date())).rejects.toBeInstanceOf(UserConflictError);
+    expect(h.db.user.updateMany).not.toHaveBeenCalled();
+  });
   it("DISABLE: availability lock 안에서 sessionInvalidatedAt=now 갱신 + 커밋 전 assertMinAvailability", async () => {
     h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt: new Date("2026-06-01T00:00:00Z") });
     h.db.user.updateMany.mockResolvedValue({ count: 1 });
@@ -416,14 +434,26 @@ describe("setPasswordViaToken (C안 set-password)", () => {
     h.db.user.findFirst.mockResolvedValue({ id: "u-self" });
     const res = await setPasswordViaToken("th", "newhash", now);
     expect(res).toEqual({ id: "u-self" });
+    // F3 regression: where에 status:"PENDING" + emailVerifiedAt:null 포함 확인
     expect(h.db.user.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { emailVerifyTokenHash: "th", emailVerifyExpiresAt: { gt: now } },
+      where: { emailVerifyTokenHash: "th", emailVerifyExpiresAt: { gt: now }, status: "PENDING", emailVerifiedAt: null },
       data: { passwordHash: "newhash", emailVerifiedAt: now, emailVerifyTokenHash: null, emailVerifyExpiresAt: null },
     }));
   });
   it("토큰 미일치/만료(count 0)면 null 반환", async () => {
     h.db.user.updateMany.mockResolvedValue({ count: 0 });
     expect(await setPasswordViaToken("bad", "h", new Date())).toBeNull();
+  });
+  // F3 regression: 이미 검증됐거나(emailVerifiedAt not null) PENDING이 아닌 사용자는 토큰 소비 불가
+  it("F3: updateMany where에 status:PENDING·emailVerifiedAt:null 조건 포함 — 이미 처리된 사용자 토큰 소비 차단", async () => {
+    const now = new Date("2026-06-10T00:00:00Z");
+    // count=0 시뮬레이션: REJECTED/이미검증 사용자는 status:PENDING+emailVerifiedAt:null 조건으로 걸러짐
+    h.db.user.updateMany.mockResolvedValue({ count: 0 });
+    const res = await setPasswordViaToken("th", "newhash", now);
+    expect(res).toBeNull();
+    // where에 status·emailVerifiedAt 조건이 존재하는지 검증
+    const whereArg = h.db.user.updateMany.mock.calls[0][0].where as Record<string, unknown>;
+    expect(whereArg).toMatchObject({ status: "PENDING", emailVerifiedAt: null });
   });
 });
 

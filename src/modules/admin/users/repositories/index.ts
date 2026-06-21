@@ -154,9 +154,10 @@ export async function createPendingSignup(args: {
 }
 
 // set-password 토큰 소비: 만료 안 된 토큰 일치 행에 passwordHash+emailVerifiedAt 기록, 토큰 소거. PENDING 유지.
+// F3: status:PENDING + emailVerifiedAt:null 조건 추가 — 이미 검증됐거나 REJECTED된 사용자의 구 토큰 소비 차단.
 export async function setPasswordViaToken(tokenHash: string, passwordHash: string, now: Date): Promise<{ id: string } | null> {
   const { count } = await prisma.user.updateMany({
-    where: { emailVerifyTokenHash: tokenHash, emailVerifyExpiresAt: { gt: now } },
+    where: { emailVerifyTokenHash: tokenHash, emailVerifyExpiresAt: { gt: now }, status: "PENDING", emailVerifiedAt: null },
     data: { passwordHash, emailVerifiedAt: now, emailVerifyTokenHash: null, emailVerifyExpiresAt: null },
   });
   if (count === 0) return null;
@@ -243,7 +244,8 @@ export async function rejectTx(id: string, actorId: string, reason: string, mail
     if (u.status !== "PENDING") throw new UserConflictError("이미 처리된 신청입니다.");
     const updated = await tx.user.updateMany({
       where: { id, status: "PENDING", updatedAt: expectedUpdatedAt },
-      data: { status: "REJECTED" },
+      // F3: 거절 시 verify 토큰 소거 — 기 발급된 검증 링크를 무효화해 REJECTED 사용자의 토큰 소비 차단.
+      data: { status: "REJECTED", emailVerifyTokenHash: null, emailVerifyExpiresAt: null },
     });
     if (updated.count === 0) throw new UserConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요.");
     await writeAudit(tx, { actorId, entityType: "User", entityId: id, action: "reject", metadata: { reason } });
@@ -339,6 +341,8 @@ export async function setStatusTx(
     });
     if (!u) throw new UserConflictError("사용자를 찾을 수 없습니다.");
     if (recheck) recheck({ systemRole: u.systemRole, roleKeys: u.roleAssignments.map((r) => r.role.key) }); // finding 1 — 변경 전 중단
+    // F2: status toggle은 ACTIVE↔DISABLED 전이만 허용. PENDING/INVITED/REJECTED는 전용 플로우(approve/reject/reactivate)로 처리.
+    if (u.status !== "ACTIVE" && u.status !== "DISABLED") throw new UserConflictError("승인 대기 중인 사용자는 승인/거절로 처리하세요.");
     if (u.status === status) throw new UserConflictError("이미 해당 상태입니다.");
     const updated = await tx.user.updateMany({
       where: { id, status: u.status, updatedAt: u.updatedAt },
