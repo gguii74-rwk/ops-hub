@@ -11,6 +11,8 @@ import { Providers } from "./providers";
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
   if (!session?.user) redirect("/login");
+  // mustChangePassword: 임시 비번 사용자를 비밀번호 변경 페이지로 강제 전환. 변경 페이지는 (app) 밖에 있어 redirect 루프 없음.
+  if (session.user.mustChangePassword) redirect("/account/password");
 
   const summary = await getPermissionSummary(session.user.id);
   const nav = await loadNavigation(summary.keys);

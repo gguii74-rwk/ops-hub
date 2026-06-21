@@ -13,7 +13,7 @@ export const authConfig: NextAuthConfig = {
   callbacks: {
     authorized({ auth, request }) {
       const { pathname } = request.nextUrl;
-      const isPublic = pathname === "/login" || pathname === "/signup" || pathname === "/verify-email" || pathname.startsWith("/api/auth");
+      const isPublic = pathname === "/login" || pathname === "/signup" || pathname === "/verify-email" || pathname === "/account/password" || pathname.startsWith("/api/auth");
       if (isPublic) return true;
       return Boolean(auth?.user);
     },

@@ -222,7 +222,7 @@ export async function createActiveUserByAdminTx(args: {
 // throw 시 트랜잭션 롤백 — applyRoles·mail 미실행. setRoles의 finding-H recheck 패턴과 동형.
 export async function approveTx(
   id: string, actorId: string,
-  decision: { employmentType: string; jobFunction: string; systemRole: string; roleKeys: string[] },
+  decision: { employmentType: string; jobFunction: string; systemRole: string; roleKeys: string[]; name?: string; department?: string | null },
   mail: UserMailJob, expectedUpdatedAt: Date,
   recheck?: (currentRoleKeys: string[]) => void,
 ): Promise<void> {
@@ -241,6 +241,9 @@ export async function approveTx(
         employmentType: decision.employmentType as Prisma.UserUpdateInput["employmentType"],
         jobFunction: decision.jobFunction as Prisma.UserUpdateInput["jobFunction"],
         systemRole: decision.systemRole as Prisma.UserUpdateInput["systemRole"],
+        // NF2: admin 확정값이 권위 — 제공된 경우만 덮어씀(없으면 사용자 자가입력 유지).
+        ...(decision.name !== undefined ? { name: decision.name } : {}),
+        ...(decision.department !== undefined ? { department: decision.department } : {}),
       },
     });
     if (updated.count === 0) throw new UserConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요.");

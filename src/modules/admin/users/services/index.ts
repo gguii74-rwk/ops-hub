@@ -86,6 +86,9 @@ export async function approveUser(actor: ActorContext, id: string, input: Approv
   await approveTx(id, actor.userId, {
     employmentType: input.employmentType, jobFunction: input.jobFunction,
     systemRole: input.systemRole, roleKeys: input.roleKeys,
+    // NF2: name·department는 선택 — undefined면 사용자 자가입력 유지, 제공되면 admin 확정값이 권위.
+    ...(input.name !== undefined ? { name: input.name } : {}),
+    ...(input.department !== undefined ? { department: input.department ?? null } : {}),
   }, mail, target.updatedAt,
     (currentRoleKeys) => assertCanAssignRoles(actor, currentRoleKeys, input.roleKeys), // 락 안 권위 재검사(fresh)
   );
