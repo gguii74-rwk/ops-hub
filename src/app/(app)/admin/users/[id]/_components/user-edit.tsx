@@ -67,7 +67,7 @@ export function UserEdit({ userId, canUpdate }: { userId: string; canUpdate: boo
   const setRoles = useMutation({
     mutationFn: async () => {
       const res = await fetch(`/api/admin/users/${userId}/roles`, {
-        method: "PUT",
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ roleKeys: attr.roleKeys }),
       });
@@ -79,7 +79,7 @@ export function UserEdit({ userId, canUpdate }: { userId: string; canUpdate: boo
   const setStatus = useMutation({
     mutationFn: async (status: "ACTIVE" | "DISABLED") => {
       const res = await fetch(`/api/admin/users/${userId}/status`, {
-        method: "PUT",
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),
       });

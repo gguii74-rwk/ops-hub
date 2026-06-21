@@ -20,8 +20,8 @@ export function toOverridePayload(s: OverrideFormState) {
     resource: resource ?? "", action: action ?? "",
     effect: s.effect, scope: s.scope,
     reason: s.reason || null,
-    startsAt: s.startsAt || null,
-    endsAt: s.endsAt || null,
+    startsAt: s.startsAt ? `${s.startsAt}T00:00:00.000Z` : null,
+    endsAt: s.endsAt ? `${s.endsAt}T23:59:59.999Z` : null,
   };
 }
 
@@ -60,7 +60,7 @@ export function OverridePanel({ userId, overrides, onMutated }: { userId: string
 
   const remove = useMutation({
     mutationFn: async (overrideId: string) => {
-      const res = await fetch(`/api/admin/users/${userId}/overrides/${overrideId}`, { method: "DELETE" });
+      const res = await fetch(`/api/admin/users/${userId}/overrides?overrideId=${encodeURIComponent(overrideId)}`, { method: "DELETE" });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `삭제 실패 (${res.status})`);
     },
     onSuccess: () => onMutated(),
