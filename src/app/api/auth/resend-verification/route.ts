@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { resendSchema } from "@/modules/admin/users/validations/signup";
-import { enforceResendCooldown, VERIFY_TOKEN_TTL_MS } from "@/modules/admin/users/rate-limit";
+import { extractClientIp, enforceRateLimit, enforceResendCooldown, SIGNUP_IP_LIMIT, VERIFY_TOKEN_TTL_MS } from "@/modules/admin/users/rate-limit";
 import { generateVerifyToken, hashToken } from "@/modules/admin/users/token";
 import { buildVerifyLink } from "@/modules/admin/users/base-url";
 import { refreshVerifyToken } from "@/modules/admin/users/repositories";
@@ -19,6 +19,9 @@ export async function POST(req: Request) {
 
   try {
     const now = new Date();
+    // per-IP 레이트리밋: 한 IP가 임의 이메일로 RateBucket 행을 무한정 생성하는 저장증폭 완화(F3)
+    const ip = extractClientIp(req);
+    await enforceRateLimit("resend:ip", ip, SIGNUP_IP_LIMIT, now);
     await enforceResendCooldown(email, now); // 쿨다운 위반은 429(사전)
 
     const plainToken = generateVerifyToken();

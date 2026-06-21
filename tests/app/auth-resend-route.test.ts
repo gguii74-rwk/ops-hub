@@ -1,12 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const m = vi.hoisted(() => ({
-  enforceResendCooldown: vi.fn(), refreshVerifyToken: vi.fn(),
+  enforceResendCooldown: vi.fn(), enforceRateLimit: vi.fn(), extractClientIp: vi.fn(() => "1.2.3.4"),
+  refreshVerifyToken: vi.fn(),
   triggerLeaveMailDrain: vi.fn(), generateVerifyToken: vi.fn(() => "plain"), hashToken: vi.fn((t: string) => `hash:${t}`),
   buildVerifyLink: vi.fn((_req: Request, token: string) => `https://ops.example.com/verify-email?token=${token}`),
   buildVerifyEmailMail: vi.fn((link: string) => ({ subject: "verify", bodyHtml: `<a href="${link}">link</a>` })),
 }));
-vi.mock("@/modules/admin/users/rate-limit", () => ({ enforceResendCooldown: m.enforceResendCooldown, VERIFY_TOKEN_TTL_MS: 7 * 24 * 60 * 60 * 1000 }));
+vi.mock("@/modules/admin/users/rate-limit", () => ({
+  enforceResendCooldown: m.enforceResendCooldown,
+  enforceRateLimit: m.enforceRateLimit,
+  extractClientIp: m.extractClientIp,
+  SIGNUP_IP_LIMIT: 10,
+  VERIFY_TOKEN_TTL_MS: 7 * 24 * 60 * 60 * 1000,
+}));
 vi.mock("@/modules/admin/users/repositories", () => ({ refreshVerifyToken: m.refreshVerifyToken }));
 vi.mock("@/modules/leave/services/mail", () => ({ triggerLeaveMailDrain: m.triggerLeaveMailDrain }));
 vi.mock("@/modules/admin/users/token", () => ({ generateVerifyToken: m.generateVerifyToken, hashToken: m.hashToken }));
@@ -20,7 +27,11 @@ const req = (b: object) => new Request("http://localhost/api/auth/resend-verific
   method: "POST", body: JSON.stringify(b), headers: { "Content-Type": "application/json" },
 });
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  m.enforceRateLimit.mockResolvedValue(undefined);
+  m.enforceResendCooldown.mockResolvedValue(undefined);
+});
 
 describe("POST /api/auth/resend-verification", () => {
   it("미검증 PENDING 존재: 토큰갱신+메일 재enqueue를 refreshVerifyToken에 위임 + drain + 중립 202 (mail 인자 전달·canonical 링크)", async () => {
@@ -62,5 +73,13 @@ describe("POST /api/auth/resend-verification", () => {
   it("이메일 형식 아니면 400", async () => {
     const res = await POST(req({ email: "nope" }));
     expect(res.status).toBe(400);
+  });
+  it("per-IP 레이트리밋 초과: 429, enforceResendCooldown·refreshVerifyToken 미호출", async () => {
+    const { RateLimitError } = await import("@/modules/admin/users/errors");
+    m.enforceRateLimit.mockRejectedValueOnce(new RateLimitError("too many"));
+    const res = await POST(req({ email: "a@x.com" }));
+    expect(res.status).toBe(429);
+    expect(m.enforceResendCooldown).not.toHaveBeenCalled();
+    expect(m.refreshVerifyToken).not.toHaveBeenCalled();
   });
 });
