@@ -7,6 +7,7 @@
 **Create**
 - `src/modules/admin/users/rate-limit.ts` — **S10 공유 상수(`VERIFY_TOKEN_TTL_MS`/`SIGNUP_IP_LIMIT`/`SIGNUP_EMAIL_LIMIT`/`RESEND_COOLDOWN_MS`/`RATE_WINDOW_MS`/`PENDING_UNVERIFIED_CAP`) 정의·export** + D18 RateBucket **race-safe·사전 강제**(단일 atomic upsert — `ON CONFLICT … DO UPDATE` + `RETURNING count`로 post-update count 1회 회수) + per-IP/per-email + 재발송 쿨다운 + IP 추출 (상수·강제 유틸이 같은 파일. task-09 테스트도 여기서 import). `PENDING_UNVERIFIED_CAP` **상수는 여기(06)가 소유·export**하되, 그 **강제는 task-03 `createPendingSignup`가 트랜잭션 내**에서 수행한다(finding #3 — `enforcePendingCap` 없음). signup 라우트가 `createPendingSignup` 호출 시 이 상수를 `pendingCap` **인자로 주입**한다(deps 역전 방지 — 03은 이 상수를 import하지 않는다).
 - `src/modules/admin/users/token.ts` — set-password 겸 검증 토큰 생성(평문)·sha256 해시 유틸
+- `src/modules/admin/users/base-url.ts` — **메일 링크 canonical base URL 헬퍼(finding F)**: 설정된 canonical origin(`AUTH_URL` 우선, 없으면 `NEXTAUTH_URL`)에서 verify 링크를 만들고, 신뢰할 수 없는 `Host`/`X-Forwarded-Host`를 **토큰 생성 전에 거부**한다. signup·resend가 공유(단일 출처).
 - `src/modules/admin/users/validations/signup.ts` — 공개 라우트 zod: `signupSchema`(비번 없음)·`setPasswordSchema`·`resendSchema`
 - `src/modules/admin/users/mail-templates.ts` — `buildVerifyEmailMail(link)` (leave `mail-templates.ts` esc 패턴)
 - `src/app/api/auth/signup/route.ts`
@@ -17,6 +18,7 @@
 **Test**
 - `tests/modules/admin/users/rate-limit.test.ts`
 - `tests/modules/admin/users/token.test.ts`
+- `tests/modules/admin/users/base-url.test.ts`
 - `tests/app/auth-signup-route.test.ts`
 - `tests/app/auth-verify-email-route.test.ts`
 - `tests/app/auth-resend-route.test.ts`
@@ -122,9 +124,108 @@ git add src/modules/admin/users/token.ts src/modules/admin/users/rate-limit.ts t
 git commit -m "feat(user-mgmt): set-password 토큰 생성·sha256 해시 유틸 + S10 공유 상수(rate-limit.ts)(task-06)"
 ```
 
+### Step 3b — 메일 링크 canonical base URL 헬퍼 (실패 테스트 → 구현, finding F)
+
+> **finding F(high) — 검증/resend 링크가 request host를 신뢰:** 공개 라우트가 set-password 링크를 `new URL(req.url).origin`(요청 Host)으로 만들면, 프록시가 스푸핑된 `Host`/`X-Forwarded-Host`를 포워드할 때 공격자가 피해자의 pending 이메일로 resend를 요청해 **공격자 제어 origin + 비밀 토큰**이 든 링크를 피해자 메일함에 전달할 수 있다. 따라서 링크는 요청 Host가 **아니라** 설정된 **canonical base URL**(`AUTH_URL` 우선, 없으면 `NEXTAUTH_URL`)에서 만들고, 들어온 Host가 canonical과 다르면 **토큰 생성 전에 거부**한다. signup·resend가 한 헬퍼를 공유한다(링크 생성 로직 단일 출처 — 두 라우트가 어긋나지 않게).
+
+canonical origin 소스: 신규 env var를 만들지 않는다 — 프로젝트는 이미 `NEXTAUTH_URL`을 canonical URL로 쓰고(`.env.example` L3, `config.ts`가 `NEXTAUTH_SECRET ?? AUTH_SECRET`로 `AUTH_*`를 브리지) NextAuth v5는 `AUTH_URL`을 선호한다. 그래서 `config.ts`의 secret 브리지와 동형으로 **`AUTH_URL` 우선, 없으면 `NEXTAUTH_URL`**을 canonical로 채택한다(둘 다 없으면 설정 오류 → 500).
+
+`tests/modules/admin/users/base-url.test.ts`:
+
+```ts
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+
+const ORIG = { ...process.env };
+afterEach(() => { process.env = { ...ORIG }; vi.unstubAllEnvs(); });
+beforeEach(() => { delete process.env.AUTH_URL; delete process.env.NEXTAUTH_URL; });
+
+describe("buildVerifyLink (finding F — canonical base URL, host 스푸핑 거부)", () => {
+  it("AUTH_URL을 canonical로 써서 절대 verify 링크를 만든다(요청 Host 무시)", async () => {
+    process.env.AUTH_URL = "https://ops.example.com";
+    const { buildVerifyLink } = await import("@/modules/admin/users/base-url");
+    const req = new Request("https://ops.example.com/api/auth/signup", { headers: { host: "ops.example.com" } });
+    expect(buildVerifyLink(req, "plain-token")).toBe("https://ops.example.com/verify-email?token=plain-token");
+  });
+  it("AUTH_URL이 없으면 NEXTAUTH_URL로 폴백", async () => {
+    process.env.NEXTAUTH_URL = "https://ops.example.com";
+    const { buildVerifyLink } = await import("@/modules/admin/users/base-url");
+    const req = new Request("https://ops.example.com/api/auth/signup", { headers: { host: "ops.example.com" } });
+    expect(buildVerifyLink(req, "t")).toBe("https://ops.example.com/verify-email?token=t");
+  });
+  it("스푸핑된 Host(canonical과 불일치)면 토큰 생성 전 거부(throw) — 링크에 절대 안 실림", async () => {
+    process.env.AUTH_URL = "https://ops.example.com";
+    const { buildVerifyLink, HostMismatchError } = await import("@/modules/admin/users/base-url");
+    const spoofed = new Request("https://ops.example.com/api/auth/resend-verification", { headers: { host: "evil.attacker.com" } });
+    expect(() => buildVerifyLink(spoofed, "secret-token")).toThrow(HostMismatchError);
+  });
+  it("스푸핑된 X-Forwarded-Host(canonical과 불일치)도 거부", async () => {
+    process.env.AUTH_URL = "https://ops.example.com";
+    const { buildVerifyLink, HostMismatchError } = await import("@/modules/admin/users/base-url");
+    const spoofed = new Request("https://ops.example.com/api/auth/resend-verification", {
+      headers: { host: "ops.example.com", "x-forwarded-host": "evil.attacker.com" },
+    });
+    expect(() => buildVerifyLink(spoofed, "secret-token")).toThrow(HostMismatchError);
+  });
+  it("canonical과 일치하는 Host는 통과(정상 프록시)", async () => {
+    process.env.AUTH_URL = "https://ops.example.com";
+    const { buildVerifyLink } = await import("@/modules/admin/users/base-url");
+    const ok = new Request("http://internal/api/auth/signup", { headers: { host: "ops.example.com" } });
+    expect(buildVerifyLink(ok, "t")).toBe("https://ops.example.com/verify-email?token=t");
+  });
+  it("AUTH_URL·NEXTAUTH_URL 둘 다 없으면 설정 오류(throw, 링크 생성 불가)", async () => {
+    const { buildVerifyLink } = await import("@/modules/admin/users/base-url");
+    const req = new Request("https://ops.example.com/api/auth/signup", { headers: { host: "ops.example.com" } });
+    expect(() => buildVerifyLink(req, "t")).toThrow();
+  });
+});
+```
+
+```
+npm test -- tests/modules/admin/users/base-url   # expect FAIL (모듈 미존재)
+```
+
+`src/modules/admin/users/base-url.ts`:
+
+```ts
+import "server-only";
+
+// 링크의 host가 canonical과 다르면 토큰 생성 전 거부(finding F — host 스푸핑 차단).
+export class HostMismatchError extends Error {}
+
+// canonical base URL: 신규 env 없이 NextAuth와 동형으로 AUTH_URL 우선·NEXTAUTH_URL 폴백.
+function canonicalBaseUrl(): URL {
+  const raw = process.env.AUTH_URL ?? process.env.NEXTAUTH_URL;
+  if (!raw) throw new Error("AUTH_URL/NEXTAUTH_URL이 설정되지 않았습니다(메일 링크 canonical base URL 필요).");
+  return new URL(raw);
+}
+
+// 검증 메일 링크를 canonical origin으로 생성한다(요청 Host/X-Forwarded-Host 신뢰 금지, finding F).
+// 들어온 Host·X-Forwarded-Host가 canonical host와 다르면 토큰이 공격자 origin 링크에 실리는 것을
+// 막기 위해 링크를 만들기 전(=토큰을 메일에 넣기 전)에 HostMismatchError를 던진다.
+export function buildVerifyLink(req: Request, plainToken: string): string {
+  const canonical = canonicalBaseUrl();
+  // 프록시가 전달하는 host 후보 — 둘 중 하나라도 canonical과 다르면 스푸핑으로 간주해 거부.
+  const forwardedHost = req.headers.get("x-forwarded-host");
+  const host = req.headers.get("host");
+  for (const candidate of [forwardedHost, host]) {
+    if (candidate && candidate.toLowerCase() !== canonical.host.toLowerCase()) {
+      throw new HostMismatchError(`신뢰할 수 없는 host: ${candidate}`);
+    }
+  }
+  // 링크는 항상 canonical origin 기준(요청 url의 origin을 쓰지 않는다).
+  return `${canonical.origin}/verify-email?token=${plainToken}`;
+}
+```
+
+```
+npm test -- tests/modules/admin/users/base-url   # expect PASS
+git add src/modules/admin/users/base-url.ts tests/modules/admin/users/base-url.test.ts
+git commit -m "fix(user-mgmt): 메일 링크를 canonical base URL로 생성·host 스푸핑 거부(finding F)(task-06)"
+```
+
 ### Step 4 — D18 레이트리밋 유틸 (실패 테스트)
 
-`tests/modules/admin/users/rate-limit.test.ts` — leave repositories.test.ts의 `vi.hoisted` fake-db 패턴. **finding A: read/decide-then-write 금지(lock-전-판정 race도 금지).** `enforceRateLimit`는 **단일 atomic upsert**(`ON CONFLICT (scope,key) DO UPDATE` — 윈도우 내면 `count+1`, 만료/신규면 `count=1`로 리셋, **한 문장**)를 `$queryRaw`로 실행하고 **`RETURNING count`로 post-update count를 1회 회수**해 `> limit`을 판정한다. `updateMany→affected===0→advisory lock→upsert(count:1)` 2단 흐름은 폐기한다(여러 동시 요청이 모두 affected=0을 관측하고 각자 1로 reset해 한도를 무력화하던 lock-전-판정 race). `enforceResendCooldown`도 같은 결함을 갖던 read-then-write를 **단일 atomic upsert**(`windowStartedAt`을 last-send로 쓰고, 쿨다운 경과 시에만 `now`로 갱신; `RETURNING windowStartedAt`이 `now`면 발송 허용·아니면 쿨다운)로 대체한다. fake `$transaction`은 cb에 fake db를 패스스루하고, `$queryRaw`는 raw 결과(`[{ count }]`/`[{ windowstartedat }]`)를 돌려주는 mock.
+`tests/modules/admin/users/rate-limit.test.ts` — leave repositories.test.ts의 `vi.hoisted` fake-db 패턴. **finding A: read/decide-then-write 금지(lock-전-판정 race도 금지).** `enforceRateLimit`는 **단일 atomic upsert**(`ON CONFLICT (scope,key) DO UPDATE` — 윈도우 내면 `count+1`, 만료/신규면 `count=1`로 리셋, **한 문장**)를 `$queryRaw`로 실행하고 **`RETURNING count`로 post-update count를 1회 회수**해 `> limit`을 판정한다. `updateMany→affected===0→advisory lock→upsert(count:1)` 2단 흐름은 폐기한다(여러 동시 요청이 모두 affected=0을 관측하고 각자 1로 reset해 한도를 무력화하던 lock-전-판정 race). `enforceResendCooldown`도 같은 결함을 갖던 read-then-write를 **단일 atomic upsert**(`windowStartedAt`을 last-send로 쓰고, 쿨다운 경과 시에만 `now`로 갱신; `RETURNING ... AS "windowstartedat"`이 `now`면 발송 허용·아니면 쿨다운)로 대체한다. fake `$transaction`은 cb에 fake db를 패스스루하고, `$queryRaw`는 raw 결과(`[{ count }]`/`[{ windowstartedat }]`)를 돌려주는 mock. **finding G(casing): mock의 `windowstartedat`(소문자) 키는 구현이 SQL에서 `RETURNING "windowStartedAt" AS "windowstartedat"`로 반환 키를 소문자로 명시 alias하기 때문에 실제 pg 결과와 일치한다(소문자 mock으로 camelCase 버그를 가리는 게 아니라, SQL alias로 반환 키 자체를 소문자로 고정한 것).** alias 없이 `RETURNING "windowStartedAt"`만 쓰면 pg는 camelCase `windowStartedAt`를 내려주므로 소문자 read가 항상 undefined → 모든 resend 거부 → 이 mock이 그 실패를 숨기게 된다. `count`는 식별자가 소문자라 alias 불필요.
 
 ```ts
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -260,6 +361,11 @@ export async function enforceRateLimit(
 // per-email 재발송 쿨다운(finding A — read-then-write 제거). 단일 atomic upsert:
 // windowStartedAt을 마지막 발송 시각으로 쓰고, 쿨다운(RESEND_COOLDOWN_MS)이 경과했을 때만 now로 갱신.
 // RETURNING windowStartedAt == now면 우리가 갱신한 것(발송 허용), 직전 값이면 쿨다운 내(거부).
+// finding G(casing): pg는 `RETURNING "windowStartedAt"`을 camelCase 키로 노출하는데(quoted 식별자
+// 보존), 코드가 소문자 `rows[0].windowstartedat`를 읽으면 항상 undefined → last가 undefined가 되어
+// 첫 발송 포함 모든 resend가 RateLimitError로 거부된다. 키 불일치를 없애기 위해 SQL에서
+// `AS "windowstartedat"`로 **명시 alias**(반환 키를 소문자로 고정)하고 같은 소문자 키로 읽는다.
+// (mock도 소문자 키로 맞춘다 — 소문자 mock이 camelCase 프로덕션 실패를 숨기지 않게.)
 export async function enforceResendCooldown(email: string, now: Date = new Date()): Promise<void> {
   const scope = "resend:email";
   const cooldownFloor = new Date(now.getTime() - RESEND_COOLDOWN_MS);
@@ -272,7 +378,7 @@ export async function enforceResendCooldown(email: string, now: Date = new Date(
       "count" = CASE WHEN "RateBucket"."windowStartedAt" <= ${cooldownFloor}
                      THEN "RateBucket"."count" + 1 ELSE "RateBucket"."count" END,
       "updatedAt" = ${now}
-    RETURNING "windowStartedAt"`;
+    RETURNING "windowStartedAt" AS "windowstartedat"`;
   const last = rows[0]?.windowstartedat;
   if (!last || last.getTime() !== now.getTime()) {
     throw new RateLimitError("재발송은 잠시 후 다시 시도해 주세요.");
@@ -281,7 +387,8 @@ export async function enforceResendCooldown(email: string, now: Date = new Date(
 ```
 
 > `enforcePendingCap`은 이 파일에서 제거됐다. **PENDING 전역 상한 검사는 task-03 `createPendingSignup`가 User 생성과 같은 트랜잭션에서 `tx.user.count`로 수행**한다(finding #3 — standalone count 후 별도 생성이 동시요청에 cap을 초과하던 race 제거). signup 라우트는 이 함수를 호출하지 않는다.
-> `gen_random_uuid()`는 PostgreSQL 13+ 내장(pgcrypto 불필요). cuid가 아닌 uuid가 들어가지만 `RateBucket.id`는 외부 노출/조인이 없는 내부 키라 무방(스키마는 `@default(cuid())`로 client-side 기본을 두되 raw INSERT는 DB-side 생성). raw 식별자(`"kernel"."RateBucket"`·컬럼명)는 Prisma 매핑명 그대로, 값은 전부 `${}` 바인딩이라 SQL 인젝션 없음. `$queryRaw` 결과의 컬럼명은 PostgreSQL이 소문자로 내려주므로 cooldown은 `windowstartedat`로 받는다. 전부 단일 문장이라 별도 `$transaction`/advisory lock이 필요 없다(한 행 UPDATE의 row lock으로 충분히 직렬화).
+> `gen_random_uuid()`는 PostgreSQL 13+ 내장(pgcrypto 불필요). cuid가 아닌 uuid가 들어가지만 `RateBucket.id`는 외부 노출/조인이 없는 내부 키라 무방(스키마는 `@default(cuid())`로 client-side 기본을 두되 raw INSERT는 DB-side 생성). raw 식별자(`"kernel"."RateBucket"`·컬럼명)는 Prisma 매핑명 그대로, 값은 전부 `${}` 바인딩이라 SQL 인젝션 없음. 전부 단일 문장이라 별도 `$transaction`/advisory lock이 필요 없다(한 행 UPDATE의 row lock으로 충분히 직렬화).
+> **finding G — RETURNING 컬럼 casing 일관 점검:** `$queryRaw`는 PostgreSQL이 돌려준 **결과 컬럼명 그대로**를 키로 노출한다(소문자 변환을 하지 않는다). quoted 식별자 `RETURNING "windowStartedAt"`은 camelCase `windowStartedAt`로 내려오므로, 소문자 `windowstartedat`로 읽던 기존 코드는 항상 undefined가 되어 첫 발송 포함 모든 resend가 거부된다(소문자 mock이 이 프로덕션 실패를 숨겼다). 그래서 cooldown은 SQL에서 `RETURNING "windowStartedAt" AS "windowstartedat"`로 **반환 키를 소문자로 명시 alias**하고 코드·mock 모두 소문자 `windowstartedat`로 일치시킨다. 반면 `enforceRateLimit`의 `RETURNING "count"`는 식별자 자체가 전부 소문자라 키가 그대로 `count`로 내려오므로 alias 없이 `rows[0].count`로 안전하다(camelCase 컬럼만 alias 필요). iteration 2 atomic upsert의 RETURNING 키는 이 두 곳뿐이며 모두 일치 확인 완료.
 
 ```
 npm test -- tests/modules/admin/users/rate-limit   # expect PASS
@@ -386,7 +493,7 @@ function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ESC[c]);
 }
 
-// 검증 겸 set-password 안내 메일(D16). link는 평문 토큰을 쿼리로 담은 절대 URL(라우트가 origin으로 생성).
+// 검증 겸 set-password 안내 메일(D16). link는 평문 토큰을 쿼리로 담은 절대 URL(라우트가 canonical base URL로 생성 — finding F).
 export function buildVerifyEmailMail(link: string): { subject: string; bodyHtml: string } {
   return {
     subject: "[ops-hub] 이메일 인증 및 비밀번호 설정",
@@ -412,6 +519,7 @@ const m = vi.hoisted(() => ({
   enforceRateLimit: vi.fn(), extractClientIp: vi.fn(() => "1.2.3.4"),
   createPendingSignup: vi.fn(), triggerLeaveMailDrain: vi.fn(),
   generateVerifyToken: vi.fn(() => "plain-token"), hashToken: vi.fn((t: string) => `hash:${t}`),
+  buildVerifyLink: vi.fn((_req: Request, token: string) => `https://ops.example.com/verify-email?token=${token}`),
   buildVerifyEmailMail: vi.fn((link: string) => ({ subject: "verify", bodyHtml: `<a href="${link}">link</a>` })),
 }));
 
@@ -422,6 +530,7 @@ vi.mock("@/modules/admin/users/rate-limit", () => ({
 vi.mock("@/modules/admin/users/repositories", () => ({ createPendingSignup: m.createPendingSignup }));
 vi.mock("@/modules/leave/services/mail", () => ({ triggerLeaveMailDrain: m.triggerLeaveMailDrain }));
 vi.mock("@/modules/admin/users/token", () => ({ generateVerifyToken: m.generateVerifyToken, hashToken: m.hashToken }));
+vi.mock("@/modules/admin/users/base-url", () => ({ buildVerifyLink: m.buildVerifyLink, HostMismatchError: class extends Error {} }));
 vi.mock("@/modules/admin/users/mail-templates", () => ({ buildVerifyEmailMail: m.buildVerifyEmailMail }));
 vi.mock("@/modules/admin/users/errors", async () => {
   class RateLimitError extends Error {}
@@ -444,11 +553,13 @@ beforeEach(() => {
 });
 
 describe("POST /api/auth/signup", () => {
-  it("정상: PENDING+메일 원자 생성 위임 + drain 트리거 + 중립 202 (mail 인자 전달)", async () => {
+  it("정상: PENDING+메일 원자 생성 위임 + drain 트리거 + 중립 202 (mail 인자 전달·canonical 링크)", async () => {
     m.enforceRateLimit.mockResolvedValue(undefined);
     m.createPendingSignup.mockResolvedValue({ id: "u-self" });
     const res = await POST(body(valid));
     expect([200, 202]).toContain(res.status);
+    // 링크는 canonical base URL 헬퍼로 생성한다(요청 Host 신뢰 금지 — finding F). req+평문 토큰을 넘긴다.
+    expect(m.buildVerifyLink).toHaveBeenCalledWith(expect.any(Request), "plain-token");
     // 라우트는 user+mail을 한 번의 createPendingSignup 호출로 위임한다(별도 enqueue 트랜잭션 없음 — finding #4).
     // PENDING 상한 상수를 pendingCap 인자로 주입한다(deps 역전 방지 — repository는 rate-limit.ts를 import하지 않음).
     expect(m.createPendingSignup).toHaveBeenCalledWith(expect.objectContaining({
@@ -456,6 +567,17 @@ describe("POST /api/auth/signup", () => {
       mail: expect.objectContaining({ recipients: ["self@x.com"], subject: "verify" }),
     }));
     expect(m.triggerLeaveMailDrain).toHaveBeenCalled();
+  });
+
+  it("스푸핑된 Host(buildVerifyLink가 토큰 생성 전 거부): createPendingSignup·drain 미호출 (finding F)", async () => {
+    const { HostMismatchError } = await import("@/modules/admin/users/base-url");
+    m.enforceRateLimit.mockResolvedValue(undefined);
+    m.buildVerifyLink.mockImplementationOnce(() => { throw new HostMismatchError("untrusted host"); });
+    const res = await POST(body(valid));
+    // 비밀 토큰이 공격자 origin 링크에 실려 나가는 일이 없도록, 메일 enqueue(=createPendingSignup) 자체가 안 일어난다.
+    expect(m.createPendingSignup).not.toHaveBeenCalled();
+    expect(m.triggerLeaveMailDrain).not.toHaveBeenCalled();
+    expect(res.status).toBe(400); // mapAuthError가 HostMismatchError→400 (canonical 링크 없이는 신청 거부)
   });
 
   it("D18 한도 초과: createPendingSignup·drain 미호출 + 429 (pre-write)", async () => {
@@ -507,6 +629,7 @@ npm test -- tests/app/auth-signup-route   # expect FAIL
 ```ts
 import { NextResponse } from "next/server";
 import { RateLimitError, TokenError, UserConflictError, UserValidationError } from "@/modules/admin/users/errors";
+import { HostMismatchError } from "@/modules/admin/users/base-url";
 
 // 공개 auth 라우트 에러 매핑(S4). 알 수 없는 에러는 재throw(500은 Next가 처리).
 export function mapAuthError(error: unknown): NextResponse {
@@ -514,6 +637,9 @@ export function mapAuthError(error: unknown): NextResponse {
   if (error instanceof TokenError) return NextResponse.json({ error: error.message }, { status: 400 });
   if (error instanceof UserValidationError) return NextResponse.json({ error: error.message }, { status: 400 });
   if (error instanceof UserConflictError) return NextResponse.json({ error: error.message }, { status: 409 });
+  // finding F: 신뢰할 수 없는 Host로 verify 링크를 만들 수 없을 때(토큰 생성 전 거부) — 400으로 받아
+  // 라우트가 throw 대신 Response를 반환하게 한다(비밀 토큰은 어차피 메일에 실리지 않았다).
+  if (error instanceof HostMismatchError) return NextResponse.json({ error: "잘못된 요청입니다." }, { status: 400 });
   throw error;
 }
 ```
@@ -525,6 +651,7 @@ import { NextResponse } from "next/server";
 import { signupSchema } from "@/modules/admin/users/validations/signup";
 import { extractClientIp, enforceRateLimit, SIGNUP_IP_LIMIT, SIGNUP_EMAIL_LIMIT, VERIFY_TOKEN_TTL_MS, PENDING_UNVERIFIED_CAP } from "@/modules/admin/users/rate-limit";
 import { generateVerifyToken, hashToken } from "@/modules/admin/users/token";
+import { buildVerifyLink } from "@/modules/admin/users/base-url";
 import { createPendingSignup } from "@/modules/admin/users/repositories";
 import { buildVerifyEmailMail } from "@/modules/admin/users/mail-templates";
 import { triggerLeaveMailDrain } from "@/modules/leave/services/mail";
@@ -554,8 +681,9 @@ export async function POST(req: Request) {
     const plainToken = generateVerifyToken();
     const tokenHash = hashToken(plainToken);
     const tokenExpiresAt = new Date(now.getTime() + VERIFY_TOKEN_TTL_MS);
-    const origin = new URL(req.url).origin;
-    const link = `${origin}/verify-email?token=${plainToken}`;
+    // 링크는 요청 Host가 아니라 canonical base URL(AUTH_URL/NEXTAUTH_URL)로 생성한다(finding F).
+    // 스푸핑된 Host/X-Forwarded-Host면 buildVerifyLink가 토큰을 넣기 전에 HostMismatchError를 던진다.
+    const link = buildVerifyLink(req, plainToken);
     const { subject, bodyHtml } = buildVerifyEmailMail(link);
 
     try {
@@ -712,12 +840,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const m = vi.hoisted(() => ({
   enforceResendCooldown: vi.fn(), refreshVerifyToken: vi.fn(),
   triggerLeaveMailDrain: vi.fn(), generateVerifyToken: vi.fn(() => "plain"), hashToken: vi.fn((t: string) => `hash:${t}`),
+  buildVerifyLink: vi.fn((_req: Request, token: string) => `https://ops.example.com/verify-email?token=${token}`),
   buildVerifyEmailMail: vi.fn((link: string) => ({ subject: "verify", bodyHtml: `<a href="${link}">link</a>` })),
 }));
 vi.mock("@/modules/admin/users/rate-limit", () => ({ enforceResendCooldown: m.enforceResendCooldown }));
 vi.mock("@/modules/admin/users/repositories", () => ({ refreshVerifyToken: m.refreshVerifyToken }));
 vi.mock("@/modules/leave/services/mail", () => ({ triggerLeaveMailDrain: m.triggerLeaveMailDrain }));
 vi.mock("@/modules/admin/users/token", () => ({ generateVerifyToken: m.generateVerifyToken, hashToken: m.hashToken }));
+vi.mock("@/modules/admin/users/base-url", () => ({ buildVerifyLink: m.buildVerifyLink, HostMismatchError: class extends Error {} }));
 vi.mock("@/modules/admin/users/mail-templates", () => ({ buildVerifyEmailMail: m.buildVerifyEmailMail }));
 vi.mock("@/modules/admin/users/errors", () => ({ RateLimitError: class extends Error {}, TokenError: class extends Error {}, UserConflictError: class extends Error {}, UserValidationError: class extends Error {} }));
 
@@ -730,14 +860,27 @@ const req = (b: object) => new Request("http://localhost/api/auth/resend-verific
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe("POST /api/auth/resend-verification", () => {
-  it("미검증 PENDING 존재: 토큰갱신+메일 재enqueue를 refreshVerifyToken에 위임 + drain + 중립 202 (mail 인자 전달)", async () => {
+  it("미검증 PENDING 존재: 토큰갱신+메일 재enqueue를 refreshVerifyToken에 위임 + drain + 중립 202 (mail 인자 전달·canonical 링크)", async () => {
     m.enforceResendCooldown.mockResolvedValue(undefined);
     m.refreshVerifyToken.mockResolvedValue({ id: "u1" });
     const res = await POST(req({ email: "a@x.com" }));
     expect([200, 202]).toContain(res.status);
+    // 링크는 canonical base URL 헬퍼로 생성한다(요청 Host 신뢰 금지 — finding F).
+    expect(m.buildVerifyLink).toHaveBeenCalledWith(expect.any(Request), "plain");
     // 라우트는 mail 본문을 만들어 refreshVerifyToken에 넘긴다(별도 enqueue 트랜잭션 없음 — finding #4).
     expect(m.refreshVerifyToken).toHaveBeenCalledWith("a@x.com", "hash:plain", expect.any(Date), expect.objectContaining({ recipients: ["a@x.com"], subject: "verify" }));
     expect(m.triggerLeaveMailDrain).toHaveBeenCalled();
+  });
+
+  it("스푸핑된 Host(buildVerifyLink 거부): refreshVerifyToken·drain 미호출 + 400 (finding F)", async () => {
+    const { HostMismatchError } = await import("@/modules/admin/users/base-url");
+    m.enforceResendCooldown.mockResolvedValue(undefined);
+    m.buildVerifyLink.mockImplementationOnce(() => { throw new HostMismatchError("untrusted host"); });
+    const res = await POST(req({ email: "victim@x.com" }));
+    // 공개 resend는 공격자가 피해자 이메일로 부를 수 있다 — host 스푸핑이면 토큰을 만들기도 전에 거부.
+    expect(m.refreshVerifyToken).not.toHaveBeenCalled();
+    expect(m.triggerLeaveMailDrain).not.toHaveBeenCalled();
+    expect(res.status).toBe(400);
   });
   it("존재하지 않는 이메일(refreshVerifyToken null): 동일 중립 응답·drain 미호출(열거 방지)", async () => {
     m.enforceResendCooldown.mockResolvedValue(undefined);
@@ -771,6 +914,7 @@ import { NextResponse } from "next/server";
 import { resendSchema } from "@/modules/admin/users/validations/signup";
 import { enforceResendCooldown, VERIFY_TOKEN_TTL_MS } from "@/modules/admin/users/rate-limit";
 import { generateVerifyToken, hashToken } from "@/modules/admin/users/token";
+import { buildVerifyLink } from "@/modules/admin/users/base-url";
 import { refreshVerifyToken } from "@/modules/admin/users/repositories";
 import { buildVerifyEmailMail } from "@/modules/admin/users/mail-templates";
 import { triggerLeaveMailDrain } from "@/modules/leave/services/mail";
@@ -792,8 +936,9 @@ export async function POST(req: Request) {
     const plainToken = generateVerifyToken();
     const tokenHash = hashToken(plainToken);
     const tokenExpiresAt = new Date(now.getTime() + VERIFY_TOKEN_TTL_MS);
-    const origin = new URL(req.url).origin;
-    const link = `${origin}/verify-email?token=${plainToken}`;
+    // 링크는 canonical base URL로 생성·스푸핑 Host 거부(finding F) — signup과 동일 헬퍼.
+    // 공개 resend는 공격자가 피해자 이메일로 호출할 수 있어 host 스푸핑 차단이 특히 중요하다.
+    const link = buildVerifyLink(req, plainToken);
     const { subject, bodyHtml } = buildVerifyEmailMail(link);
 
     // 미검증 PENDING만 토큰 갱신 + 검증메일 재enqueue(repository가 같은 트랜잭션에서 원자 처리).
@@ -814,7 +959,7 @@ npm test -- tests/app/auth-resend-route   # expect PASS
 ### Step 12 — 통합 검증 + 커밋
 
 ```
-npm test -- tests/modules/admin/users/token tests/modules/admin/users/rate-limit tests/modules/admin/users/signup-validation tests/app/auth-signup-route tests/app/auth-verify-email-route tests/app/auth-resend-route
+npm test -- tests/modules/admin/users/token tests/modules/admin/users/base-url tests/modules/admin/users/rate-limit tests/modules/admin/users/signup-validation tests/app/auth-signup-route tests/app/auth-verify-email-route tests/app/auth-resend-route
 npm run typecheck
 npm run lint
 git add src/modules/admin/users/validations/signup.ts src/modules/admin/users/mail-templates.ts src/app/api/auth/_shared.ts src/app/api/auth/signup src/app/api/auth/verify-email src/app/api/auth/resend-verification tests/modules/admin/users/signup-validation.test.ts tests/app/auth-signup-route.test.ts tests/app/auth-verify-email-route.test.ts tests/app/auth-resend-route.test.ts
@@ -824,11 +969,12 @@ git commit -m "feat(user-mgmt): 자가가입·verify/set-password·resend 공개
 ## Acceptance Criteria
 
 - `npm test -- tests/modules/admin/users/token` → PASS (`generateVerifyToken` 64-hex·`hashToken` sha256).
-- `npm test -- tests/modules/admin/users/rate-limit` → PASS (단일 atomic upsert·RETURNING count로 증가/리셋 판정·한도 초과 429·쿨다운). **race-safe(finding A): updateMany→affected===0→lock→reset 2단 흐름 폐기 — 한 문장의 `ON CONFLICT … DO UPDATE`가 윈도우 내 증가/만료 리셋을 모두 처리하므로 동시 윈도우-경계 요청이 각자 1로 reset하던 race가 없다.**
+- `npm test -- tests/modules/admin/users/base-url` → PASS (**finding F**: `buildVerifyLink`가 canonical base URL(`AUTH_URL`→`NEXTAUTH_URL`)로 링크 생성·스푸핑 `Host`/`X-Forwarded-Host`는 `HostMismatchError`로 거부·canonical 일치 Host는 통과·env 둘 다 없으면 throw).
+- `npm test -- tests/modules/admin/users/rate-limit` → PASS (단일 atomic upsert·RETURNING count로 증가/리셋 판정·한도 초과 429·쿨다운). **race-safe(finding A): updateMany→affected===0→lock→reset 2단 흐름 폐기 — 한 문장의 `ON CONFLICT … DO UPDATE`가 윈도우 내 증가/만료 리셋을 모두 처리하므로 동시 윈도우-경계 요청이 각자 1로 reset하던 race가 없다.** **casing(finding G): cooldown은 `RETURNING "windowStartedAt" AS "windowstartedat"`로 반환 키를 소문자로 명시 alias해 코드·mock이 실제 pg 결과 키와 일치(소문자 mock이 camelCase 실패를 숨기지 않음) → 첫 발송 허용·쿨다운 내 거부가 올바른 키 읽기로 동작. `count`는 소문자 식별자라 alias 불필요.**
 - `npm test -- tests/modules/admin/users/signup-validation` → PASS (비번 없는 signupSchema·12자+ setPasswordSchema).
-- `npm test -- tests/app/auth-signup-route` → PASS. 특히 **per-IP/email 한도 초과 시 `createPendingSignup`·`triggerLeaveMailDrain` 미호출·429**, **PENDING 상한 초과 시(createPendingSignup이 트랜잭션 내 `RateLimitError`) drain 미호출·429**, 정상 시 **`createPendingSignup`에 `mail` 인자가 전달**됨(별도 enqueue 트랜잭션 없음). PENDING 상한 강제 자체의 단위검증은 task-03 `repositories.test.ts`.
+- `npm test -- tests/app/auth-signup-route` → PASS. 특히 **per-IP/email 한도 초과 시 `createPendingSignup`·`triggerLeaveMailDrain` 미호출·429**, **PENDING 상한 초과 시(createPendingSignup이 트랜잭션 내 `RateLimitError`) drain 미호출·429**, 정상 시 **`createPendingSignup`에 `mail` 인자가 전달**됨(별도 enqueue 트랜잭션 없음)·**`buildVerifyLink`가 호출**됨(canonical 링크), **스푸핑 Host(`buildVerifyLink`가 `HostMismatchError`) 시 `createPendingSignup`·drain 미호출 + 400**(finding F). PENDING 상한 강제 자체의 단위검증은 task-03 `repositories.test.ts`.
 - `npm test -- tests/app/auth-verify-email-route` → PASS (GET 유효성·POST set-password·만료/위조 400·`bcrypt.hash(pw, 10)`).
-- `npm test -- tests/app/auth-resend-route` → PASS (존재/부재 동일 중립 응답·쿨다운 429).
+- `npm test -- tests/app/auth-resend-route` → PASS (존재/부재 동일 중립 응답·쿨다운 429·정상 시 `buildVerifyLink` 호출·**스푸핑 Host 시 `refreshVerifyToken`·drain 미호출 + 400**, finding F).
 - `npm run typecheck` → 그린(에러 0).
 - `npm run lint` → 그린(`src/app/api/auth/*` 라우트 → `src/modules/admin/users/*` import는 boundaries 허용 — leave 라우트가 leave 모듈을 부르는 것과 동형).
 - `npm test` 전체 → PASS (기존 leave/회귀 없음).
@@ -845,4 +991,5 @@ git commit -m "feat(user-mgmt): 자가가입·verify/set-password·resend 공개
 - **Don't `setPasswordViaToken`/`refreshVerifyToken` null을 예외로 던지지 마라(POST verify는 예외).** Reason: 두 repo 함수는 만료/부재 시 `null`을 반환한다(S6 계약). resend는 null이면 **조용히 중립 응답**(열거 방지), verify-email POST는 null을 `TokenError`로 승격해 400(사용자가 자기 토큰을 직접 들고 온 경로라 명시적 실패가 맞다).
 - **Don't 이메일을 대소문자 구분해 처리하지 마라.** Reason: 레이트리밋 키·repo 호출에 `email.toLowerCase()`를 일관 사용(S10은 "email(소문자)"). signup·resend 모두 소문자화 후 사용. (signupSchema는 형식만 검증, 소문자화는 라우트에서.)
 - **Don't `RateBucket` 동시 증가를 read/decide-then-write로 하지 마라 — lock-전-판정도 포함(finding A).** Reason: `updateMany→affected===0→advisory lock→upsert(count:1)` 2단 흐름은 여전히 race다. 동시 첫-윈도우/막만료 요청이 **lock을 잡기 전에** 모두 `affected=0`을 관측하고, lock을 통과해 각자 `count=1`로 **reset(증가 아님)** 한다 → 윈도우 경계에서 per-IP/email 한도가 무력화돼 공개 signup 버스트가 user·mail을 만든다. **단일 atomic upsert로 교체**: `INSERT … ON CONFLICT (scope,key) DO UPDATE SET count = CASE WHEN windowStartedAt > now-window THEN count+1 ELSE 1 END, windowStartedAt = CASE WHEN … THEN … ELSE now END RETURNING count` — 윈도우 내 증가/만료 리셋을 **한 문장**에서 처리하고 반환 `count`로 `> limit` 판정(별도 read/lock 없음, 같은 행 UPDATE의 row lock으로 직렬화). `enforceResendCooldown`도 동일하게 단일 upsert(쿨다운 경과 시에만 `windowStartedAt`을 `now`로 갱신, `RETURNING`이 `now`면 발송 허용). **multiSchema 주의**: raw SQL 테이블은 `"kernel"."RateBucket"`로 스키마 한정(connection search_path에 kernel이 안 깔림 — `pg_advisory_xact_lock` 함수와 달리 테이블은 한정 필요). 값은 전부 `${}` 파라미터 바인딩. DB-backed라 다중 인스턴스에서도 안전(S10·spec D18 "DB-backed durable").
-- **Don't verify-email 링크 경로를 임의로 정하지 마라.** Reason: 평문 토큰은 `${origin}/verify-email?token=...`(요청 origin 기준 절대 URL)로 만든다. UI 페이지(`/verify-email`)는 task-08 소관 — 이 task는 링크 형식만 고정하고 새 env var를 추가하지 않는다(`new URL(req.url).origin` 사용, `trustHost:true`와 정합).
+- **Don't 검증 링크를 요청 Host로 만들지 마라(finding F).** Reason: `new URL(req.url).origin`(요청 Host)으로 링크를 만들면 프록시가 스푸핑된 `Host`/`X-Forwarded-Host`를 포워드할 때 공격자가 피해자 이메일로 resend를 호출해 **공격자 제어 origin + 비밀 토큰**이 든 링크를 피해자 메일함에 보낼 수 있다. 링크는 반드시 **canonical base URL**(`AUTH_URL` 우선·없으면 `NEXTAUTH_URL`)로 만들고, 들어온 Host/X-Forwarded-Host가 canonical과 다르면 **토큰 생성 전에 `HostMismatchError`로 거부**한다. signup·resend가 단일 헬퍼 `buildVerifyLink`(`src/modules/admin/users/base-url.ts`)를 공유한다(링크 생성 로직이 두 라우트에서 어긋나지 않게). UI 페이지(`/verify-email`)는 task-08 소관 — 이 task는 링크 형식(`/verify-email?token=...`)만 고정한다. 신규 env var는 만들지 않는다(`NEXTAUTH_URL`이 `.env.example`에 이미 존재, `config.ts`의 `NEXTAUTH_SECRET ?? AUTH_SECRET` 브리지와 동형). signup·resend 라우트 테스트의 "스푸핑된 Host → createPendingSignup/refreshVerifyToken·drain 미호출 + 400"이 회귀 가드다.
+- **Don't `RETURNING` 결과를 잘못된 casing 키로 읽지 마라(finding G).** Reason: `$queryRaw`는 PostgreSQL이 돌려준 **결과 컬럼명 그대로**를 키로 노출한다(소문자 변환 안 함). quoted `RETURNING "windowStartedAt"`은 camelCase `windowStartedAt`로 내려오므로 소문자 `rows[0].windowstartedat`로 읽으면 항상 undefined → `enforceResendCooldown`의 `last`가 undefined가 되어 **첫 발송 포함 모든 resend가 RateLimitError로 거부**된다. 그래서 cooldown SQL은 `RETURNING "windowStartedAt" AS "windowstartedat"`로 반환 키를 소문자로 **명시 alias**하고 코드·mock 모두 소문자 키로 일치시킨다(소문자 mock이 camelCase 프로덕션 실패를 숨기지 않게 — alias로 키 자체를 소문자로 고정). `enforceRateLimit`의 `RETURNING "count"`는 식별자가 소문자라 키가 그대로 `count`로 내려오므로 alias 불필요(`rows[0].count` 안전). camelCase 컬럼만 alias가 필요하다.

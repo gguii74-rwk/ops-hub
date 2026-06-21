@@ -23,7 +23,7 @@
 - Create: `tests/app/admin/users/payload.test.ts` — 폼 상태 → API 페이로드 변환 단위 검증
 
 ## Prep
-- entrypoint §Shared Contracts: **S7**(service 시그니처 — UI가 호출할 API의 입력/출력 모양), **S9**(세션 무효화·`mustChangePassword` 중앙 게이트 — `SessionUser.mustChangePassword`·must-change면 빈 summary), **S10**(토큰 TTL은 메일이 담당, UI는 안내만).
+- entrypoint §Shared Contracts: **S7**(service 시그니처 — UI가 호출할 API의 입력/출력 모양), **S9**(세션 무효화·`mustChangePassword` 중앙 게이트 — `SessionUser.mustChangePassword`·must-change면 빈 summary), **S10**(토큰 TTL은 메일이 담당, UI는 안내만), **S11**(finding E — 상태 토글은 `PATCH`가 아니라 `POST .../[id]/status`로 `{status}`를 보낸다).
 - spec **섹션 7**(화면 전체), **섹션 8**(API 계약 표 — 라우트·메서드·응답), **섹션 8 개인 override 패널**(입력 = 권한키·effect·scope·reason·startsAt/endsAt, scope 의미 노트), **섹션 6**(UI↔API 키 일치·메뉴 숨김은 UX).
 - 패턴 참조(인라인됨, 재읽기 불필요):
   - login server action + Card/Input/Label/Button: `src/app/login/page.tsx`
@@ -37,7 +37,7 @@
   - 역할 키: `prisma/seed-roles.ts`(비특권 4종 `regular-developer`/`contractor-developer`/`contractor-content`/`contractor-civil-response`) + 특권 `pm`/`admin`(서버가 OWNER-only 가드).
 
 ## Deps
-- **05** (admin API 라우트): `GET/POST /api/admin/users`, `GET/PATCH /api/admin/users/[id]`, `POST .../approve|reject|roles|reset-password`, `POST/DELETE .../overrides`. 응답 모양은 S7 service 반환을 따른다.
+- **05** (admin API 라우트): `GET/POST /api/admin/users`, `GET/PATCH /api/admin/users/[id]`, `POST .../[id]/status`(상태 토글 — finding E), `POST .../approve|reject|roles|reset-password`, `POST/DELETE .../overrides`. 응답 모양은 S7 service 반환을 따른다.
 - **06** (자가가입·verify/set-password): `POST /api/auth/signup`, `GET/POST /api/auth/verify-email`, `POST /api/auth/resend-verification`.
 - **07** (비번변경·세션무효화·중앙게이트): `POST /api/auth/change-password`, `SessionUser.mustChangePassword`(types.ts).
 
@@ -1024,8 +1024,10 @@ function UserEditInner({ detail, canUpdate, invalidate }: { detail: Detail; canU
   const toggleStatus = useMutation({
     mutationFn: () => {
       const next = detail.status === "ACTIVE" ? "DISABLED" : "ACTIVE";
-      return call(`/api/admin/users/${detail.id}`, {
-        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: next }),
+      // finding E — 상태 토글은 PATCH(프로필·systemRole 전용)가 아니라 전용 status 라우트로 POST한다.
+      // PATCH로 {status}를 보내면 zod가 unknown 키를 strip해 빈 patch가 되어 무시되고, 세션무효화(D14)도 일어나지 않는다.
+      return call(`/api/admin/users/${detail.id}/status`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: next }),
       }, "상태 변경 실패");
     },
   });
