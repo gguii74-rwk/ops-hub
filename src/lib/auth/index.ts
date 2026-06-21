@@ -27,7 +27,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // 허용목록(fail-closed): ACTIVE만 통과. INVITED(미활성)·DISABLED는 거부.
         if (!user || user.status !== "ACTIVE") return null;
 
-        // passwordHash가 null이면 set-password 미완료(PENDING 자가가입) — 로그인 거부
+        // TypeScript narrowing: passwordHash is nullable after the account-lifecycle migration. Unreachable in practice — the status check above already blocks any non-ACTIVE (incl. PENDING/null-hash) user.
         if (!user.passwordHash) return null;
         const valid = await bcrypt.compare(password, user.passwordHash);
         if (!valid) return null;

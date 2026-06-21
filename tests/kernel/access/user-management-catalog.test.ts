@@ -34,9 +34,7 @@ describe("user-management catalog·seed (task-01)", () => {
 
   it("ROLE_ALLOW.admin이 D8 권한 묶음을 정확히 보유", () => {
     expect(ROLE_ALLOW.admin).toBeDefined();
-    for (const key of ADMIN_ROLE) {
-      expect(ROLE_ALLOW.admin).toContain(key);
-    }
+    expect(ROLE_ALLOW.admin).toEqual(ADMIN_ROLE);
   });
 
   it("pm은 전체(\"*\") 유지(회귀 방지)", () => {

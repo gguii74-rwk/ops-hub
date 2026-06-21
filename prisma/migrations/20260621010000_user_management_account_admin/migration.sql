@@ -1,7 +1,7 @@
 -- AlterEnum: UserStatus에 PENDING·REJECTED 추가
 -- Postgres: ADD VALUE는 개별 실행(동일 트랜잭션에서 새 value 사용 불가 — 여기선 사용하지 않으므로 안전)
-ALTER TYPE "kernel"."UserStatus" ADD VALUE IF NOT EXISTS 'PENDING';
-ALTER TYPE "kernel"."UserStatus" ADD VALUE IF NOT EXISTS 'REJECTED';
+ALTER TYPE "kernel"."UserStatus" ADD VALUE 'PENDING';
+ALTER TYPE "kernel"."UserStatus" ADD VALUE 'REJECTED';
 
 -- AlterTable: User 계정수명주기 필드 추가 + passwordHash nullable 전환
 -- passwordHash DROP NOT NULL: 기존 행 모두 값 보유 — 무손실 nullable 전환
