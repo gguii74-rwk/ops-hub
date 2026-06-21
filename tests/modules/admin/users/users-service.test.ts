@@ -352,6 +352,12 @@ describe("resetPassword (D14 — 특권 대상 OWNER-only)", () => {
     r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE", systemRole: "MEMBER", roleKeys: ["pm"] }) as never);
     await expect(resetPassword(delegate(), "u1")).rejects.toBeInstanceOf(EscalationError);
   });
+  it("Finding E: 본인(OWNER 포함) self-reset은 EscalationError, resetPasswordTx 미호출 — change-password로 유도", async () => {
+    // actor.userId === id 이면 OWNER여도 무조건 차단(임시비번 응답 유실 시 마지막 OWNER 락아웃 방지).
+    // getUserDetail 호출 전에 던져야 하므로 mock 설정 불필요.
+    await expect(resetPassword(owner, "owner1")).rejects.toBeInstanceOf(EscalationError);
+    expect(r.resetPasswordTx).not.toHaveBeenCalled();
+  });
   it("위임 admin이 자기 자신 admin 라우트로 재설정 → EscalationError", async () => {
     r.getUserDetail.mockResolvedValue(detail({ id: "admin1", status: "ACTIVE", systemRole: "MEMBER" }) as never);
     await expect(resetPassword(delegate([], "admin1"), "admin1")).rejects.toBeInstanceOf(EscalationError);

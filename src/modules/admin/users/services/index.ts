@@ -206,6 +206,12 @@ export async function setUserStatus(actor: ActorContext, id: string, status: "AC
 // finding H: 특권 대상 판정은 stale 스냅샷으로 사전 거부만 하고, **권위 검사는 resetPasswordTx 락 안 fresh state로 재실행**한다
 // (대상이 특권이 된 직후 위임 admin이 reset해 임시비번을 탈취하는 race 차단). recheck 클로저가 actor를 캡처해 락 안에서 호출된다.
 export async function resetPassword(actor: ActorContext, id: string): Promise<{ temporaryPassword: string }> {
+  // Finding E: admin reset-password는 '타인' 비번 재설정 전용. 본인(OWNER 포함) self-reset은 마지막 OWNER
+  // 락아웃 위험(임시비번 응답 유실 시 복구 불가)이 있어 무조건 차단 — 본인 비번은 change-password 흐름을 쓴다.
+  // (assertNotSelfMutation은 OWNER를 면제하므로 reset 경로엔 부족하다.)
+  if (actor.userId === id) {
+    throw new EscalationError("자신의 비밀번호는 비밀번호 변경 기능을 사용하세요.");
+  }
   const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
   // 특권 대상(OWNER/ADMIN systemRole 또는 특권 역할)은 OWNER만 재설정 가능(위임 admin 거부). 사전 검사(빠른 거부; stale 스냅샷).
