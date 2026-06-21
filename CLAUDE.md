@@ -153,6 +153,10 @@ src/app/{(auth),dashboard,workflows,leave,admin,api}/
 
 이 저장소의 다단계 구현 계획은 글로벌 `superpowers:writing-plans` 대신 프로젝트 스킬 **`writing-plans-split`**(`.claude/skills/writing-plans-split/`)으로 작성한다 — 단일 대형 파일이 아니라 얇은 엔트리포인트 `docs/plans/<feature>.md` + 태스크별 파일(`<feature>/task-NN-<slug>.md`)로 분할한다. brainstorming의 종착점이 "writing-plans 호출"이어도 이 저장소에서는 이 스킬을 사용한다. 실행은 `superpowers:subagent-driven-development`로 한다.
 
+완료된 `task-NN` plan 파일은 historical record로 **동결**한다(본문 수정 금지=plan churn). 정책이 바뀌면 SSOT(SKILL·구현물)만 갱신하고 plan 상단에 포인터 1줄만 둔다.
+
 ## 개발 사이클 자동화 (적대검증 반복 루프)
 
 각 단계(spec/plan/impl) 완료 후 `review-loop` 스킬로 "커밋→codex 적대검증→보수적 판정(disposition)·자동수정→재반복(미판정 blocking 0까지/최대 5회)"을 돌린다. 목표는 "high 0"이 아니라 "판정 없이 남은 high 0" — 모든 critical/high/medium을 FIXED/ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE/DUPLICATE/ESCALATE로 닫는다. 단계 경계(spec→plan, plan→impl)는 **반드시 새 세션**에서 시작한다(핸드오프 작성 후 `/clear`). 컨텍스트 40% 초과 시 Stop 훅(`scripts/context-threshold-hook.mjs`)이 핸드오프+`/clear`를 넛지한다. 자가 `/clear`·자동 단계전환은 불가하므로 실제 초기화는 사람이 한다. 상세: `docs/workflow/review-loop-runbook.md`.
+
+**두 세션 동시 작업 git 위생:** 같은 워킹트리를 구현 세션 + 보조 세션이 공유할 수 있다(실제 `index.lock` 충돌 발생). 커밋 전 `.git/index.lock` 존재를 확인하고, `git add -A` 대신 **변경 파일을 명시적으로 stage**해 다른 세션의 미커밋 작업과 섞이지 않게 한다.
