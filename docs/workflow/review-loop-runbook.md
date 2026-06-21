@@ -27,6 +27,7 @@
 - 매 반복 = **커밋 → 적대검증(커밋된 HEAD 기준) → 분류·판정(disposition) + ledger → ESCALATE 처리 → 종료판정 → FIXED 수정(impl=TDD / spec·plan=문서+정합성) → 재반복**.
 - 종료: **미판정 blocking == 0**. 모든 critical/high/medium을 FIXED/ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE/DUPLICATE/ESCALATE로 닫는다. 목표는 "high 0"이 아니라 "판정 없이 남은 high 0".
 - 판정 루프 전환: blocking score(critical=4·high=3·medium=1)가 2회 연속 안 줄면(정체/발산) 수정 루프를 멈추고 판정 루프로(더 고치지 말고 ledger에 닫음). 5회 초과 시 남은 미판정을 판정/ESCALATE로 닫고 사용자 대기.
+- 자동 모드(`--auto-rounds`, 기본 3): 초반 n회는 FIXED 자동수정 + 위험군(critical·보안·방향전제) 외 ESCALATE를 batch로 모아 일괄 제시(사람 개입 최소화). score 정체 시 조기 batch 전환, 이후 정밀 모드. 상세: 스킬.
 - 분류·판정 기준은 `review-loop` 스킬과 plan §SC-2 참조.
 
 ### 실행 팁 (codex companion)

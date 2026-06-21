@@ -25,6 +25,7 @@
 - **DEFERRED_TO_IMPL**: spec/plan에서 못 닫음 → impl plan의 AC/테스트로 이전·연결(spec/plan 전용).
 - **OUT_OF_SCOPE**: 이번 변경 범위 밖(follow-up). **DUPLICATE**: 기존 ledger 항목과 동일.
 - **ESCALATE(사용자 의사결정)**: (a) 제품 범위/동작(UX·정책) 변경, (b) 설계 spec 의도에 반함, (c) 유효 설계 선택지 2+, (d) 보안·데이터 트레이드오프, (e) confidence 낮음 — 하나라도 해당. 사용자가 FIXED/ACCEPTED/DEFERRED/OOS 중 하나로 닫는다.
+- **ESCALATE 제시 시점(`--auto-rounds`, 기본 3)**: 초반 자동 라운드는 즉시군(critical·보안/데이터·후속 전제가 되는 방향결정)만 즉시 묻고, batch군은 모아 일괄 제시(score 정체 시 조기 전환). 자동 라운드 후(>auto-rounds)엔 매 라운드 즉시.
 - 종료 판정은 **분류·판정·ESCALATE 처리 후**에 한다. FIXED 수정 단계는 phase 분기: impl=TDD, spec/plan=문서 수정 후 관문 재확인 + 문서 내부 정합성 자체 점검.
 - **fingerprint**: `file`+정규화 `title`+`recommendation`(severity 제외, line 보조)로 신규/잔존/해결/중복을 대조. 같은 계열 2회 이상 반복 시 더 고치지 말고 판정으로 닫는다.
 

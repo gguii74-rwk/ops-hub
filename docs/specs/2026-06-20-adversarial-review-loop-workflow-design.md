@@ -53,7 +53,7 @@ spec/plan 문서 생성 또는 구현 작업(예: `superpowers:subagent-driven-d
 
 - 위치: `.claude/skills/review-loop/SKILL.md` (git 추적, 양 노트북 공유)
 - 호출: 사용자가 단계 완료 후 직접 호출(예: `/review-loop`), 또는 Stop 훅 넛지가 호출을 유도.
-- 인자(선택): `--phase spec|plan|impl`(기본 auto 추론), `--max <n>`(기본 5), `--base <ref>`(브랜치 리뷰 기준, 기본 `main`).
+- 인자(선택): `--phase spec|plan|impl`(기본 auto 추론), `--max <n>`(기본 5), `--base <ref>`(브랜치 리뷰 기준, 기본 `main`), `--auto-rounds <n>`(기본 3, 초반 자동 모드 라운드 수; 0=매회 즉시).
 
 #### 알고리즘
 
@@ -84,7 +84,7 @@ review-loop [--phase ...] [--max 5] [--base main]
         · DUPLICATE        : 기존 ledger 항목과 동일.
         · ESCALATE         : 사용자 결정 필요 — (a) 제품 범위/동작 변경, (b) spec 의도 반함, (c) 설계 선택지 2+, (d) 보안·데이터 트레이드오프, (e) confidence 낮음.
       low → DEFER_LOW(요약에만). 미판정 blocking score(critical=4·high=3·medium=1) 기록.
-   d. ESCALATE 큐가 있으면 AskUserQuestion으로 사용자 판단 요청 → 사용자가 FIXED/ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE 중 하나로 닫거나 "중단"(핸드오프 쓰고 종료).
+   d. ESCALATE 처리(모드 분기): 자동 모드(iteration ≤ auto-rounds, 기본 3)에서는 즉시군(critical·보안/데이터·방향전제)만 AskUserQuestion, batch군은 ledger에 적재(안 물음). batch 전환 시점(auto-rounds 도달·score 정체·FIXED 소진)/정밀 모드(>auto-rounds)에서 모아둔 batch ESCALATE + round별 자동수정 내역을 일괄 제시 → FIXED/ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE로 닫거나 "중단"(핸드오프 쓰고 종료).
    e. 종료 판정:
       미판정 blocking == 0 AND FIXED 큐 == 0  →  성공 종료(요약 보고) → 4)로.
       (미판정 blocking = critical/high/medium 중 disposition 없는 것 + FIXED 재확인 대기. low·판정완료 제외)
