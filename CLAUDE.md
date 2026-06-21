@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 현재 상태 (중요)
 
-앱이 **스캐폴드되어 동작하는 상태**입니다. Phase 0~2(실사·기준선 / 앱 골격·공통 기반 / 설정 체계), **디자인 시스템 기반**, Phase 3(통합 캘린더 `src/modules/calendar`), Phase 4(워크플로 `src/modules/workflows`), Phase 5 Leave **백엔드(스키마·서비스·기본 신청 UI)**가 `main`에 머지된 상태입니다. **현재 활성 작업 = 연차 도메인**: "연차 영역 재설계"(대시보드·현황·전용 캘린더·관리자 모달·알림 메일) plan이 `feat/leave-area-redesign`에서 진행 중(`docs/plans/2026-06-20-leave-area-redesign.md`).
+앱이 **스캐폴드되어 동작하는 상태**입니다. Phase 0~2(실사·기준선 / 앱 골격·공통 기반 / 설정 체계), **디자인 시스템 기반**, Phase 3(통합 캘린더 `src/modules/calendar`), Phase 4(워크플로 `src/modules/workflows`), Phase 5 Leave **백엔드 + 연차 영역 재설계(UI·현황·전용 캘린더·관리자 모달·알림 메일)**까지 `main`에 머지된 상태입니다. **현재 활성 작업은 git 브랜치 + `docs/plans/`의 최신 plan으로 확인**하세요(작성 시점 예: 사용자 관리 `feat/user-management`, `docs/plans/2026-06-21-user-management.md`).
 
 이미 존재하는 것:
 
