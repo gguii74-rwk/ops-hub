@@ -3,7 +3,8 @@ import bcrypt from "bcryptjs";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { changePasswordTx } from "@/modules/admin/users/repositories";
-import { UserConflictError } from "@/modules/admin/users/errors";
+import { UserConflictError, RateLimitError } from "@/modules/admin/users/errors";
+import { enforceRateLimit, CHANGE_PASSWORD_LIMIT } from "@/modules/admin/users/rate-limit";
 import { changePasswordSchema } from "@/modules/admin/users/validations/change-password";
 
 export async function POST(req: Request) {
@@ -17,6 +18,15 @@ export async function POST(req: Request) {
   const { currentPassword, newPassword } = parsed.data;
 
   const userId = session.user.id;
+
+  // D18: per-user 레이트리밋 — 온라인 비번 추측 + bcrypt DoS 차단(인증된 사용자 대상)
+  try {
+    await enforceRateLimit("change-password:user", userId, CHANGE_PASSWORD_LIMIT, new Date());
+  } catch (e) {
+    if (e instanceof RateLimitError) return NextResponse.json({ error: e.message }, { status: 429 });
+    throw e;
+  }
+
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } });
   // 자가가입 미설정·비활성 등 passwordHash 없으면 변경 경로 불가(세션 콜백이 이미 무효화하지만 방어적으로).
   if (!user?.passwordHash) return NextResponse.json({ error: "비밀번호를 변경할 수 없습니다." }, { status: 400 });
