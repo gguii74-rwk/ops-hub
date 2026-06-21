@@ -1,7 +1,7 @@
 # 적대검증 반복 루프 + 컨텍스트 규율 워크플로우 — 구현 계획 (entrypoint)
 
 - 설계: `docs/specs/2026-06-20-adversarial-review-loop-workflow-design.md`
-- Goal: spec/plan/impl 단계 완료 후 "커밋→적대검증→보수적 자동수정→재반복(critical/high 0까지/5회)"을 도구화하고, 컨텍스트 40% 시 핸드오프/`/clear`를 넛지한다.
+- Goal: spec/plan/impl 단계 완료 후 "커밋→적대검증→보수적 판정·자동수정→재반복(미판정 blocking 0까지/최대 5회)"을 도구화하고, 컨텍스트 40% 시 핸드오프/`/clear`를 넛지한다.
 - Architecture: 집중 `review-loop` 스킬(절차) + `transcript usage` 기반 컨텍스트 임계 Stop 훅(스크립트+settings) + 런북 문서. 모두 git 추적으로 양 노트북 공유. 기존 superpowers 스킬·글로벌 설정·claude-hud는 건드리지 않는다.
 - Tech Stack: Node ESM(`.mjs`) 훅 스크립트, vitest(`tests/**/*.test.ts`), Claude Code 훅/스킬, codex 플러그인 companion.
 
@@ -12,14 +12,21 @@
 2개 이상 태스크가 참조하는 계약. 태스크 파일은 재인라인 대신 "entrypoint §SC-n"으로 가리킨다.
 
 ### SC-1 종료·심각도 규칙
-- finding `severity ∈ {critical, high, medium, low}`.
-- 루프 **성공 종료 = critical 개수 0 그리고 high 개수 0**. (high만 보면 critical을 흘릴 수 있음)
-- medium/low = 요약에 기록만, 이 루프에서 수정하지 않음.
+- finding `severity ∈ {critical, high, medium, low}`. blocking severity = critical/high/medium.
+- 모든 blocking finding은 **disposition**으로 닫는다: FIXED / ACCEPTED / DEFERRED_TO_IMPL / OUT_OF_SCOPE / DUPLICATE / ESCALATE. low = `DEFER_LOW`.
+- **미판정(unadjudicated) blocking** = critical/high/medium 중 disposition 없는 것 + FIXED 재확인 대기.
+- 루프 **성공 종료 = 미판정 blocking 개수 0**. 목표는 "high 0"이 아니라 "판정 없이 남은 high 0". (low·판정완료 항목만 남는다)
+- **판정 루프 전환**: blocking score(critical=4·high=3·medium=1)가 2회 연속 감소하지 않으면(정체/발산) 수정 루프를 멈추고 판정 루프로 전환(남은 미판정을 ledger에 닫음). count가 아닌 score로 본다.
 
-### SC-2 분류(triage) 규칙 — 보수적
-각 critical/high finding을 둘 중 하나로 분류한다.
-- **AUTO(자동수정)**: 수정 방향이 명확 — 버그, 누락 가드, 테스트 공백, 경쟁조건/원자성, 잘못된 권한 검사 등.
-- **ESCALATE(사용자 의사결정)**: 다음 중 하나라도 해당 — (a) 제품 범위/동작(UX·정책) 변경, (b) 설계 spec 의도에 반함(스펙 변경 필요), (c) 유효한 설계 선택지가 둘 이상, (d) 보안·데이터 트레이드오프 판단 필요, (e) finding confidence가 낮음(불확실).
+### SC-2 분류·판정(disposition) 규칙 — 보수적
+각 critical/high/medium finding에 disposition을 부여해 ledger에 닫는다(low는 `DEFER_LOW`).
+- **FIXED**: 수정 방향이 명확 — 버그·누락 가드·테스트 공백·경쟁조건/원자성·잘못된 권한 검사 등.
+- **ACCEPTED**: 실제 위험이나 현 단계에서 의도적 수용(이유+보완 명시).
+- **DEFERRED_TO_IMPL**: spec/plan에서 못 닫음 → impl plan의 AC/테스트로 이전·연결(spec/plan 전용).
+- **OUT_OF_SCOPE**: 이번 변경 범위 밖(follow-up). **DUPLICATE**: 기존 ledger 항목과 동일.
+- **ESCALATE(사용자 의사결정)**: (a) 제품 범위/동작(UX·정책) 변경, (b) 설계 spec 의도에 반함, (c) 유효 설계 선택지 2+, (d) 보안·데이터 트레이드오프, (e) confidence 낮음 — 하나라도 해당. 사용자가 FIXED/ACCEPTED/DEFERRED/OOS 중 하나로 닫는다.
+- 종료 판정은 **분류·판정·ESCALATE 처리 후**에 한다. FIXED 수정 단계는 phase 분기: impl=TDD, spec/plan=문서 수정 후 관문 재확인 + 문서 내부 정합성 자체 점검.
+- **fingerprint**: `file`+정규화 `title`+`recommendation`(severity 제외, line 보조)로 신규/잔존/해결/중복을 대조. 같은 계열 2회 이상 반복 시 더 고치지 말고 판정으로 닫는다.
 
 ### SC-3 adversarial-review companion 호출
 - 플러그인 루트 탐지(버전 하드코딩 금지): `ls -d "$HOME"/.claude/plugins/cache/openai-codex/codex/*/ | sort -V | tail -1`
@@ -40,8 +47,8 @@
 - **훅 출력**: 넛지 시 `{"decision":"block","reason":<핸드오프+/clear 지시>}`, 그 외 exit 0. `stop_hook_active===true` 또는 세션 넛지 플래그 존재 시 exit 0(무한·중복 방지).
 
 ### SC-5 핸드오프 / resume 상태
-- `.remember/remember.md`에 작성(기존 remember 포맷). review-loop 재개에 필요한 최소 상태를 명시: `phase / iteration / base / outstanding findings(file·line·severity·요약)`.
-- 새 세션에서 `/review-loop --resume`가 이 상태를 읽어 iteration·미해결 finding을 복원한다.
+- `.remember/remember.md`에 작성(기존 remember 포맷). review-loop 재개에 필요한 최소 상태를 명시: `phase / iteration / base / ledger(file·severity·disposition·fingerprint·근거) / blocking score 이력`.
+- 새 세션에서 `/review-loop --resume`가 이 상태를 읽어 iteration·ledger·score 이력을 복원한다.
 
 ## Task table
 

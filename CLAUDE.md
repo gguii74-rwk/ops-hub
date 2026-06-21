@@ -155,4 +155,4 @@ src/app/{(auth),dashboard,workflows,leave,admin,api}/
 
 ## 개발 사이클 자동화 (적대검증 반복 루프)
 
-각 단계(spec/plan/impl) 완료 후 `review-loop` 스킬로 "커밋→codex 적대검증→보수적 자동수정→재반복(critical/high 0까지/최대 5회)"을 돌린다. 단계 경계(spec→plan, plan→impl)는 **반드시 새 세션**에서 시작한다(핸드오프 작성 후 `/clear`). 컨텍스트 40% 초과 시 Stop 훅(`scripts/context-threshold-hook.mjs`)이 핸드오프+`/clear`를 넛지한다. 자가 `/clear`·자동 단계전환은 불가하므로 실제 초기화는 사람이 한다. 상세: `docs/workflow/review-loop-runbook.md`.
+각 단계(spec/plan/impl) 완료 후 `review-loop` 스킬로 "커밋→codex 적대검증→보수적 판정(disposition)·자동수정→재반복(미판정 blocking 0까지/최대 5회)"을 돌린다. 목표는 "high 0"이 아니라 "판정 없이 남은 high 0" — 모든 critical/high/medium을 FIXED/ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE/DUPLICATE/ESCALATE로 닫는다. 단계 경계(spec→plan, plan→impl)는 **반드시 새 세션**에서 시작한다(핸드오프 작성 후 `/clear`). 컨텍스트 40% 초과 시 Stop 훅(`scripts/context-threshold-hook.mjs`)이 핸드오프+`/clear`를 넛지한다. 자가 `/clear`·자동 단계전환은 불가하므로 실제 초기화는 사람이 한다. 상세: `docs/workflow/review-loop-runbook.md`.

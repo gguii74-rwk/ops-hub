@@ -1,5 +1,7 @@
 # Task 03 — review-loop 스킬
 
+> 현행 실행 SSOT는 `.claude/skills/review-loop/SKILL.md`(및 런북)입니다. 이 파일 본문은 최초 구현 당시 historical record로 유지합니다.
+
 목적: "커밋→적대검증→보수적 분류→TDD 수정→재반복(critical/high 0까지/최대 5회)"을 수행하는 집중 스킬을 작성한다.
 
 ## Files

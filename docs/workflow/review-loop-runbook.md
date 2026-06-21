@@ -9,7 +9,7 @@
 ```
 [spec]  superpowers:brainstorming → spec 작성·커밋
         → /review-loop --phase spec
-        → (critical/high 0) 핸드오프 작성 + "다음은 /clear 후 plan" 안내
+        → (미판정 blocking 0) 핸드오프 작성 + "다음은 /clear 후 plan" 안내
         → 사용자가 /clear
 
 [plan]  (새 세션) writing-plans-split → plan 작성·커밋
@@ -24,14 +24,15 @@
 
 ## review-loop 한눈에
 
-- 매 반복 = **커밋 → 적대검증(커밋된 HEAD 기준) → 보수적 분류 → TDD 수정 → 재반복**.
-- 종료: critical=0 AND high=0. 5회 초과 또는 사용자 의사결정 사항이면 멈추고 사용자 대기.
-- 보수적 수용/비수용 기준은 `review-loop` 스킬과 plan §SC-2 참조.
+- 매 반복 = **커밋 → 적대검증(커밋된 HEAD 기준) → 분류·판정(disposition) + ledger → ESCALATE 처리 → 종료판정 → FIXED 수정(impl=TDD / spec·plan=문서+정합성) → 재반복**.
+- 종료: **미판정 blocking == 0**. 모든 critical/high/medium을 FIXED/ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE/DUPLICATE/ESCALATE로 닫는다. 목표는 "high 0"이 아니라 "판정 없이 남은 high 0".
+- 판정 루프 전환: blocking score(critical=4·high=3·medium=1)가 2회 연속 안 줄면(정체/발산) 수정 루프를 멈추고 판정 루프로(더 고치지 말고 ledger에 닫음). 5회 초과 시 남은 미판정을 판정/ESCALATE로 닫고 사용자 대기.
+- 분류·판정 기준은 `review-loop` 스킬과 plan §SC-2 참조.
 
 ### 실행 팁 (codex companion)
 - 큰 변경(여러 파일·수천 줄)은 `adversarial-review --wait`를 **`run_in_background: true`**로 띄우고 완료 task-notification을 기다린다(폴링 금지).
 - 결과 파일은 앞부분에 `[codex] …` 실행 로그가 섞여 있다 — 보고서만 추출: `sed -n '/^# Codex Adversarial Review/,$p' <outfile>`.
-- 큰 plan은 매 회 ~2 high가 새 영역에서 나오는 경향(근본 결함 아님). 영역이 코어 정합성→주변부(UI·배포·타입)로 이동하면 impl 전환을 고려.
+- 큰 plan은 매 회 ~2 high가 새 영역에서 나오는 경향(근본 결함 아님 — 적대검증이 `base..HEAD` 전체를 매번 다시 보기 때문). 그래서 "절대 개수 0"은 도달 불가능할 수 있다 → 목표를 "미판정 blocking 0"으로 두고, **blocking score 2회 연속 비감소면 판정 루프로 전환**해 남은 high를 ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE로 닫아 churn을 끊는다. 영역이 코어 정합성→주변부(UI·배포·타입)로 이동하면 spec/plan의 DEFERRED_TO_IMPL을 impl AC/테스트로 연결하고 impl 전환을 고려.
 
 ## 컨텍스트 규율(자동/수동 경계)
 
