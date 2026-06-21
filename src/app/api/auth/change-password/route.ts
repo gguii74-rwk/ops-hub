@@ -26,6 +26,13 @@ export async function POST(req: Request) {
   const ok = await bcrypt.compare(currentPassword, user.passwordHash);
   if (!ok) return NextResponse.json({ error: "현재 비밀번호가 일치하지 않습니다." }, { status: 400 });
 
+  // D15 강화: 새 비밀번호가 현재 비밀번호와 같으면 거부한다. 강제변경(must-change) 사용자가 관리자 발급 임시 비번을
+  // 양쪽에 그대로 제출해 mustChangePassword만 해제하고 알려진 임시 비번을 영구 비번으로 굳히는 우회를 차단한다.
+  // currentPassword는 위에서 저장 해시와 일치 검증됨 → 평문 동등 비교가 곧 "현재 비번 재사용" 판정.
+  if (newPassword === currentPassword) {
+    return NextResponse.json({ error: "새 비밀번호는 현재 비밀번호와 달라야 합니다." }, { status: 400 });
+  }
+
   try {
     const newHash = await bcrypt.hash(newPassword, 10);
     // S6: passwordHash + passwordChangedAt=now + mustChangePassword=false (타 세션 무효화 기준 = passwordChangedAt).

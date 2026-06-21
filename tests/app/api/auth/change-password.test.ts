@@ -69,6 +69,22 @@ describe("POST /api/auth/change-password", () => {
     expect(h.compare).toHaveBeenCalledWith("temppassword1", "temphash");
     expect(h.changePasswordTx).toHaveBeenCalledWith("u1", "newhash", expect.any(Date), "temphash"); // finding 4: 현재 해시 CAS
   });
+  it("강제 변경: 새 비번이 현재(임시) 비번과 같으면 400 — 임시 비번 재사용 우회 차단(changePasswordTx 미호출)", async () => {
+    h.authMock.mockResolvedValue({ user: { id: "u1", mustChangePassword: true } });
+    h.db.user.findUnique.mockResolvedValue({ passwordHash: "temphash", mustChangePassword: true });
+    h.compare.mockResolvedValue(true); // 현재(임시) 비번은 일치하지만
+    const res = await POST(req({ currentPassword: "temppassword1", newPassword: "temppassword1" }));
+    expect(res.status).toBe(400);
+    expect(h.changePasswordTx).not.toHaveBeenCalled(); // 플래그 해제·영구화 차단
+  });
+  it("자발 변경: 새 비번이 현재 비번과 같으면 400(재사용 금지)", async () => {
+    h.authMock.mockResolvedValue({ user: { id: "u1", mustChangePassword: false } });
+    h.db.user.findUnique.mockResolvedValue({ passwordHash: "oldhash", mustChangePassword: false });
+    h.compare.mockResolvedValue(true);
+    const res = await POST(req({ currentPassword: "samepass12345", newPassword: "samepass12345" }));
+    expect(res.status).toBe(400);
+    expect(h.changePasswordTx).not.toHaveBeenCalled();
+  });
   it("강제 변경도 현재(임시) 비번 불일치면 400(fresh 로그인 외 우회 금지)", async () => {
     h.authMock.mockResolvedValue({ user: { id: "u1", mustChangePassword: true } });
     h.db.user.findUnique.mockResolvedValue({ passwordHash: "temphash", mustChangePassword: true });
