@@ -49,10 +49,10 @@
 | **D12** | **권한 상승 가드**: 비-OWNER는 OWNER/ADMIN `systemRole`을 부여할 수 없다(403). 마지막 OWNER의 강등/박탈을 막는다(최소 1 OWNER 보존). |
 | **D14** | **비밀번호 재설정(reset-password) 가드**. 대상이 OWNER/ADMIN `systemRole` 또는 특권 역할(`pm`/`admin`) 보유자면 **OWNER만** 재설정 가능(위임 admin 거부). 비-OWNER admin은 자기 자신을 admin 라우트로 재설정 불가. 재설정 성공 후 대상의 **기존 세션 무효화**. D4(임시비번 즉시 ACTIVE·관리자 전달)는 비특권 대상에 한해 유지. |
 | **D15** | **비밀번호 변경 인증**. 자발적 변경은 **현재 비밀번호 확인** 필요. 최초 강제변경(`mustChangePassword`)은 현재(임시) 비밀번호 확인 또는 fresh 로그인 필요. 변경/재설정 성공 후 **다른 활성 세션 무효화** — JWT 세션이므로 `passwordChangedAt` 발급시각 비교로 무효화(jwt/session 콜백). |
-| **D13** | **권한 위임 anti-escalation(D12 확장)**. 위임 `admin`(비-OWNER)에 대해: (a) **자가 권한 mutation 금지** — 본인의 역할·override·`systemRole`·`status`를 스스로 변경할 수 없다(OWNER만). → "나에게 `pm` 부여" 차단. (b) **특권 역할 부여는 OWNER만** — `pm`·`admin` 등 시스템 역할 또는 `"*"`/`admin.*`를 포함한 역할의 부여·회수는 OWNER만. 위임 admin은 비특권 역할(개발/외주 4종)만 부여한다. (c) **보유 권한 한도 내 위임** — 위임 admin은 자신이 실제 보유한 권한에 한해서만 ALLOW override를 부여할 수 있다(가진 것 이상 못 줌). DENY override는 접근을 줄이므로 항상 허용. 모든 가드는 **라우트 permission 키 검사와 별개로 서비스 계층에서 강제**한다(권한키 분할 대신). |
+| **D13** | **권한 위임 anti-escalation(D12 확장)**. 위임 `admin`(비-OWNER)에 대해: (a) **자가 권한 mutation 금지** — 본인의 역할·override·`systemRole`·`status`를 스스로 변경할 수 없다(OWNER만). → "나에게 `pm` 부여" 차단. (b) **특권 역할 부여는 OWNER만** — `pm`·`admin` 등 시스템 역할 또는 `"*"`/`admin.*`를 포함한 역할의 부여·회수는 OWNER만. 위임 admin은 비특권 역할(개발/외주 4종)만 부여한다. (c) **보유 권한 한도 내 위임** — 위임 admin은 자신이 실제 보유한 권한에 한해서만 ALLOW override를 부여할 수 있다(가진 것 이상 못 줌). (d) **DENY override도 무제한 아님** — 타인 대상 `admin.*`/critical 권한(user-management·audit) DENY는 OWNER만(위임 admin이 동료 관리자를 lockout 못 하게). 비특권 권한 DENY만 위임 admin 허용. (e) **최소 관리자 보존 불변식** — 모든 role/override/status mutation 후 **최소 1명의 가용 user-management 관리자 + 1명의 audit 조회자**가 남아야 한다(아니면 거부). 모든 가드는 **라우트 permission 키 검사와 별개로 서비스 계층에서 강제**한다(권한키 분할 대신). |
 | **D16** | **이메일 소유 검증**. 자가가입은 PENDING 생성 + 검증 토큰(해시 저장)·검증 메일 발송(MailDelivery, D5 알림과 별개 범주). 공개 라우트 `verify-email`이 토큰·만료 검증 후 `emailVerifiedAt` 기록. **승인은 `emailVerifiedAt` 필수**(미검증 승인 거부). **이메일 예약 방지**: 미검증·미승인 PENDING은 7일 후 만료, 중복 충돌 시 기존 행이 만료된 미검증 PENDING이면 교체 허용(D10 보완); 검증완료·활성 이메일은 중복 거부 유지. 관리자 직접추가는 관리자 보증으로 `emailVerifiedAt=now()` 설정. |
-| **D17** | **`mustChangePassword` 하드 게이트**. 플래그가 켜진 세션은 UI 리다이렉트에만 의존하지 않고 **API/권한 계층에서 `change-password`·`logout` 외 모든 엔드포인트를 거부**한다(`requirePermission`/미들웨어가 플래그 검사). → 임시비번 보유자가 UI를 건너뛰고 직접 API를 호출해 대상 역할로 행동하는 것을 차단. 직접 API 호출 테스트로 검증. |
-| **D18** | **공개 엔드포인트 남용 통제**. `signup`·`resend-verification`은 미인증 공개라 서버측 스로틀이 필수: per-IP·per-email 가입 레이트리밋, 재발송 쿨다운, 미처리 PENDING 생성 상한(bounded creation), 그에 묶인 메일 enqueue 상한. 한도 초과는 **행/메일 생성 전에** 거부. 테스트로 증명. (망 제한이 있어도 내부 미인증 클라이언트의 DB/메일 폭주를 막기 위함 — 7일 만료는 공격 중 쓰기/메일 양을 못 막음.) |
+| **D17** | **`mustChangePassword` 하드 게이트**. 플래그가 켜진 세션은 UI 리다이렉트에만 의존하지 않고 **API 계층에서 `change-password`·`logout` 외 모든 엔드포인트를 거부**한다. `requirePermission`뿐 아니라 **`getPermissionSummary`로 인가하는 경로도 fail-closed**(must-change 세션이면 빈 summary 반환)여야 하므로, **모든 인증 API가 공유하는 단일 중앙 가드**(세션 해석 계층)에서 강제한다 — 개별 핸들러의 인가 방식에 의존하지 않음. **라우트 열거 테스트**로 allowlist 외 모든 기존 API가 403을 반환함을 증명. |
+| **D18** | **공개 엔드포인트 남용 통제**. `signup`·`resend-verification`은 미인증 공개라 서버측 스로틀이 필수: per-IP·per-email 가입 레이트리밋, 재발송 쿨다운, 미처리 PENDING 생성 상한(bounded creation), 그에 묶인 메일 enqueue 상한. 한도 초과는 **행/메일 생성 전에** 거부. 강제는 **원자적·사전(pre-write)·durable(DB-backed, 다중 인스턴스 안전)**이어야 한다(구체 한도값·윈도우·메커니즘은 plan에서 확정). 테스트로 "한도 초과 후 User/MailDelivery 행 미생성"을 증명. (망 제한이 있어도 내부 미인증 클라이언트의 DB/메일 폭주를 막기 위함 — 7일 만료는 공격 중 쓰기/메일 양을 못 막음.) |
 
 ## 4. 데이터 모델 / 마이그레이션
 
@@ -112,8 +112,8 @@ model User {
 
 - **`admin` 역할**(D8): `admin.users:{view,create,update,approve}`, `admin.settings:configure`, `admin.audit:view`를 묶는다. PM(OWNER) 외에도 사용자관리를 위임할 수 있다. 기존 `pm` 역할은 `"*"`라 영향 없음.
 - **권한 상승 가드**(D12): `systemRole`을 `OWNER`/`ADMIN`으로 설정·변경하는 요청은 행위자가 `OWNER`일 때만 허용(아니면 403). 마지막 `OWNER`를 강등/비활성하려는 시도는 거부.
-- **위임 anti-escalation**(D13): `admin.users:update` 하나가 역할 부여·override·status·비번재설정을 모두 게이트하므로, **서비스 계층**에서 추가 가드를 강제한다 — ⓐ 비-OWNER의 자기 자신 역할/override/systemRole/status mutation 금지, ⓑ 특권 역할(`pm`/`admin`, `"*"`·`admin.*` 포함 역할) 부여·회수는 OWNER만, ⓒ ALLOW override는 행위자가 보유한 권한 범위 내에서만(DENY는 항상 허용). 위반 시 403. 이 가드들은 라우트 권한키 검사를 통과해도 별도로 적용된다.
-- **`mustChangePassword` 게이트**(D17): 세션에 `mustChangePassword=true`면 `requirePermission`/미들웨어가 `change-password`·`logout` 외 모든 요청을 403으로 거부. UI 리다이렉트와 무관하게 API 계층에서 불변식으로 강제.
+- **위임 anti-escalation**(D13): `admin.users:update` 하나가 역할 부여·override·status·비번재설정을 모두 게이트하므로, **서비스 계층**에서 추가 가드를 강제한다 — ⓐ 비-OWNER의 자기 자신 역할/override/systemRole/status mutation 금지, ⓑ 특권 역할(`pm`/`admin`, `"*"`·`admin.*` 포함 역할) 부여·회수는 OWNER만, ⓒ ALLOW override는 행위자가 보유한 권한 범위 내에서만, ⓓ 타인 대상 `admin.*`/critical(user-management·audit) DENY override는 OWNER만(비특권 DENY만 위임 admin 허용), ⓔ 모든 role/override/status mutation 후 최소 1명의 가용 user-management 관리자 + audit 조회자 보존. 위반 시 403. 라우트 권한키 검사를 통과해도 별도로 적용된다.
+- **`mustChangePassword` 게이트**(D17): must-change 세션은 **모든 인증 API가 공유하는 단일 중앙 가드**에서 `change-password`·`logout` 외 403. `requirePermission`과 `getPermissionSummary`(빈 summary로 fail-closed) 양 경로 모두 봉쇄 — 개별 핸들러 인가 방식에 의존하지 않음. UI 리다이렉트는 UX일 뿐.
 - **UI↔API 키 일치**: 모든 관리자 라우트는 UI `useCan(...)`와 서버 `requirePermission(...)`가 동일 permission 키를 검사한다(메뉴 숨김은 UX, 실행 권한은 API에서). 개인 override는 엔진(`computeDecision`)이 이미 소비하므로 UI만 추가하면 즉시 반영된다(override DENY가 역할 ALLOW를 이김, OWNER만 예외).
 
 ## 7. 화면 (UI)
@@ -172,16 +172,15 @@ model User {
 - **password**: 자가변경(현재 비번 확인, 틀리면 거부) / 최초로그인 강제 리다이렉트 / 변경 후 플래그 해제 / 변경·재설정 후 `passwordChangedAt` 이전 JWT 거부(타 세션 무효화) / 위임 admin의 특권 대상(OWNER·pm) 재설정 거부·OWNER만 허용(D14).
 - **override**: 생성·삭제 / 엔진 반영(override DENY가 역할 ALLOW를 이김).
 - **게이트**: 각 라우트 `admin.users:*` 요구(미보유 403), `admin` 역할로 접근 가능, 비관리자 거부.
-- **mustChangePassword 게이트(D17)**: 플래그 켜진 세션으로 임의 API 직접 호출 시 403, `change-password`·`logout`만 통과.
-- **공개 남용 통제(D18)**: per-IP/per-email 가입 한도 초과·재발송 쿨다운 위반 시 행/메일 생성 전 429.
+- **mustChangePassword 게이트(D17)**: **라우트 열거 테스트** — must-change 세션으로 allowlist(`change-password`·`logout`) 외 모든 API가 403. `requirePermission` 경로와 `getPermissionSummary`(빈 summary) 경로 양쪽 검증.
+- **공개 남용 통제(D18)**: per-IP/per-email 가입 한도 초과·재발송 쿨다운 위반 시 **User/MailDelivery 행이 생성되지 않고** 429.
 - **권한 상승 가드**: 비-OWNER가 OWNER/ADMIN 부여 불가(403), 마지막 OWNER 보존.
-- **위임 anti-escalation(D13)**: 위임 admin이 ⓐ 자기 자신에게 `pm` 역할 부여 시도 → 거부(403), ⓑ 본인 역할/override/systemRole/status 자가 변경 → 거부, ⓒ `pm`/`admin` 특권 역할을 타인에게 부여 → OWNER만 허용·위임 admin은 거부, ⓓ 자신이 보유하지 않은 권한을 ALLOW override로 부여 → 거부(DENY override는 허용). 각각 테스트.
+- **위임 anti-escalation(D13)**: 위임 admin이 ⓐ 자기 자신에게 `pm` 역할 부여 → 거부(403), ⓑ 본인 역할/override/systemRole/status 자가 변경 → 거부, ⓒ `pm`/`admin` 특권 역할 타인 부여 → 위임 admin 거부·OWNER만, ⓓ 미보유 권한 ALLOW override → 거부, ⓔ 동료 admin의 `admin.*`/audit 권한 DENY override → 위임 admin 거부·OWNER만(lockout 방지), ⓕ 마지막 user-management 관리자/audit 조회자 제거 mutation → 거부(최소 보존). 각각 테스트.
 - **감사로그**: 각 mutation이 `AuditLog`에 기록되는지.
 
 ## 11. 미해결 / 후속
 
 - 신규 신청 인앱 배지의 갱신 주기(폴링 vs 단순 페이지 진입 시 카운트) — 구현 시 단순 진입-시-카운트로 시작.
-- 공개 엔드포인트 레이트리밋·쿨다운(D18)은 본 증분에 포함 — 구체 한도값·구현 메커니즘(미들웨어 vs 서비스 카운터)은 plan에서 확정.
-- (적대검증 medium, 기록) 위임 admin의 **DENY override 파괴적 사용** — D13은 DENY를 항상 허용하나, 위임 admin이 동료 admin의 user-management/audit 권한을 DENY해 lockout시킬 수 있음. plan에서 "특권 대상·critical 권한 DENY는 OWNER만 + 최소 1 user-management 관리자 보존"으로 좁힐지 결정.
+- 공개 엔드포인트 레이트리밋·쿨다운(D18)은 본 증분에 포함하되 **구체 한도값·윈도우·DB-backed 강제 메커니즘은 plan에서 확정**(원자적·사전·durable 속성은 D18에 명시).
 - ②증분: `Team` 모델 + `scope=team` 활성화 + 역할↔권한 매트릭스 편집.
 - ③증분: 메뉴 CMS(`NavigationItem` CRUD).
