@@ -47,29 +47,30 @@ export async function enforceRateLimit(
   if (count > limit) throw new RateLimitError("요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.");
 }
 
-// per-email 재발송 쿨다운(finding A — read-then-write 제거). 단일 atomic upsert:
-// windowStartedAt을 마지막 발송 시각으로 쓰고, 쿨다운(RESEND_COOLDOWN_MS)이 경과했을 때만 now로 갱신.
-// RETURNING windowStartedAt == now면 우리가 갱신한 것(발송 허용), 직전 값이면 쿨다운 내(거부).
-// finding G(casing): pg는 `RETURNING "windowStartedAt"`을 camelCase 키로 노출하는데(quoted 식별자
-// 보존), 코드가 소문자 `rows[0].windowstartedat`를 읽으면 항상 undefined → last가 undefined가 되어
-// 첫 발송 포함 모든 resend가 RateLimitError로 거부된다. 키 불일치를 없애기 위해 SQL에서
-// `AS "windowstartedat"`로 **명시 alias**(반환 키를 소문자로 고정)하고 같은 소문자 키로 읽는다.
-// (mock도 소문자 키로 맞춘다 — 소문자 mock이 camelCase 프로덕션 실패를 숨기지 않게.)
+// per-email 재발송 쿨다운(finding F-B — same-ms 동등비교 우회 차단). 명시 결정 방식:
+// ON CONFLICT DO UPDATE의 WHERE로 "쿨다운 경과 시에만 갱신"하고, RETURNING 행 유무로 허용/거부를 판정.
+// · 신규(충돌 없음): INSERT → 행 반환 → 허용
+// · 쿨다운 경과(WHERE true): UPDATE → 행 반환 → 허용
+// · 쿨다운 내(WHERE false): UPDATE 미실행 → 무행 반환 → RateLimitError
+// 충돌 경로에서 row-lock이 직렬화되므로 same-ms 동시 요청에서 둘째는 첫째가 방금 now로 갱신한
+// windowStartedAt(> cooldownFloor)을 보게 되어 WHERE가 거짓 → 무행 반환 → 거부.
+// `RETURNING 1 AS "allowed"`: 소문자 alias라 pg casing 문제 없음(finding G 해소 유지).
 export async function enforceResendCooldown(email: string, now: Date = new Date()): Promise<void> {
   const scope = "resend:email";
   const cooldownFloor = new Date(now.getTime() - RESEND_COOLDOWN_MS);
-  const rows = await prisma.$queryRaw<{ windowstartedat: Date }[]>`
+  // 명시 결정(F-B): 동등 비교 대신 ON CONFLICT DO UPDATE의 WHERE로 "쿨다운 경과 시에만 갱신"하고,
+  // RETURNING 행 유무로 허용/거부를 판정한다. 충돌 시 row-lock으로 직렬화되고, 둘째 요청은 첫째가
+  // 방금 now로 갱신한 windowStartedAt(> cooldownFloor)을 보므로 WHERE가 거짓→미갱신→무행 반환→거부.
+  const rows = await prisma.$queryRaw<{ allowed: number }[]>`
     INSERT INTO "kernel"."RateBucket" ("id", "scope", "key", "windowStartedAt", "count", "updatedAt")
     VALUES (gen_random_uuid(), ${scope}, ${email}, ${now}, 1, ${now})
     ON CONFLICT ("scope", "key") DO UPDATE SET
-      "windowStartedAt" = CASE WHEN "RateBucket"."windowStartedAt" <= ${cooldownFloor}
-                               THEN ${now} ELSE "RateBucket"."windowStartedAt" END,
-      "count" = CASE WHEN "RateBucket"."windowStartedAt" <= ${cooldownFloor}
-                     THEN "RateBucket"."count" + 1 ELSE "RateBucket"."count" END,
+      "windowStartedAt" = ${now},
+      "count" = "RateBucket"."count" + 1,
       "updatedAt" = ${now}
-    RETURNING "windowStartedAt" AS "windowstartedat"`;
-  const last = rows[0]?.windowstartedat;
-  if (!last || last.getTime() !== now.getTime()) {
+    WHERE "RateBucket"."windowStartedAt" <= ${cooldownFloor}
+    RETURNING 1 AS "allowed"`;
+  if (rows.length === 0) {
     throw new RateLimitError("재발송은 잠시 후 다시 시도해 주세요.");
   }
 }

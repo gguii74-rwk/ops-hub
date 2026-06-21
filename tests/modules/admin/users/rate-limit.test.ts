@@ -49,21 +49,28 @@ describe("enforceRateLimit (race-safe — 단일 atomic upsert + RETURNING count
   });
 });
 
-describe("enforceResendCooldown (per-email 쿨다운 — 단일 atomic upsert + RETURNING)", () => {
+describe("enforceResendCooldown (per-email 쿨다운 — 명시 결정: WHERE+RETURNING 행 유무, F-B)", () => {
   const now = new Date("2026-06-21T00:00:00Z");
-  it("쿨다운 경과면 windowStartedAt을 now로 갱신·통과(반환 windowStartedAt===now)", async () => {
-    // 쿨다운 경과 시에만 now로 set하는 조건부 upsert가 now를 돌려줌 → 발송 허용.
-    h.db.$queryRaw.mockResolvedValue([{ windowstartedat: now }]);
+  it("쿨다운 경과면 갱신·통과: $queryRaw가 행을 반환하면 resolves", async () => {
+    // ON CONFLICT WHERE true → UPDATE 실행 → RETURNING 1 행 → 허용.
+    h.db.$queryRaw.mockResolvedValue([{ allowed: 1 }]);
     await expect(enforceResendCooldown("a@x.com", now)).resolves.toBeUndefined();
     expect(h.db.$queryRaw).toHaveBeenCalledTimes(1);
   });
-  it("첫 발송(버킷 없음): 같은 문장이 now로 insert → 통과", async () => {
-    h.db.$queryRaw.mockResolvedValue([{ windowstartedat: now }]);
-    await expect(enforceResendCooldown("a@x.com", now)).resolves.toBeUndefined();
+  it("첫 발송(버킷 없음): INSERT 행 반환 → 통과", async () => {
+    // 충돌 없는 INSERT 경로도 RETURNING이 행을 돌려줌 → 허용.
+    h.db.$queryRaw.mockResolvedValue([{ allowed: 1 }]);
+    await expect(enforceResendCooldown("new@x.com", now)).resolves.toBeUndefined();
   });
-  it("쿨다운 내 재발송이면 갱신 거부(반환 windowStartedAt이 직전값) → RateLimitError", async () => {
-    const last = new Date(now.getTime() - 1000); // 쿨다운(60s) 이내
-    h.db.$queryRaw.mockResolvedValue([{ windowstartedat: last }]);
+  it("쿨다운 내 재발송: WHERE 미충족 → 무행 반환 → RateLimitError", async () => {
+    // ON CONFLICT WHERE false → UPDATE 미실행 → RETURNING 없음 → 거부.
+    h.db.$queryRaw.mockResolvedValue([]);
+    await expect(enforceResendCooldown("a@x.com", now)).rejects.toBeInstanceOf(RateLimitError);
+  });
+  it("same-ms 동시 재발송: 둘째는 갱신 거부([] 반환) → RateLimitError (동등비교 우회 제거 회귀)", async () => {
+    // F-B 회귀 검증: 동등 비교 방식은 둘 다 통과했으나, WHERE+행유무 방식은 무행 반환이면 무조건 거부.
+    // 둘째 동시 요청이 SQL에서 [] 반환하는 상황을 재현.
+    h.db.$queryRaw.mockResolvedValue([]);
     await expect(enforceResendCooldown("a@x.com", now)).rejects.toBeInstanceOf(RateLimitError);
   });
 });
