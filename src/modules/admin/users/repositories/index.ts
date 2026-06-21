@@ -226,7 +226,10 @@ export async function approveTx(
   mail: UserMailJob, expectedUpdatedAt: Date,
   recheck?: (currentRoleKeys: string[]) => void,
 ): Promise<void> {
-  await prisma.$transaction(async (tx) => {
+  // NF3: setRoles/setStatusTx와 동일한 advisory lock 안에서 실행해 동시 역할부여 race를 직렬화한다.
+  // 락 없이 $transaction만 쓰면 recheck와 applyRoles 사이에 setRoles가 특권 역할을 커밋할 수 있고,
+  // applyRoles가 그 역할을 결정 목록에 없다는 이유로 삭제하는 erase race가 발생한다.
+  await withAvailabilityLock(async (tx) => {
     const u = await tx.user.findUnique({ where: { id }, select: { status: true, emailVerifiedAt: true, updatedAt: true } });
     if (!u) throw new UserConflictError("사용자를 찾을 수 없습니다.");
     if (u.status !== "PENDING") throw new UserConflictError("이미 처리된 신청입니다.");

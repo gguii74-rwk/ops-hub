@@ -129,6 +129,18 @@ describe("approveTx", () => {
     expect(h.db.userAccessRole.createMany).not.toHaveBeenCalled();
     expect(h.db.mailDelivery.create).not.toHaveBeenCalled();
   });
+  // NF3: approveTx가 availability lock 안에서 실행됨을 검증 — setRoles/setStatusTx와 동일한 advisory lock으로 직렬화.
+  // 크로스-프로세스 실제 직렬화는 단위 테스트로 검증 불가; lock 획득 경로를 통과하는지가 테스트 가능한 proxy(setRoles·setStatusTx와 동일 패턴).
+  it("NF3: approveTx는 availability lock 안에서 실행된다 — setRoles와 advisory lock 공유로 동시 특권역할 erase race 차단", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "PENDING", emailVerifiedAt: new Date(), updatedAt });
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    h.db.accessRole.findMany.mockResolvedValue([{ id: "role-dev", key: "developer" }]);
+    h.db.userAccessRole.createMany.mockResolvedValue({ count: 1 });
+    h.db.userAccessRole.deleteMany.mockResolvedValue({ count: 0 });
+    h.db.mailDelivery.create.mockResolvedValue({ id: "md1" });
+    await approveTx("u1", "admin1", decision, mail, updatedAt);
+    expect(withAvailabilityLockMock).toHaveBeenCalled();
+  });
 });
 
 describe("rejectTx", () => {
