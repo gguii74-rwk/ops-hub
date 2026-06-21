@@ -184,37 +184,60 @@ describe("assertNotSelfMutation (D13ⓐ)", () => {
   });
 });
 
-describe("assertCanAssignRoles (D13ⓑ)", () => {
-  it("비-OWNER가 특권 역할(pm) 부여 → EscalationError", () => {
-    expect(() => assertCanAssignRoles(delegate([]), ["regular-developer", "pm"])).toThrow(EscalationError);
+describe("assertCanAssignRoles (D13ⓑ — 현재↔원하는 역할 집합 비교)", () => {
+  it("비-OWNER가 특권 역할(pm) 추가 → EscalationError", () => {
+    expect(() => assertCanAssignRoles(delegate([]), ["regular-developer"], ["regular-developer", "pm"])).toThrow(EscalationError);
   });
-  it("비-OWNER가 특권 역할(admin) 부여 → EscalationError", () => {
-    expect(() => assertCanAssignRoles(delegate([]), ["admin"])).toThrow(EscalationError);
+  it("비-OWNER가 특권 역할(admin) 추가 → EscalationError", () => {
+    expect(() => assertCanAssignRoles(delegate([]), [], ["admin"])).toThrow(EscalationError);
   });
-  it("비-OWNER가 비특권 역할만 부여 → 허용", () => {
-    expect(() => assertCanAssignRoles(delegate([]), ["regular-developer", "contractor-content"])).not.toThrow();
+  it("비-OWNER가 기존 특권 역할(pm)을 목록에서 빼서 제거 → EscalationError(lockout 방지)", () => {
+    // 현재 pm 보유 → next 목록에서 누락 = 제거. 추가가 아니어도 특권이 건드려지면 OWNER-only.
+    expect(() => assertCanAssignRoles(delegate([]), ["regular-developer", "pm"], ["regular-developer"])).toThrow(EscalationError);
   });
-  it("OWNER는 특권 역할도 허용", () => {
-    expect(() => assertCanAssignRoles(owner(), ["pm", "admin"])).not.toThrow();
+  it("비-OWNER가 기존 특권 역할(admin)을 제거 → EscalationError", () => {
+    expect(() => assertCanAssignRoles(delegate([]), ["admin"], [])).toThrow(EscalationError);
+  });
+  it("비-OWNER가 비특권 역할만 추가·제거 → 허용", () => {
+    // 현재 [regular-developer] → next [contractor-content]: 추가·제거 모두 비특권.
+    expect(() => assertCanAssignRoles(delegate([]), ["regular-developer"], ["contractor-content"])).not.toThrow();
+  });
+  it("비-OWNER가 특권 역할(pm)을 그대로 유지(추가·제거 없음) → 허용(차집합 비어 있음)", () => {
+    // 현재·next 모두 pm 보유 → 특권 역할이 건드려지지 않았으므로 허용.
+    expect(() => assertCanAssignRoles(delegate([]), ["pm", "regular-developer"], ["pm", "contractor-content"])).not.toThrow();
+  });
+  it("OWNER는 특권 역할 추가·제거 모두 허용", () => {
+    expect(() => assertCanAssignRoles(owner(), [], ["pm", "admin"])).not.toThrow();
+    expect(() => assertCanAssignRoles(owner(), ["pm", "admin"], [])).not.toThrow();
   });
 });
 
-describe("assertCanSetSystemRole (D12)", () => {
+describe("assertCanSetSystemRole (D12 — 현재·원하는 systemRole 모두 검사)", () => {
   it("비-OWNER가 OWNER 부여 → EscalationError", () => {
-    expect(() => assertCanSetSystemRole(delegate([]), "OWNER")).toThrow(EscalationError);
+    expect(() => assertCanSetSystemRole(delegate([]), "MEMBER", "OWNER")).toThrow(EscalationError);
   });
   it("비-OWNER가 ADMIN 부여 → EscalationError", () => {
-    expect(() => assertCanSetSystemRole(delegate([]), "ADMIN")).toThrow(EscalationError);
+    expect(() => assertCanSetSystemRole(delegate([]), "MEMBER", "ADMIN")).toThrow(EscalationError);
   });
-  it("비-OWNER가 MEMBER/MANAGER 부여 → 허용", () => {
-    expect(() => assertCanSetSystemRole(delegate([]), "MEMBER")).not.toThrow();
-    expect(() => assertCanSetSystemRole(delegate([]), "MANAGER")).not.toThrow();
+  it("비-OWNER가 기존 OWNER를 MEMBER로 강등 → EscalationError(현재가 특권이면 OWNER-only)", () => {
+    expect(() => assertCanSetSystemRole(delegate([]), "OWNER", "MEMBER")).toThrow(EscalationError);
   });
-  it("newRole null(변경 없음) → 허용", () => {
-    expect(() => assertCanSetSystemRole(delegate([]), null)).not.toThrow();
+  it("비-OWNER가 기존 ADMIN을 MANAGER로 강등 → EscalationError", () => {
+    expect(() => assertCanSetSystemRole(delegate([]), "ADMIN", "MANAGER")).toThrow(EscalationError);
   });
-  it("OWNER는 OWNER/ADMIN도 허용", () => {
-    expect(() => assertCanSetSystemRole(owner(), "OWNER")).not.toThrow();
+  it("비-OWNER가 비특권↔비특권 변경(MEMBER→MANAGER) → 허용", () => {
+    expect(() => assertCanSetSystemRole(delegate([]), "MEMBER", "MANAGER")).not.toThrow();
+    expect(() => assertCanSetSystemRole(delegate([]), "MANAGER", "MEMBER")).not.toThrow();
+  });
+  it("newRole null(변경 없음)이고 현재도 비특권 → 허용", () => {
+    expect(() => assertCanSetSystemRole(delegate([]), "MEMBER", null)).not.toThrow();
+  });
+  it("newRole null(변경 없음)이지만 현재가 특권(ADMIN)이면 → EscalationError(가용성 영향 mutation 차단)", () => {
+    expect(() => assertCanSetSystemRole(delegate([]), "ADMIN", null)).toThrow(EscalationError);
+  });
+  it("OWNER는 강등·승격 모두 허용", () => {
+    expect(() => assertCanSetSystemRole(owner(), "MEMBER", "OWNER")).not.toThrow();
+    expect(() => assertCanSetSystemRole(owner(), "OWNER", "MEMBER")).not.toThrow();
   });
 });
 
@@ -290,20 +313,36 @@ export function assertNotSelfMutation(actor: ActorContext, targetUserId: string)
   }
 }
 
-// D13ⓑ — 특권 역할(pm·admin) 부여·회수는 OWNER만. 위임 admin은 비특권 역할만 다룬다.
-export function assertCanAssignRoles(actor: ActorContext, roleKeys: string[]): void {
+// D13ⓑ — 특권 역할(pm·admin)의 **부여·회수 양쪽**이 OWNER-only. 현재(currentRoleKeys)와 원하는(nextRoleKeys)
+// 집합의 **차집합**(추가된 것 ∪ 제거된 것) 중 특권 역할이 하나라도 있으면 비-OWNER는 거부한다.
+// 추가 차단뿐 아니라 위임 admin이 목록에서 빼는 방식으로 기존 pm/admin을 떼어내 동료를 lockout하는 것도 막는다(finding C).
+export function assertCanAssignRoles(
+  actor: ActorContext, currentRoleKeys: string[], nextRoleKeys: string[],
+): void {
   if (actor.isOwner) return;
-  const privileged = roleKeys.filter(isPrivilegedRoleKey);
-  if (privileged.length > 0) {
-    throw new EscalationError(`특권 역할(${privileged.join(", ")}) 부여는 OWNER만 가능합니다.`);
+  const current = new Set(currentRoleKeys);
+  const next = new Set(nextRoleKeys);
+  // 차집합: 추가(next에는 있고 current엔 없음) ∪ 제거(current엔 있고 next엔 없음).
+  const added = nextRoleKeys.filter((k) => !current.has(k));
+  const removed = currentRoleKeys.filter((k) => !next.has(k));
+  const touchedPrivileged = [...added, ...removed].filter(isPrivilegedRoleKey);
+  if (touchedPrivileged.length > 0) {
+    throw new EscalationError(`특권 역할(${[...new Set(touchedPrivileged)].join(", ")}) 부여·회수는 OWNER만 가능합니다.`);
   }
 }
 
-// D12 — OWNER/ADMIN systemRole 부여는 OWNER만. newRole이 null이면 변경 없음으로 통과.
-export function assertCanSetSystemRole(actor: ActorContext, newRole: string | null): void {
+// D12 — **현재 또는 원하는** systemRole이 OWNER/ADMIN을 건드리면 OWNER-only. 특권으로 승격하는 것뿐 아니라
+// 기존 OWNER/ADMIN을 MEMBER/MANAGER로 강등하는 것도 비-OWNER는 거부한다(finding C — 강등으로 동료 특권 제거 방지).
+// newRole이 null이면 systemRole 변경 의도 없음이지만, 현재가 특권이면(가용성 영향) 여전히 OWNER-only로 본다.
+export function assertCanSetSystemRole(
+  actor: ActorContext, currentRole: string, newRole: string | null,
+): void {
   if (actor.isOwner) return;
-  if (newRole === null) return;
-  if ((PRIVILEGED_SYSTEM_ROLES as readonly string[]).includes(newRole)) {
+  const privileged = PRIVILEGED_SYSTEM_ROLES as readonly string[];
+  if (privileged.includes(currentRole)) {
+    throw new EscalationError(`현재 ${currentRole} systemRole의 변경은 OWNER만 가능합니다.`);
+  }
+  if (newRole !== null && privileged.includes(newRole)) {
     throw new EscalationError(`${newRole} systemRole 부여는 OWNER만 가능합니다.`);
   }
 }
@@ -552,6 +591,7 @@ commit: `test(user-mgmt): task-02 가용성 카운트·최소가용성 단위테
 - **advisory lock 키는 고정 상수**(`4815162342n`, bigint). leave 도메인의 advisory lock(`LEAVE_OVERLAP_LOCK_NS=0x6c76`, 2-인자 `int4` 형태)과 **다른 시그니처**(1-인자 `bigint`)라 키스페이스가 겹치지 않는다. 전역 직렬화가 목적이므로 사용자/리소스별로 쪼개지 말 것.
 - **`withAvailabilityLock`/`assertMinAvailability`는 본 task에서 정의만** 한다. 실제 호출(repository의 `setStatusTx`/`resetPasswordTx`/`setRoles`/`createOverride`/`updateUserTx` systemRole 강등이 이 래퍼 안에서 커밋 전 `assertMinAvailability(tx)` 호출)은 **task-03**이다 — 여기서 호출처를 만들지 말 것(범위 밖, 미사용 코드 금지 원칙에 걸리지 않게 export만 노출).
 - **`isPrivilegedRoleKey`는 sync·멤버십 판정**(DB 조회 금지, D13ⓑ). 역할의 실제 RolePermission(`"*"`/`admin.*`)을 조회해 판정하지 않는다 — pm·admin은 시드로 고정된 특권 역할이고, 카탈로그 외 역할은 비특권으로 본다(allowlist, fail-safe).
+- **`assertCanAssignRoles`·`assertCanSetSystemRole`는 "원하는 새 값"만이 아니라 "현재↔원하는 상태"를 비교한다(finding C).** `assertCanAssignRoles`는 `currentRoleKeys`↔`nextRoleKeys`의 **차집합(추가∪제거)** 중 특권 역할이 있으면, `assertCanSetSystemRole`은 **`currentRole` 또는 `newRole`** 이 OWNER/ADMIN이면 비-OWNER를 거부한다. 그래야 위임 admin이 ① 기존 OWNER/ADMIN을 강등하거나 ② 기존 pm/admin 역할을 목록에서 빼서 제거하는 lockout을 막는다. 따라서 호출자(service, task-04)는 **mutation 전에 대상의 현재 systemRole·roleKeys를 로드**해 넘겨야 한다(§S6 `getUserDetail`의 `systemRole`·`roleKeys`).
 - **`computeDecision`은 scope="all" ALLOW만 전역 허가로 인정**한다(`decision.ts` 주석). `countAvailableByPermission`은 target 컨텍스트 없는 전역 카운트이므로 own/team/assigned ALLOW는 가용으로 치지 않는다 — 이는 보수적(fail-closed)이라 최소가용성 불변식을 더 강하게 보존한다(의도된 동작).
 - **에러 매핑은 라우트(task-05) 책임**이다. 본 task는 throw만 하고 HTTP 상태로 변환하지 않는다.
 - **surgical**: 기존 파일(`access/*`, `leave/*`)을 수정하지 않는다. 본 task는 신규 모듈 3개 + 테스트 2개만 추가한다.

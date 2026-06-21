@@ -124,8 +124,11 @@ export interface ActorContext {
 
 // D12/D13 가드 (src/modules/admin/users/services/guards.ts) — 위반 시 EscalationError throw
 export function assertNotSelfMutation(actor: ActorContext, targetUserId: string): void;            // D13ⓐ
-export function assertCanAssignRoles(actor: ActorContext, roleKeys: string[]): void;               // D13ⓑ
-export function assertCanSetSystemRole(actor: ActorContext, newRole: string | null): void;         // D12
+// D13ⓑ — 현재→원하는 역할 집합을 **비교**한다. 추가뿐 아니라 **제거**되는 역할 중 특권(pm/admin)이 있어도 OWNER-only
+// (위임 admin이 목록에서 빼는 방식으로 기존 pm/admin을 떼어내 lockout하는 것 방지).
+export function assertCanAssignRoles(actor: ActorContext, currentRoleKeys: string[], nextRoleKeys: string[]): void;
+// D12 — **현재 또는 원하는** systemRole이 OWNER/ADMIN을 건드리면 OWNER-only. 기존 OWNER/ADMIN을 MEMBER로 강등하는 것도 OWNER-only.
+export function assertCanSetSystemRole(actor: ActorContext, currentRole: string, newRole: string | null): void;
 export function assertOverrideWithinActorGrant(actor: ActorContext, key: string, effect: "ALLOW"|"DENY"): void; // D13ⓒⓓ
 
 // D13ⓔ 최소 가용성 — advisory lock으로 직렬화 + 커밋 전 재검사
@@ -148,13 +151,17 @@ availability-affecting repository 함수(`setStatusTx`/`resetPasswordTx`/`setRol
 ```ts
 export interface UserListFilter { status?: UserStatus; employmentType?: string; jobFunction?: string; q?: string; page: number; pageSize: number; }
 export async function listUsers(f: UserListFilter): Promise<{ rows: UserRow[]; total: number; pendingCount: number }>;
+// UserDetail은 **현재 `systemRole`·`roleKeys`**(+ `email`·`name`·`status`·`updatedAt`·overrides 등)를 포함한다.
+// systemRole·roleKeys는 anti-escalation 가드(S5)의 "현재 상태" 입력이다(finding C — 강등·제거도 OWNER-only 판정).
 export async function getUserDetail(id: string): Promise<UserDetail | null>;
 
 // 자가가입(C안): 비번 없이 PENDING. 만료된 미검증 PENDING 교체 허용.
 // **PENDING User + 검증메일 MailDelivery를 같은 트랜잭션에서 생성**(부분실패로 메일 없는 PENDING 방지 — finding #4).
 // 만료된 미검증 PENDING 교체 시에도 토큰·메일을 재발급/재enqueue(멱등 재시도). 중복(검증완료/활성)은 UserConflictError.
 export async function createPendingSignup(args: { email: string; name: string; employmentType: string; jobFunction: string; department: string | null; tokenHash: string; tokenExpiresAt: Date; mail: UserMailJob; pendingCap: number; }): Promise<{ id: string }>;
-// pendingCap은 라우트(task-06)가 `PENDING_UNVERIFIED_CAP`를 **인자로 주입** — task-03이 task-06의 rate-limit.ts에 의존하지 않게(deps 역전 방지). 트랜잭션 내에서 미검증 PENDING count ≥ pendingCap이면 `RateLimitError`.
+// pendingCap은 라우트(task-06)가 `PENDING_UNVERIFIED_CAP`를 **인자로 주입** — task-03이 task-06의 rate-limit.ts에 의존하지 않게(deps 역전 방지).
+// **cap 검사+생성/교체는 race-safe**: `withAvailabilityLock`과 별개의 advisory lock(예: `pg_advisory_xact_lock(hashtext('signup-cap'))`)으로 직렬화하거나 serializable+retry. 트랜잭션 내 미검증 PENDING count ≥ pendingCap이면 `RateLimitError`.
+// **만료된 미검증 PENDING(`emailVerifyExpiresAt < now`)은 cap count에서 제외**(stale 행이 cap을 영구 점유하는 것 방지 — 어차피 D16상 교체 허용 대상).
 // set-password 토큰 소비: passwordHash + emailVerifiedAt 기록, 토큰 소거. (PENDING 유지)
 export async function setPasswordViaToken(tokenHash: string, passwordHash: string, now: Date): Promise<{ id: string } | null>;
 // 재발송: 토큰 갱신 + 검증메일 재enqueue(같은 트랜잭션). 미검증 PENDING만 대상.
@@ -225,7 +232,9 @@ export const RATE_WINDOW_MS = 60 * 60 * 1000;// 레이트 윈도우 1시간
 export const PENDING_UNVERIFIED_CAP = 200;  // 미처리 미검증 PENDING 전역 상한(bounded creation)
 ```
 
-D18 강제는 **원자적·사전(pre-write)·race-safe**: read-then-write(`findUnique`→`upsert`) 금지 — 동시 첫-윈도우/막만료 요청이 모두 통과해 카운터를 1로 덮어쓰는 race가 생긴다. 대신 ① **atomic conditional increment**(`UPDATE RateBucket SET count=count+1 WHERE scope=? AND key=? AND windowStartedAt > now-window`; affected=0이면 신규/만료이므로 advisory lock 후 `count=1`로 reset-upsert) 또는 ② **advisory lock(`pg_advisory_xact_lock(hashtext(scope||key))`)으로 직렬화** 중 하나로 구현한다. `count > limit`이면 **User/MailDelivery 행 생성 전에** `RateLimitError`. **`PENDING_UNVERIFIED_CAP` 검사와 User 생성은 같은 트랜잭션/락 안에서** 수행한다(standalone `count` 후 별도 생성 금지 — 동시 요청이 모두 capacity를 관측해 cap 초과하는 것 방지).
+D18 강제는 **원자적·사전(pre-write)·race-safe**: read-then-write(`findUnique`→`upsert`) 금지 — 동시 첫-윈도우/막만료 요청이 모두 통과해 카운터를 1로 덮어쓰는 race가 생긴다. **권장: 단일 atomic upsert**로 post-update count를 받는다 —
+`INSERT INTO "RateBucket"(...) VALUES(...) ON CONFLICT (scope,key) DO UPDATE SET count = CASE WHEN "RateBucket"."windowStartedAt" > <now-window> THEN "RateBucket".count + 1 ELSE 1 END, "windowStartedAt" = CASE WHEN "RateBucket"."windowStartedAt" > <now-window> THEN "RateBucket"."windowStartedAt" ELSE <now> END RETURNING count`
+— 윈도우 내면 증가, 만료/신규면 1로 리셋을 **한 문장**에서 원자적으로 처리하고 반환 count로 판정. (advisory lock 대안을 쓸 경우엔 **lock 획득 후 conditional increment를 재실행**하고 그래도 미존재/만료일 때만 reset — lock 전 판정으로 무조건 reset 금지.) `count > limit`이면 **User/MailDelivery 행 생성 전에** `RateLimitError`. **`PENDING_UNVERIFIED_CAP` 검사와 User 생성은 같은 트랜잭션/락 안에서** 수행한다(standalone `count` 후 별도 생성 금지).
 
 ---
 

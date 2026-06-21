@@ -24,9 +24,9 @@
 - `src/modules/leave/validations/index.ts` — zod 스키마·`superRefine` 패턴.
 - `tests/modules/leave/requests-service.test.ts` — service 단위테스트 모킹 패턴(prisma·repository·guards·mail을 `vi.mock`, `vi.mocked`로 단언).
 - 인라인 확인된 계약(재읽기 불필요):
-  - 가드(task-02 `services/guards.ts`): `assertNotSelfMutation(actor,targetId)`·`assertCanAssignRoles(actor,roleKeys)`·`assertCanSetSystemRole(actor,newRole|null)`·`assertOverrideWithinActorGrant(actor,key,effect)`. 모두 sync, 위반 시 `EscalationError`. `permissionKey(resource,action)` 헬퍼도 동 파일에서 re-export.
+  - 가드(task-02 `services/guards.ts`): `assertNotSelfMutation(actor,targetId)`·`assertCanAssignRoles(actor,currentRoleKeys,nextRoleKeys)`·`assertCanSetSystemRole(actor,currentRole,newRole|null)`·`assertOverrideWithinActorGrant(actor,key,effect)`. 모두 sync, 위반 시 `EscalationError`. **`assertCanAssignRoles`/`assertCanSetSystemRole`는 현재↔원하는 상태를 비교**하므로(finding C — 추가뿐 아니라 강등·제거도 OWNER-only), 호출 전 대상의 **현재 `systemRole`·`roleKeys`**를 `getUserDetail`로 로드해 넘긴다. `permissionKey(resource,action)` 헬퍼도 동 파일에서 re-export.
   - `policy.ts`(task-02): `isPrivilegedRoleKey(key)`·`PRIVILEGED_SYSTEM_ROLES`(`["OWNER","ADMIN"]`).
-  - repository(task-03 `repositories/index.ts`): `getUserDetail(id)`(반환에 `email`·`systemRole`·`roleKeys`·`updatedAt` 포함)·`listUsers(filter)`·`approveTx(id,actorId,decision,mail,expectedUpdatedAt)`·`rejectTx(id,actorId,reason,mail,expectedUpdatedAt)`·`createActiveUserByAdminTx(args)`·`updateUserTx(id,patch,actorId,expectedUpdatedAt)`·`setRoles(id,roleKeys,actorId)`·`createOverride(id,OverrideInput,actorId)`·`deleteOverride(id,overrideId,actorId)`·`setStatusTx(id,status,actorId,now)`·`reactivateRejectedTx(id,actorId,now)`·`resetPasswordTx(id,passwordHash,actorId,now)`.
+  - repository(task-03 `repositories/index.ts`): `getUserDetail(id)`(반환에 `email`·`systemRole`·`roleKeys`·`updatedAt` 포함 — **`systemRole`·`roleKeys`는 새 가드 시그니처의 현재 상태 입력**, §S6)·`listUsers(filter)`·`approveTx(id,actorId,decision,mail,expectedUpdatedAt)`·`rejectTx(id,actorId,reason,mail,expectedUpdatedAt)`·`createActiveUserByAdminTx(args)`·`updateUserTx(id,patch,actorId,expectedUpdatedAt)`·`setRoles(id,roleKeys,actorId)`·`createOverride(id,OverrideInput,actorId)`·`deleteOverride(id,overrideId,actorId)`·`setStatusTx(id,status,actorId,now)`·`reactivateRejectedTx(id,actorId,now)`·`resetPasswordTx(id,passwordHash,actorId,now)`.
   - 에러(task-02 `errors.ts`): `UserConflictError`·`UserValidationError`·`EscalationError`. (라우트가 HTTP 매핑 — task-05.)
   - 메일(task-03 `repositories/mail.ts`): `UserMailJob {recipients,subject,bodyHtml}`. 트리거는 `triggerLeaveMailDrain()`(공통, `src/modules/leave/services/mail.ts`, S8).
   - bcrypt: `import bcrypt from "bcryptjs"` (`src/lib/auth/index.ts`에서 `bcrypt.compare` 사용 중). 해시는 `bcrypt.hash(pw, 10)`.
@@ -344,15 +344,26 @@ describe("updateUser", () => {
     await expect(updateUser(delegate([], "admin1"), "admin1", { name: "x" })).rejects.toBeInstanceOf(EscalationError);
     expect(r.updateUserTx).not.toHaveBeenCalled();
   });
-  it("위임 admin이 systemRole을 ADMIN으로 변경 → EscalationError", async () => {
+  it("위임 admin이 systemRole을 ADMIN으로 승격 → EscalationError(원하는 값이 특권)", async () => {
     r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE" }) as never);
     await expect(updateUser(delegate(), "u1", { systemRole: "ADMIN" })).rejects.toBeInstanceOf(EscalationError);
     expect(r.updateUserTx).not.toHaveBeenCalled();
   });
+  it("위임 admin이 기존 OWNER 대상을 MEMBER로 강등 → EscalationError(현재 값이 특권 — finding C)", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE", systemRole: "OWNER" }) as never);
+    await expect(updateUser(delegate(), "u1", { systemRole: "MEMBER" })).rejects.toBeInstanceOf(EscalationError);
+    expect(r.updateUserTx).not.toHaveBeenCalled();
+  });
+  it("위임 admin이 기존 ADMIN 대상의 무관 속성만 편집(systemRole 미지정) → EscalationError(현재 특권은 보호)", async () => {
+    // patch.systemRole 없음(null)이나 현재가 ADMIN이라 OWNER-only. 위임 admin이 특권 사용자를 못 만진다.
+    r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE", systemRole: "ADMIN" }) as never);
+    await expect(updateUser(delegate(), "u1", { name: "수정" })).rejects.toBeInstanceOf(EscalationError);
+    expect(r.updateUserTx).not.toHaveBeenCalled();
+  });
 });
 
-describe("assignRoles", () => {
-  it("정상(비특권 역할): setRoles 호출", async () => {
+describe("assignRoles (현재↔원하는 역할 집합 비교 — finding C)", () => {
+  it("정상(비특권 역할 추가): 현재 [] → setRoles 호출", async () => {
     await assignRoles(delegate(), "u1", ["regular-developer"]);
     expect(r.setRoles).toHaveBeenCalledWith("u1", ["regular-developer"], "admin1");
   });
@@ -360,7 +371,19 @@ describe("assignRoles", () => {
     await expect(assignRoles(delegate(), "u1", ["pm"])).rejects.toBeInstanceOf(EscalationError);
     expect(r.setRoles).not.toHaveBeenCalled();
   });
+  it("위임 admin이 기존 pm을 목록에서 빼서 제거 → EscalationError(lockout 방지)", async () => {
+    // 대상 현재 roleKeys=[pm, regular-developer] → next=[regular-developer]: pm 제거 = 특권 회수.
+    r.getUserDetail.mockResolvedValue(detail({ roleKeys: ["pm", "regular-developer"] }) as never);
+    await expect(assignRoles(delegate(), "u1", ["regular-developer"])).rejects.toBeInstanceOf(EscalationError);
+    expect(r.setRoles).not.toHaveBeenCalled();
+  });
+  it("위임 admin이 비특권만 추가·제거(pm 그대로 유지) → 허용(특권 차집합 비어 있음)", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ roleKeys: ["pm", "regular-developer"] }) as never);
+    await assignRoles(delegate(), "u1", ["pm", "contractor-content"]);
+    expect(r.setRoles).toHaveBeenCalledWith("u1", ["pm", "contractor-content"], "admin1");
+  });
   it("위임 admin이 자기 자신 역할 변경 → EscalationError", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ id: "admin1" }) as never);
     await expect(assignRoles(delegate([], "admin1"), "admin1", ["regular-developer"])).rejects.toBeInstanceOf(EscalationError);
     expect(r.setRoles).not.toHaveBeenCalled();
   });
@@ -528,11 +551,13 @@ export function getUserForEdit(_actor: ActorContext, id: string): Promise<UserDe
 }
 
 // ── 승인(D11·D13ⓐⓑ·D12): 자가 금지 + 특권 역할/ systemRole 부여 가드 → approveTx(메일·CAS) → 트리거. ──
+// 가드는 현재↔원하는 상태를 비교(finding C). 대상은 PENDING이라 현재 systemRole/roleKeys가 기준선이며,
+// 승인으로 특권 systemRole·역할을 "추가"하는 것이 비-OWNER에게 차단된다(target.systemRole/roleKeys = 현재 상태).
 export async function approveUser(actor: ActorContext, id: string, input: ApproveInput): Promise<void> {
   const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
-  assertCanSetSystemRole(actor, input.systemRole);
-  assertCanAssignRoles(actor, input.roleKeys);
+  assertCanSetSystemRole(actor, target.systemRole, input.systemRole);
+  assertCanAssignRoles(actor, target.roleKeys, input.roleKeys);
   const mail = buildApprovedMail(target.email, target.name);
   await approveTx(id, actor.userId, {
     employmentType: input.employmentType, jobFunction: input.jobFunction,
@@ -551,9 +576,11 @@ export async function rejectUser(actor: ActorContext, id: string, reason: string
 }
 
 // ── 직접추가(D4·D12·D13ⓑ): 특권 역할/systemRole 부여 가드 → 임시비번 해시 → createActiveUserByAdminTx. ──
+// 신규 생성이라 "현재 상태"는 없다(비특권 기준선): 현재 systemRole="MEMBER", 현재 roleKeys=[]를 넘겨,
+// 입력으로 특권 systemRole/역할을 "추가"하는 것만 비-OWNER에게 차단되게 한다(강등·제거 분기는 생성에 무의미).
 export async function createUserByAdmin(actor: ActorContext, input: AdminCreateInput): Promise<{ id: string }> {
-  assertCanSetSystemRole(actor, input.systemRole);
-  assertCanAssignRoles(actor, input.roleKeys);
+  assertCanSetSystemRole(actor, "MEMBER", input.systemRole);
+  assertCanAssignRoles(actor, [], input.roleKeys);
   const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
   return createActiveUserByAdminTx({
     email: input.email, name: input.name, passwordHash,
@@ -563,10 +590,12 @@ export async function createUserByAdmin(actor: ActorContext, input: AdminCreateI
 }
 
 // ── 편집(D13ⓐ·D12): 자가 금지 + systemRole 변경 가드 → updateUserTx(CAS). ──
+// 가드는 현재↔원하는 systemRole을 비교(finding C). target.systemRole(현재)을 넘겨 기존 OWNER/ADMIN을
+// 강등하는 것도 비-OWNER에게 차단한다. patch.systemRole이 없으면 null(변경 의도 없음)이지만 현재가 특권이면 거부.
 export async function updateUser(actor: ActorContext, id: string, patch: UpdateUserInput): Promise<void> {
   const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
-  assertCanSetSystemRole(actor, patch.systemRole ?? null);
+  assertCanSetSystemRole(actor, target.systemRole, patch.systemRole ?? null);
   await updateUserTx(id, {
     ...(patch.name !== undefined ? { name: patch.name } : {}),
     ...(patch.department !== undefined ? { department: patch.department ?? null } : {}),
@@ -577,9 +606,12 @@ export async function updateUser(actor: ActorContext, id: string, patch: UpdateU
 }
 
 // ── 역할 부여(D13ⓐ ⓑ): 자가 금지 + 특권 역할 가드 → setRoles(가용성은 repo가 보장). ──
+// 가드는 현재↔원하는 역할 집합을 비교(finding C). mutation 전에 대상의 현재 roleKeys를 로드해
+// 넘긴다 — 그래야 위임 admin이 목록에서 pm/admin을 빼서 제거(추가가 아닌)하는 lockout도 차단된다.
 export async function assignRoles(actor: ActorContext, id: string, roleKeys: string[]): Promise<void> {
+  const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
-  assertCanAssignRoles(actor, roleKeys);
+  assertCanAssignRoles(actor, target.roleKeys, roleKeys);
   await setRoles(id, roleKeys, actor.userId);
 }
 
@@ -672,6 +704,7 @@ commit(이미 분리 커밋했으면 생략 가능): `test(user-mgmt): task-04 s
 ## Cautions
 
 - **가드는 서비스 계층에서 강제(spec D13·§8) — 라우트 권한키와 별개.** `:create`/`:approve`/`:update` 권한키를 통과해도 `approveUser`/`createUserByAdmin`/`updateUser`/`assignRoles`/`upsertOverride`/`setUserStatus`/`resetPassword`는 반드시 본문 첫 부분에서 가드를 호출한다. **생성·승인도 역할 부여 경로**이므로 `assertCanSetSystemRole`+`assertCanAssignRoles`를 동일 적용한다(위임 admin이 `:create`/`:approve`로 `pm`/`admin`/`OWNER`/`ADMIN`을 부여·확정 못 함).
+- **새 가드 시그니처는 현재↔원하는 상태 비교 — 현재 상태를 mutation 전에 로드한다(finding C).** `assertCanAssignRoles(actor, target.roleKeys, nextRoleKeys)`·`assertCanSetSystemRole(actor, target.systemRole, nextRole)`. 그래야 위임 admin이 ① 기존 OWNER/ADMIN을 강등하거나 ② 기존 pm/admin을 목록에서 빼서 제거하는 lockout까지 막는다(추가만 막던 이전 시그니처의 누락). `updateUser`·`assignRoles`는 `getUserDetail`로 대상 현재 `systemRole`·`roleKeys`를 로드해 넘기고(§S6 반환에 둘 다 포함), `approveUser`는 이미 로드한 `target`을 재사용한다. `createUserByAdmin`은 신규 생성이라 현재 상태가 없으므로 비특권 기준선(`"MEMBER"`, `[]`)을 넘긴다(추가만 검사됨). **별도 재조회 추가 금지** — `getUserDetail` 한 번으로 가드·CAS(updatedAt)·메일을 모두 충족한다.
 - **S5/S6 함수는 import 호출, 재정의 금지.** `withAvailabilityLock`/`assertMinAvailability`/최소가용성 카운트는 repository(task-03)가 mutation 내부에서 호출한다 — 서비스는 그 호출처를 만들지 않는다(중복 락 금지). 서비스는 sync 가드 4종 + D14 특권대상 검사만 자체 수행한다.
 - **D14 특권 대상 reset-password는 서비스 전용 가드.** sync 가드 4종으로는 안 잡힌다(대상의 systemRole/역할을 조회해야 판정). `isPrivilegedTarget(target)` + `actor.isOwner` 조합으로 `EscalationError`. 비-OWNER가 자기 자신을 admin 라우트로 재설정하는 것은 `assertNotSelfMutation`이 먼저 막는다.
 - **CAS 기준 `updatedAt`은 `getUserDetail`이 반환한 스냅샷을 그대로 repo에 넘긴다.** approve/reject/update가 stale read로 덮어쓰지 않게 — repo가 `where:{...,updatedAt}` 낙관락으로 `count===0` 충돌 검출(task-03). 서비스에서 별도 재조회·재계산하지 않는다.
