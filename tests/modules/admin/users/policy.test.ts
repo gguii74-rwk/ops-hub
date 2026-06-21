@@ -7,6 +7,7 @@ import {
   AUDIT_PERMISSION,
   isPrivilegedRoleKey,
 } from "@/modules/admin/users/policy";
+import { ROLE_ALLOW } from "../../../../prisma/seed-roles";
 
 describe("policy 상수", () => {
   it("비특권 역할 키 allowlist는 개발/외주 4종 (D13ⓑ·finding I)", () => {
@@ -44,5 +45,19 @@ describe("isPrivilegedRoleKey (sync, fail-closed — 비특권 allowlist 반전,
     // 예: 카탈로그 외 키 'superadmin'·'auditor' 등 — admin.* 권한 보유 여부와 무관하게 allowlist에 없으면 특권으로 보호.
     expect(isPrivilegedRoleKey("superadmin")).toBe(true);
     expect(isPrivilegedRoleKey("auditor")).toBe(true);
+  });
+});
+
+// codex iter1 finding2(ACCEPTED) 보완 — seed drift 가드.
+// 비특권 allowlist(sync·fail-closed)는 "이 4종은 admin.*·wildcard 권한이 없다"는 seed 가정 위에서 정확하다.
+// seed가 drift해 4종 중 하나가 admin.* 또는 "*"를 얻으면 위임 admin이 그 역할을 자유 부여할 수 있어 D13(admin-bearing 역할 OWNER-only)을 위반한다 — 그 drift를 CI에서 잡는다.
+describe("비특권 allowlist seed drift 가드 (codex iter1 finding2 ACCEPTED 보완)", () => {
+  it("NON_PRIVILEGED_ROLE_KEYS 4종은 ROLE_ALLOW에서 admin.*·wildcard 권한을 갖지 않는다", () => {
+    for (const key of NON_PRIVILEGED_ROLE_KEYS) {
+      const perms = ROLE_ALLOW[key] ?? [];
+      expect(perms, `${key}는 wildcard("*") 권한을 가지면 안 됨`).not.toContain("*");
+      const adminBearing = perms.filter((p) => p.startsWith("admin."));
+      expect(adminBearing, `${key}는 admin.* 권한을 가지면 안 됨`).toEqual([]);
+    }
   });
 });
