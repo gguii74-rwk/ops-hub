@@ -749,6 +749,8 @@ npm run build && npm run lint   # 목록 컴파일·boundaries 확인
 
 PENDING 행에서 고용형태·직무·역할(체크리스트) 확정 → POST `/api/admin/users/[id]/approve`. 거절 → POST `/api/admin/users/[id]/reject`(reason). leave `Modal` 재사용.
 
+> **NF2 보완 (task-06 적대검증 iter2 DEFERRED_TO_IMPL — 사용자 결정 "승인이 프로필 권위", high):** 자가가입 C안은 이메일 소유 증명 전 공격자가 피해자 이메일로 PENDING을 선점하면 `name`·`department`가 공격자값으로 박힐 수 있다(고용형태·직무·systemRole·역할은 이미 approve가 재설정해 무력화됨; `name`·`department`만 잔여). 따라서 승인 모달은 **`name`·`department`도 prefilled-editable 입력으로 노출**하고, 승인 시 admin이 확정한 값을 함께 전송해 선점값을 덮어쓴다. 이를 위해 **approveSchema(task-04 `validations/index.ts`)에 `name`·`department` 추가** + **approveTx(task-03 `repositories/index.ts`)의 `decision`에 `name`·`department` 기록**(현재 employmentType/jobFunction/systemRole/roleKeys만 씀)이 필요하다 — 이 backend 확장은 모달과 한 단위로 이 task에서 함께 구현한다. 거절(reject)은 프로필 무관이라 변경 없음.
+
 ```tsx
 "use client";
 import { useState } from "react";
@@ -1365,7 +1367,7 @@ git commit -m "feat(user-mgmt): 사용자 관리 UI(가입·검증·강제변경
   - `/signup` 제출 → `?sent=1` 중립 안내; DB에 PENDING 행 + 검증 메일 enqueue 확인(task-06 동작).
   - 검증 메일 링크 `/verify-email?token=…` → 비번 설정 폼 → 설정 후 "승인 대기" 안내.
   - `admin.users:view` 보유자로 `/admin/users` 진입 → 목록·필터·페이지네이션·PENDING 배지. 미보유자는 `/dashboard`로 리다이렉트.
-  - PENDING 행 "승인·거절" → 모달에서 고용형태·직무·역할·systemRole 확정 → 승인 시 목록에서 ACTIVE로 갱신.
+  - PENDING 행 "승인·거절" → 모달에서 고용형태·직무·역할·systemRole **+ name·department**(NF2 보완) 확정 → 승인 시 목록에서 ACTIVE로 갱신. 선점된 PENDING의 `name`/`department`가 admin 확정값으로 덮어써짐(approveSchema·approveTx에 `name`/`department` 추가됨을 단위테스트로 가드).
   - 편집 화면에서 속성/역할 저장·비활성화·override 추가/삭제가 각각 API 호출로 반영.
   - **비번 재설정** 클릭 → 응답의 1회용 임시비번이 "1회만 표시" 블록에 노출(복사·닫기) — 새로고침/재조회해도 닫기 전까지 유지(finding 2). 표시된 비번으로 대상이 로그인 → must-change 강제변경 흐름 진입.
   - **직접추가**(`/admin/users/new`) 제출 → `password` 필드로 POST되어 201 생성(finding 3). 위임 admin이 OWNER/ADMIN·pm/admin 선택 시 403 안내.
