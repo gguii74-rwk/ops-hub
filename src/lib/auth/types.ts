@@ -9,6 +9,7 @@ export interface SessionUser {
   systemRole: SystemRole;
   employmentType: EmploymentType;
   jobFunction: JobFunction;
+  mustChangePassword: boolean; // 신규(D17) — UI가 강제변경 진입에 사용. API 차단은 권한 게이트가 별도로 수행.
 }
 
 declare module "next-auth" {
@@ -19,6 +20,8 @@ declare module "next-auth" {
     systemRole: SystemRole;
     employmentType: EmploymentType;
     jobFunction: JobFunction;
+    mustChangePassword: boolean; // 신규 — authorize가 반환(아래 step 6)
+    status: string;             // 신규 — authorize가 반환(로그인 시점 status; 세션 재검증은 DB가 권위)
   }
 }
 
@@ -31,5 +34,8 @@ declare module "@auth/core/jwt" {
     systemRole: SystemRole;
     employmentType: EmploymentType;
     jobFunction: JobFunction;
+    mustChange: boolean; // 신규 — 로그인 시점 강제변경 플래그(session 콜백이 DB로 재확인해 최종 결정)
+    status: string;      // 신규 — 로그인 시점 status(세션 재검증은 DB가 권위)
+    // iat은 @auth/core가 표준 발급(초 단위). 세션 무효화는 DB 시각 > iat 비교로 판단.
   }
 }
