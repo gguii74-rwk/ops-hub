@@ -427,31 +427,75 @@ describe("upsertOverride / removeOverride", () => {
   it("위임 admin이 자기 자신 override → EscalationError", async () => {
     await expect(upsertOverride(delegate(["leave.approval:view"], "admin1"), "admin1", ov)).rejects.toBeInstanceOf(EscalationError);
   });
-  it("removeOverride: 자가 아니면 deleteOverride 호출", async () => {
-    await removeOverride(delegate(), "u1", "ov1");
+  it("removeOverride(비-critical DENY 삭제): 자가 아니고 grant 경계 통과면 deleteOverride 호출", async () => {
+    // 삭제는 effect 반전: DENY 삭제=ALLOW 복원 → actor가 해당 권한 보유해야 함.
+    r.getUserDetail.mockResolvedValue(detail({ overrides: [{ id: "ov1", resource: "leave.approval", action: "view", effect: "DENY", scope: "all", reason: null, startsAt: null, endsAt: null }] }) as never);
+    await removeOverride(delegate(["leave.approval:view"]), "u1", "ov1");
     expect(r.deleteOverride).toHaveBeenCalledWith("u1", "ov1", "admin1");
   });
   it("removeOverride: 자가 mutation 거부", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ id: "admin1" }) as never);
     await expect(removeOverride(delegate([], "admin1"), "admin1", "ov1")).rejects.toBeInstanceOf(EscalationError);
     expect(r.deleteOverride).not.toHaveBeenCalled();
   });
+  it("finding 2: 위임 admin이 critical(admin.users:update) DENY override 삭제 → EscalationError, repo 미호출", async () => {
+    // critical DENY 삭제 = 대상의 admin 권한 복원 → OWNER-only(effect 무관). 보유 여부와 무관하게 거부.
+    r.getUserDetail.mockResolvedValue(detail({ overrides: [{ id: "ov2", resource: "admin.users", action: "update", effect: "DENY", scope: "all", reason: null, startsAt: null, endsAt: null }] }) as never);
+    await expect(removeOverride(delegate(["admin.users:update"]), "u1", "ov2")).rejects.toBeInstanceOf(EscalationError);
+    expect(r.deleteOverride).not.toHaveBeenCalled();
+  });
+  it("finding 2: 비-critical DENY 삭제인데 actor가 해당 권한 미보유 → EscalationError(복원 권한 없음)", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ overrides: [{ id: "ov3", resource: "leave.approval", action: "view", effect: "DENY", scope: "all", reason: null, startsAt: null, endsAt: null }] }) as never);
+    await expect(removeOverride(delegate([]), "u1", "ov3")).rejects.toBeInstanceOf(EscalationError);
+    expect(r.deleteOverride).not.toHaveBeenCalled();
+  });
+  it("removeOverride: 없는 overrideId면 UserConflictError", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ overrides: [] }) as never);
+    await expect(removeOverride(delegate(), "u1", "ghost")).rejects.toBeInstanceOf(UserConflictError);
+  });
+  it("OWNER는 critical DENY override 삭제 허용", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ overrides: [{ id: "ov4", resource: "admin.users", action: "update", effect: "DENY", scope: "all", reason: null, startsAt: null, endsAt: null }] }) as never);
+    await removeOverride(owner, "u1", "ov4");
+    expect(r.deleteOverride).toHaveBeenCalledWith("u1", "ov4", "owner1");
+  });
 });
 
-describe("setUserStatus", () => {
-  it("DISABLE: setStatusTx(now) 호출", async () => {
-    r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE" }) as never);
+describe("setUserStatus (finding 1 — 특권 대상 OWNER-only + 락 안 recheck)", () => {
+  it("DISABLE(비특권 대상): setStatusTx(now·recheck) 호출", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE", systemRole: "MEMBER", roleKeys: [] }) as never);
     await setUserStatus(owner, "u1", "DISABLED");
-    expect(r.setStatusTx).toHaveBeenCalledWith("u1", "DISABLED", "owner1", expect.any(Date));
+    expect(r.setStatusTx).toHaveBeenCalledWith("u1", "DISABLED", "owner1", expect.any(Date), expect.any(Function));
   });
-  it("REJECTED 대상에 ACTIVE → reactivateRejectedTx 경로", async () => {
-    r.getUserDetail.mockResolvedValue(detail({ status: "REJECTED" }) as never);
+  it("REJECTED 대상에 ACTIVE → reactivateRejectedTx(recheck) 경로", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ status: "REJECTED", systemRole: "MEMBER", roleKeys: [] }) as never);
     await setUserStatus(owner, "u1", "ACTIVE");
-    expect(r.reactivateRejectedTx).toHaveBeenCalledWith("u1", "owner1", expect.any(Date));
+    expect(r.reactivateRejectedTx).toHaveBeenCalledWith("u1", "owner1", expect.any(Date), expect.any(Function));
     expect(r.setStatusTx).not.toHaveBeenCalled();
   });
   it("위임 admin 자가 status 변경 → EscalationError", async () => {
     r.getUserDetail.mockResolvedValue(detail({ id: "admin1", status: "ACTIVE" }) as never);
     await expect(setUserStatus(delegate([], "admin1"), "admin1", "DISABLED")).rejects.toBeInstanceOf(EscalationError);
+  });
+  it("위임 admin이 특권 대상(systemRole=ADMIN) 비활성화 → EscalationError, repo 미호출", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE", systemRole: "ADMIN", roleKeys: [] }) as never);
+    await expect(setUserStatus(delegate(), "u1", "DISABLED")).rejects.toBeInstanceOf(EscalationError);
+    expect(r.setStatusTx).not.toHaveBeenCalled();
+  });
+  it("위임 admin이 특권 역할(pm) 보유 대상 비활성화 → EscalationError", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE", systemRole: "MEMBER", roleKeys: ["pm"] }) as never);
+    await expect(setUserStatus(delegate(), "u1", "DISABLED")).rejects.toBeInstanceOf(EscalationError);
+  });
+  it("위임 admin이 비특권 대상 비활성화 → 허용", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE", systemRole: "MEMBER", roleKeys: ["regular-developer"] }) as never);
+    await setUserStatus(delegate(), "u1", "DISABLED");
+    expect(r.setStatusTx).toHaveBeenCalled();
+  });
+  it("finding 1: setStatusTx에 넘긴 recheck가 락 안 fresh state로 특권 대상을 재거부", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE", systemRole: "MEMBER", roleKeys: ["regular-developer"] }) as never);
+    await setUserStatus(delegate(), "u1", "DISABLED");
+    const recheck = r.setStatusTx.mock.calls[0][4] as (t: { systemRole: string; roleKeys: string[] }) => void;
+    expect(() => recheck({ systemRole: "ADMIN", roleKeys: [] })).toThrow(EscalationError);
+    expect(() => recheck({ systemRole: "MEMBER", roleKeys: ["regular-developer"] })).not.toThrow();
   });
 });
 
@@ -669,22 +713,40 @@ export async function upsertOverride(actor: ActorContext, id: string, dto: Overr
   return createOverride(id, input, actor.userId);
 }
 
-// ── override 삭제(D13ⓐ): 자가 금지 → deleteOverride(가용성은 repo가 보장). ──
+// ── override 삭제(D13ⓐ ⓒ ⓓ): 자가 금지 + 생성과 동일한 grant 경계 → deleteOverride(가용성은 repo가 보장). ──
+// finding 2: 삭제도 grant 경계를 검사한다. 삭제는 effect를 뒤집는 효과(DENY 삭제=접근 복원=grant, ALLOW 삭제=회수)이므로
+// **반전 effect**로 assertOverrideWithinActorGrant를 호출한다. critical(admin.*)은 effect 무관 OWNER-only라, 위임 admin이
+// critical DENY를 삭제해 대상의 admin 권한을 OWNER 승인 없이 복원하는 것을 차단한다. override는 update 경로가 없어
+// (생성·삭제만) key/effect가 불변이므로 로드 스냅샷으로 가드해도 stale race가 없다.
 export async function removeOverride(actor: ActorContext, id: string, overrideId: string): Promise<void> {
+  const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
+  const ov = target.overrides.find((o) => o.id === overrideId);
+  if (!ov) throw new UserConflictError("해당 권한 예외를 찾을 수 없습니다.");
+  assertOverrideWithinActorGrant(actor, permissionKey(ov.resource, ov.action), ov.effect === "DENY" ? "ALLOW" : "DENY");
   await deleteOverride(id, overrideId, actor.userId);
 }
 
-// ── status 토글(D13ⓐ ⓔ): 자가 금지 → REJECTED→ACTIVE는 reactivate, 그 외 ACTIVE/DISABLED는 setStatus. ──
+// ── status 토글(D13ⓐ ⓔ): 자가 금지 + 특권 대상 OWNER-only → REJECTED→ACTIVE는 reactivate, 그 외 ACTIVE/DISABLED는 setStatus. ──
+// finding 1: resetPassword와 동형으로 특권 대상(OWNER/ADMIN systemRole·특권 역할)의 상태 변경은 OWNER만(위임 admin이
+// 특권 사용자를 disable해 세션을 무효화·DoS하는 것 차단). 사전 검사(stale) + 락 안 fresh recheck로 race까지 닫는다.
 export async function setUserStatus(actor: ActorContext, id: string, status: "ACTIVE" | "DISABLED"): Promise<void> {
   const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
+  if (!actor.isOwner && isPrivilegedTarget(target)) {
+    throw new EscalationError("특권 사용자의 상태 변경은 OWNER만 가능합니다.");
+  }
+  const recheck = (fresh: { systemRole: string; roleKeys: string[] }) => {
+    if (!actor.isOwner && isPrivilegedTarget(fresh)) {
+      throw new EscalationError("특권 사용자의 상태 변경은 OWNER만 가능합니다.");
+    }
+  };
   const now = new Date();
   if (status === "ACTIVE" && target.status === "REJECTED") {
-    await reactivateRejectedTx(id, actor.userId, now);
+    await reactivateRejectedTx(id, actor.userId, now, recheck);
     return;
   }
-  await setStatusTx(id, status, actor.userId, now);
+  await setStatusTx(id, status, actor.userId, now, recheck);
 }
 
 // ── 비번 재설정(D14): 자가 금지 + 특권 대상은 OWNER-only → 임시비번 해시 → resetPasswordTx. 임시비번은 반환(관리자 전달용). ──
@@ -754,7 +816,7 @@ commit(이미 분리 커밋했으면 생략 가능): `test(user-mgmt): task-04 s
 
 - **가드는 서비스 계층에서 강제(spec D13·§8) — 라우트 권한키와 별개.** `:create`/`:approve`/`:update` 권한키를 통과해도 `approveUser`/`createUserByAdmin`/`updateUser`/`assignRoles`/`upsertOverride`/`setUserStatus`/`resetPassword`는 반드시 본문 첫 부분에서 가드를 호출한다. **생성·승인도 역할 부여 경로**이므로 `assertCanSetSystemRole`+`assertCanAssignRoles`를 동일 적용한다(위임 admin이 `:create`/`:approve`로 `pm`/`admin`/`OWNER`/`ADMIN`을 부여·확정 못 함).
 - **새 가드 시그니처는 현재↔원하는 상태 비교 — 현재 상태를 mutation 전에 로드한다(finding C).** `assertCanAssignRoles(actor, target.roleKeys, nextRoleKeys)`·`assertCanSetSystemRole(actor, target.systemRole, nextRole)`. 그래야 위임 admin이 ① 기존 OWNER/ADMIN을 강등하거나 ② 기존 pm/admin을 목록에서 빼서 제거하는 lockout까지 막는다(추가만 막던 이전 시그니처의 누락). `updateUser`·`assignRoles`는 `getUserDetail`로 대상 현재 `systemRole`·`roleKeys`를 로드해 넘기고(§S6 반환에 둘 다 포함), `approveUser`는 이미 로드한 `target`을 재사용한다. `createUserByAdmin`은 신규 생성이라 현재 상태가 없으므로 비특권 기준선(`"MEMBER"`, `[]`)을 넘긴다(추가만 검사됨). **서비스는 `getUserDetail`을 한 번만** 호출해 사전 가드·CAS(updatedAt)·메일을 충족한다(서비스 계층에서 두 번 재조회 금지) — 락 안 fresh 재검사는 아래 finding H 패턴으로 **repo가** 수행한다(서비스 재조회 아님).
-- **stale 가드 race는 `setRoles`/`resetPasswordTx`의 recheck 콜백으로 닫는다(finding H).** `assignRoles`·`resetPassword`의 사전 가드(stale `target` 기반)는 빠른 거부일 뿐 권위가 아니다. 동시 OWNER action이 대상의 역할/특권을 바꾸면 stale 검사가 무력화되므로(role 부여 직후 빼서 lockout / 특권이 된 직후 reset해 임시비번 탈취), 권위 검사는 **repo 락 안 fresh 상태로 재실행**한다. `assignRoles`는 `setRoles(id, roleKeys, actorId, (cur) => assertCanAssignRoles(actor, cur, roleKeys))`, `resetPassword`는 `resetPasswordTx(id, hash, actorId, now, (fresh) => { if (!actor.isOwner && isPrivilegedTarget(fresh)) throw new EscalationError(...) })`로 actor를 캡처한 sync 클로저를 넘긴다. recheck는 repo가 락 안에서 fresh state를 읽어 호출한다(task-03). `User.updatedAt` CAS는 role 변경을 못 잡으므로(UserAccessRole 쓰기는 updatedAt 미갱신) 이 재검사가 필수다. `updateUser`의 systemRole 변경은 User 행 CAS(updatedAt)가 동시 변경을 잡으므로 recheck 불필요.
+- **stale 가드 race는 `setRoles`/`resetPasswordTx`/`setStatusTx`/`reactivateRejectedTx`의 recheck 콜백으로 닫는다(finding H·1).** `assignRoles`·`resetPassword`·`setUserStatus`의 사전 가드(stale `target` 기반)는 빠른 거부일 뿐 권위가 아니다. 동시 OWNER action이 대상의 역할/특권을 바꾸면 stale 검사가 무력화되므로(role 부여 직후 빼서 lockout / 특권이 된 직후 reset해 임시비번 탈취 / 특권이 된 직후 disable해 세션 무효화), 권위 검사는 **repo 락 안 fresh 상태로 재실행**한다. `assignRoles`는 `setRoles(id, roleKeys, actorId, (cur) => assertCanAssignRoles(actor, cur, roleKeys))`, `resetPassword`·`setUserStatus`는 `(fresh) => { if (!actor.isOwner && isPrivilegedTarget(fresh)) throw new EscalationError(...) }`를 각각 `resetPasswordTx`/`setStatusTx`/`reactivateRejectedTx`에 넘긴다(actor 캡처 sync 클로저). recheck는 repo가 락 안에서 fresh state를 읽어 호출한다(task-03). `User.updatedAt` CAS는 role 변경을 못 잡으므로(UserAccessRole 쓰기는 updatedAt 미갱신) 이 재검사가 필수다. `updateUser`의 systemRole 변경은 User 행 CAS(updatedAt)가 동시 변경을 잡으므로 recheck 불필요.
 - **S5/S6 함수는 import 호출, 재정의 금지.** `withAvailabilityLock`/`assertMinAvailability`/최소가용성 카운트는 repository(task-03)가 mutation 내부에서 호출한다 — 서비스는 그 호출처를 만들지 않는다(중복 락 금지). 서비스는 sync 가드 4종 + D14 특권대상 검사만 자체 수행한다.
 - **D14 특권 대상 reset-password는 서비스 전용 가드.** sync 가드 4종으로는 안 잡힌다(대상의 systemRole/역할을 조회해야 판정). `isPrivilegedTarget(target)` + `actor.isOwner` 조합으로 `EscalationError`. 비-OWNER가 자기 자신을 admin 라우트로 재설정하는 것은 `assertNotSelfMutation`이 먼저 막는다. **이 판정은 사전(stale)·락 안(fresh) 양쪽에서** 한다 — 사전은 `resetPassword`에서, 권위 판정은 `resetPasswordTx`에 넘긴 recheck 클로저가 락 안 fresh state로(finding H). `isPrivilegedTarget`은 `{systemRole, roleKeys}`만 받으므로 stale `target`과 fresh state 양쪽에 동일 적용된다.
 - **메일 동적 필드는 escapeHtml로 보간한다(finding J).** `buildApprovedMail`(name)·`buildRejectedMail`(name·reason)은 사용자/관리자 자유 입력을 bodyHtml에 직접 넣으면 수신자 메일함 stored HTML injection/phishing이 된다. `escapeHtml`(leave `mail-templates.ts`의 `esc`와 동형 `&<>"'` 치환)로 감싼다. leave 파일을 import/수정하지 말고 본 서비스에 동형 헬퍼를 둔다(surgical).
@@ -764,3 +826,5 @@ commit(이미 분리 커밋했으면 생략 가능): `test(user-mgmt): task-04 s
 - **공개·비번 스키마는 task-06/07 소관(중복 정의 금지).** task-04 `validations/index.ts`는 **admin 전용**(`adminCreateSchema`·`approveSchema`·`rejectSchema`·`updateUserSchema`·`rolesSchema`·`overrideSchema`)만 둔다. `signupSchema`/`setPasswordSchema`/`resendSchema`는 task-06(`validations/signup.ts`), `changePasswordSchema`는 task-07(`validations/change-password.ts`)이 소유한다(S7). 마찬가지로 signup/set-password/resend/change-password **흐름**은 task-06/07 service 소관 — task-04 service는 approve/reject/createUserByAdmin/update/roles/override/setStatus/resetPassword/조회만 다룬다.
 - **surgical**: 기존 leave/access 파일을 수정하지 않는다. 본 task는 신규 파일 2개 + 테스트 2개만. 메일 본문 빌더를 leave `mail-templates`에 끼워넣지 말 것(사용자 도메인 본문은 본 서비스에 둔다).
 - **`status` 토글 분기**: `setStatusTx`는 `ACTIVE`/`DISABLED`만 받는다(task-03 시그니처). `REJECTED → ACTIVE` 재활성은 별도 `reactivateRejectedTx` 경로다 — 서비스가 대상 현재 status로 분기한다(잘못 호출 시 repo가 `UserConflictError`).
+- **`setUserStatus`도 특권 대상은 OWNER-only다(finding 1).** `resetPassword`와 동형으로 `if (!actor.isOwner && isPrivilegedTarget(target))` 사전 거부 + `setStatusTx`/`reactivateRejectedTx`에 락 안 recheck 클로저를 넘긴다. 빠뜨리면 위임 admin이 OWNER/ADMIN·pm/admin 대상을 disable해 특권 사용자 세션을 무효화(DoS)할 수 있다(최소가용성 카운트가 우연히 안 걸리면 통과). 비-특권 대상 disable/enable/reactivate는 그대로 허용.
+- **`removeOverride`도 생성과 동일한 grant 경계를 강제한다(finding 2).** 삭제는 effect를 뒤집는 효과(DENY 삭제=접근 복원=grant, ALLOW 삭제=회수)이므로 `loadTarget`으로 override를 찾아 `assertOverrideWithinActorGrant(actor, permissionKey(ov.resource, ov.action), ov.effect === "DENY" ? "ALLOW" : "DENY")`를 호출한다. 그래야 위임 admin이 critical(`admin.*`) DENY override를 삭제해 대상의 admin 권한을 OWNER 승인 없이 복원하는 것을 막는다(critical은 effect 무관 OWNER-only). override는 update 경로가 없어 key/effect가 불변이므로 로드 스냅샷 가드로 충분(stale race 없음). 없는 overrideId는 `UserConflictError`.

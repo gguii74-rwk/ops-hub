@@ -798,13 +798,14 @@ const dbSnap = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => vi.clearAllMocks());
 
-describe("session 권위 — buildActorCtx.isOwner는 stale JWT가 아니라 DB systemRole에 근거(finding #1)", () => {
+describe("session 권위 — session.user.systemRole은 stale JWT가 아니라 DB systemRole로 재구성(finding #1)", () => {
   it("stale JWT systemRole=OWNER인데 DB=MEMBER면 session.user.systemRole은 MEMBER(not-owner)", async () => {
     h.db.user.findUnique.mockResolvedValue(dbSnap({ systemRole: "MEMBER" }));
     const session = await sessionCb({ session: {}, token: staleOwnerToken() });
     const role = (session as { user: { systemRole: string } }).user.systemRole;
     expect(role).toBe("MEMBER");
-    // task-05 buildActorCtx 규약(§S5): isOwner = systemRole === "OWNER". DB가 권위이므로 false.
+    // 세션 콜백이 DB로 재구성하므로 UI/식별 소비자는 강등을 즉시 본다. (finding 3 이후 ActorContext.isOwner는
+    // session.user.systemRole이 아니라 getPermissionSummary().isOwner에서 오므로 actor 권위는 task-07 게이트가 별도 보장.)
     expect(role === "OWNER").toBe(false);
   });
 

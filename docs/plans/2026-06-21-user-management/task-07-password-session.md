@@ -412,10 +412,15 @@ describe("mustChangePassword 중앙 게이트(D17)", () => {
     const summary = await getPermissionSummary("u1");
     expect(summary.keys).toEqual([]);
   });
-  it("must-change OWNER도 빈 keys(OWNER 우회 금지)", async () => {
+  it("must-change OWNER도 빈 keys·isOwner=false(OWNER 우회 금지 — finding 3 actor 권위도 fail-closed)", async () => {
     h.db.user.findUnique.mockResolvedValue({ systemRole: "OWNER", status: "ACTIVE", mustChangePassword: true, roleAssignments: [] });
     const summary = await getPermissionSummary("u1");
     expect(summary.keys).toEqual([]);
+    expect(summary.isOwner).toBe(false); // must-change면 actor 권위도 비-OWNER 취급
+  });
+  it("ACTIVE·must-change=false OWNER는 isOwner=true (finding 3 — buildActorCtx가 이 값을 신뢰)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ systemRole: "OWNER", status: "ACTIVE", mustChangePassword: false, roleAssignments: [] });
+    expect((await getPermissionSummary("u1")).isOwner).toBe(true);
   });
   it("must-change면 hasPermission false·requirePermission ForbiddenError", async () => {
     h.db.user.findUnique.mockResolvedValue({ systemRole: "OWNER", status: "ACTIVE", mustChangePassword: true, roleAssignments: [] });
@@ -428,9 +433,11 @@ describe("mustChangePassword 중앙 게이트(D17)", () => {
     const summary = await getPermissionSummary("u1");
     expect(summary.keys).toContain("admin.users:view");
   });
-  it("비-ACTIVE는 기존대로 빈 summary(회귀 보존)", async () => {
+  it("비-ACTIVE는 기존대로 빈 summary·isOwner=false(회귀 보존)", async () => {
     h.db.user.findUnique.mockResolvedValue({ systemRole: "OWNER", status: "DISABLED", mustChangePassword: false, roleAssignments: [] });
-    expect((await getPermissionSummary("u1")).keys).toEqual([]);
+    const summary = await getPermissionSummary("u1");
+    expect(summary.keys).toEqual([]);
+    expect(summary.isOwner).toBe(false); // 비활성 OWNER도 actor 권위 fail-closed
     expect(await hasPermission("u1", "admin.users", "view")).toBe(false);
   });
 });
@@ -485,23 +492,33 @@ export async function hasPermission(userId: string, resource: string, action: Ac
   // ... 이하 기존(permission 조회·override/role 평가·computeDecision) 그대로
 ```
 
-`getPermissionSummary` 진입에 게이트(OWNER 전체 반환 **앞**):
+`getPermissionSummary` 진입에 게이트(OWNER 전체 반환 **앞**). **finding 3:** `PermissionSummary`에 `isOwner: boolean`을 추가하고, isOwner를 **keys와 동일한 단일 권위 read(loadUserContext)** 에서 산출해 모든 반환점에 싣는다 — task-05 `buildActorCtx`가 isOwner를 stale `session.user.systemRole`이 아니라 이 값에서 가져와, actor 권위와 권한 결정이 같은 DB read에 묶이게 한다. fail-closed 분기(미존재·must-change·비활성)는 `isOwner: false`(must-change OWNER도 권한 0이자 비-OWNER 취급 — D17 일관):
 
 ```ts
+// PermissionSummary 인터페이스에 isOwner 추가(기존 keys는 그대로 — 추가 필드라 .keys 소비자 호환).
+export interface PermissionSummary {
+  keys: string[];
+  isOwner: boolean; // 신규(finding 3) — actor 권위 단일 출처. must-change/비활성이면 false(fail-closed).
+}
+
 export async function getPermissionSummary(userId: string): Promise<PermissionSummary> {
   const now = new Date();
   const ctx = await loadUserContext(userId, now);
-  if (!ctx) return { keys: [] };
-  // D17 하드 게이트: must-change면 빈 summary(fail-closed). UI useCan(...)도 전부 false → 메뉴/버튼 숨김.
-  if (ctx.mustChangePassword) return { keys: [] };
+  if (!ctx) return { keys: [], isOwner: false };
+  // D17 하드 게이트: must-change면 빈 summary·isOwner=false(fail-closed). UI useCan(...)도 전부 false → 메뉴/버튼 숨김.
+  if (ctx.mustChangePassword) return { keys: [], isOwner: false };
 
   const permissions = await prisma.permission.findMany({
     select: { id: true, resource: true, action: true },
   });
-  // ... 이하 기존(OWNER 전체·override/role 평가) 그대로
+  if (ctx.isOwner) {
+    return { keys: permissions.map((p) => permissionKey(p.resource, p.action)), isOwner: true };
+  }
+  // ... 이하 기존(override/role 평가로 keys 산출) 그대로, 마지막 반환만 isOwner 동반:
+  // return { keys, isOwner: false };
 ```
 
-`requirePermission`은 `hasPermission`을 호출하므로 자동으로 게이트된다(변경 불필요 — 기존 코드 보존).
+`requirePermission`은 `hasPermission`을 호출하므로 자동으로 게이트된다(변경 불필요 — 기존 코드 보존). `loadUserContext`가 fail-closed면 `getPermissionSummary`도 `isOwner:false`라 강등/비활성/must-change actor는 anti-escalation에서 비-OWNER로 취급된다.
 
 ```
 npm test -- tests/kernel/access/must-change-gate   # expect PASS
@@ -646,7 +663,7 @@ describe("POST /api/auth/change-password", () => {
     const res = await POST(req({ currentPassword: "oldpassword12", newPassword: "newpassword12" }));
     expect(res.status).toBe(200);
     expect(h.compare).toHaveBeenCalledWith("oldpassword12", "oldhash");
-    expect(h.changePasswordTx).toHaveBeenCalledWith("u1", "newhash", expect.any(Date));
+    expect(h.changePasswordTx).toHaveBeenCalledWith("u1", "newhash", expect.any(Date), "oldhash"); // finding 4: 현재 해시 CAS
   });
   it("자발 변경: 현재 비번 불일치 → 400, changePasswordTx 미호출", async () => {
     h.authMock.mockResolvedValue({ user: { id: "u1", mustChangePassword: false } });
@@ -670,7 +687,7 @@ describe("POST /api/auth/change-password", () => {
     const res = await POST(req({ currentPassword: "temppassword1", newPassword: "newpassword12" }));
     expect(res.status).toBe(200);
     expect(h.compare).toHaveBeenCalledWith("temppassword1", "temphash");
-    expect(h.changePasswordTx).toHaveBeenCalledWith("u1", "newhash", expect.any(Date));
+    expect(h.changePasswordTx).toHaveBeenCalledWith("u1", "newhash", expect.any(Date), "temphash"); // finding 4: 현재 해시 CAS
   });
   it("강제 변경도 현재(임시) 비번 불일치면 400(fresh 로그인 외 우회 금지)", async () => {
     h.authMock.mockResolvedValue({ user: { id: "u1", mustChangePassword: true } });
@@ -679,6 +696,15 @@ describe("POST /api/auth/change-password", () => {
     const res = await POST(req({ currentPassword: "wrong1234567", newPassword: "newpassword12" }));
     expect(res.status).toBe(400);
     expect(h.changePasswordTx).not.toHaveBeenCalled();
+  });
+  it("finding 4: 검증~쓰기 사이 admin reset로 CAS 충돌(changePasswordTx UserConflictError)이면 409", async () => {
+    h.authMock.mockResolvedValue({ user: { id: "u1", mustChangePassword: false } });
+    h.db.user.findUnique.mockResolvedValue({ passwordHash: "oldhash", mustChangePassword: false });
+    h.compare.mockResolvedValue(true);
+    const { UserConflictError } = await import("@/modules/admin/users/errors");
+    h.changePasswordTx.mockRejectedValueOnce(new UserConflictError("처리 중 비밀번호가 변경되었습니다. 다시 로그인해 주세요."));
+    const res = await POST(req({ currentPassword: "oldpassword12", newPassword: "newpassword12" }));
+    expect(res.status).toBe(409);
   });
 });
 ```
@@ -738,7 +764,9 @@ export async function POST(req: Request) {
   try {
     const newHash = await bcrypt.hash(newPassword, 10);
     // S6: passwordHash + passwordChangedAt=now + mustChangePassword=false (타 세션 무효화 기준 = passwordChangedAt).
-    await changePasswordTx(userId, newHash, new Date());
+    // finding 4: 방금 검증에 쓴 현재 해시(user.passwordHash)를 expectedCurrentHash로 넘긴다 — 검증~쓰기 사이에 admin reset가
+    // 끼면 CAS 불일치(count 0)로 UserConflictError → 409(아래) → 사용자는 재로그인. 이전 비번이 reset/must-change를 덮어쓰지 못함.
+    await changePasswordTx(userId, newHash, new Date(), user.passwordHash);
     return NextResponse.json({ ok: true });
   } catch (error) {
     if (error instanceof UserConflictError) return NextResponse.json({ error: error.message }, { status: 409 });
