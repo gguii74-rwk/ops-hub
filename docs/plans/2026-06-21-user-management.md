@@ -151,10 +151,14 @@ export async function listUsers(f: UserListFilter): Promise<{ rows: UserRow[]; t
 export async function getUserDetail(id: string): Promise<UserDetail | null>;
 
 // 자가가입(C안): 비번 없이 PENDING. 만료된 미검증 PENDING 교체 허용.
-export async function createPendingSignup(args: { email: string; name: string; employmentType: string; jobFunction: string; department: string | null; tokenHash: string; tokenExpiresAt: Date; }): Promise<{ id: string }>;
+// **PENDING User + 검증메일 MailDelivery를 같은 트랜잭션에서 생성**(부분실패로 메일 없는 PENDING 방지 — finding #4).
+// 만료된 미검증 PENDING 교체 시에도 토큰·메일을 재발급/재enqueue(멱등 재시도). 중복(검증완료/활성)은 UserConflictError.
+export async function createPendingSignup(args: { email: string; name: string; employmentType: string; jobFunction: string; department: string | null; tokenHash: string; tokenExpiresAt: Date; mail: UserMailJob; pendingCap: number; }): Promise<{ id: string }>;
+// pendingCap은 라우트(task-06)가 `PENDING_UNVERIFIED_CAP`를 **인자로 주입** — task-03이 task-06의 rate-limit.ts에 의존하지 않게(deps 역전 방지). 트랜잭션 내에서 미검증 PENDING count ≥ pendingCap이면 `RateLimitError`.
 // set-password 토큰 소비: passwordHash + emailVerifiedAt 기록, 토큰 소거. (PENDING 유지)
 export async function setPasswordViaToken(tokenHash: string, passwordHash: string, now: Date): Promise<{ id: string } | null>;
-export async function refreshVerifyToken(email: string, tokenHash: string, tokenExpiresAt: Date): Promise<{ id: string } | null>;
+// 재발송: 토큰 갱신 + 검증메일 재enqueue(같은 트랜잭션). 미검증 PENDING만 대상.
+export async function refreshVerifyToken(email: string, tokenHash: string, tokenExpiresAt: Date, mail: UserMailJob): Promise<{ id: string } | null>;
 
 // 관리자 직접추가: 임시비번 → ACTIVE + mustChangePassword, emailVerifiedAt=now, 역할 부여.
 export async function createActiveUserByAdminTx(args: { email: string; name: string; passwordHash: string; employmentType: string; jobFunction: string; department: string | null; systemRole: string; roleKeys: string[]; actorId: string; }): Promise<{ id: string }>;
@@ -197,15 +201,16 @@ export type UserMailEvent = "APPROVED" | "REJECTED" | "VERIFY_EMAIL";
 
 - 사용자 메일은 `MailDelivery`에 `leaveRequestId=null`로 enqueue(Postgres unique는 NULL 복수 허용 → 충돌 없음). `eventType`에 `UserMailEvent` 사용, `recipients=[email]`.
 - **leave drain 워커 일반화**(surgical, task-03 확정): `dueWhere`(listDueDeliveryIds+claimDelivery 공유)의 `leaveRequestId:{not:null}` 조건을 `eventType:{not:null}`로 변경(eventType null인 workflow 행은 계속 제외), `claimDelivery`의 `leaveRequestId` null 거부 가드 제거, `ClaimedDelivery.eventType`을 `string`으로 확장, `deadLetterStaleSending`도 동형 일반화. 발송 전 LeaveRequest 재확인·status 일치는 **`leaveRequestId`가 있을 때만**. leave의 4-event 동작 완전 보존.
-- `setPasswordViaToken`/`refreshVerifyToken`은 `updateMany`(원자적 토큰+만료 매칭) 후 `findFirst`로 id 회수(task-03 구현). task-06은 반환 `{id}|null` 계약만 의존.
-- 승인/거절 메일은 `approveTx`/`rejectTx` 트랜잭션 내 1회 `mailDelivery.create`(CAS가 중복 승인 차단 → 멱등키 불필요). 검증메일은 signup/resend 시 create(매번 새 토큰).
+- `setPasswordViaToken`/`refreshVerifyToken`은 `updateMany`(원자적 토큰+만료 매칭) 후 `findFirst`로 id 회수(task-03 구현). task-06은 반환 `{id}|null` 계약만 의존. **`refreshVerifyToken`은 토큰 갱신과 검증메일 enqueue를 같은 트랜잭션에서**(finding #4 — `mail: UserMailJob` 인자, 부분실패 방지). `setPasswordViaToken`은 메일 발송이 없으므로 mail 인자 없음.
+- 승인/거절 메일은 `approveTx`/`rejectTx` 트랜잭션 내 1회 `mailDelivery.create`(CAS가 중복 승인 차단 → 멱등키 불필요). **검증메일은 `createPendingSignup`/`refreshVerifyToken`가 User 생성·토큰갱신과 같은 트랜잭션에서 enqueue**(finding #4 — signup/resend 라우트는 메일 본문만 만들어 `mail` 인자로 넘기고 별도 enqueue 트랜잭션을 두지 않는다; 매번 새 토큰).
 - 발송 후 `triggerLeaveMailDrain()` 재사용(fire-and-forget) 또는 동명의 공통 트리거.
 
 ### S9. 세션 무효화 + mustChangePassword 중앙 게이트 (task-07)
 
-- **auth 콜백**(`src/lib/auth/config.ts`): `jwt` 콜백이 로그인 시 토큰에 `mustChange`·`status`·발급기준시각 저장. `session` 콜백이 **DB의 현재 `status`/`passwordChangedAt`/`sessionInvalidatedAt`/`mustChangePassword`를 조회**해, ① `status !== "ACTIVE"` 이거나 ② `passwordChangedAt`/`sessionInvalidatedAt`가 토큰 발급(`token.iat`) 이후면 → 세션 무효(`session.user`를 비우거나 무효 신호). `SessionUser`에 `mustChangePassword: boolean` 추가(types.ts). 세션 무효 판정은 **순수 헬퍼 `isSessionValid(tokenIat: number, snap: {status, passwordChangedAt, sessionInvalidatedAt}): boolean`**(`src/lib/auth/session-validity.ts`, task-07이 export)로 분리해 session 콜백이 호출하고 task-09가 단위테스트한다.
+- **auth 콜백**(`src/lib/auth/config.ts`): `jwt` 콜백이 로그인 시 토큰에 발급기준시각을 둔다(`token.iat`). `session` 콜백이 **DB의 현재 `status`/`passwordChangedAt`/`sessionInvalidatedAt`/`mustChangePassword` + 권위 속성(`systemRole`/`name`/`email`/`employmentType`/`jobFunction`)을 조회**한다. **`session.user`는 JWT가 아니라 DB 현재값으로 fresh 재구성**한다 — 특히 `systemRole`을 **절대 stale JWT에서 가져오지 않는다**(강등된 OWNER가 anti-escalation을 우회하는 것 방지; ActorContext.isOwner의 권위원이다). 세션 무효(① `status !== "ACTIVE"` 또는 ② `passwordChangedAt`/`sessionInvalidatedAt`가 `token.iat` 이후)면 **`session.user`를 명시적으로 제거(undefined/null)** 한다 — 들어온 prefilled user를 그대로 반환 금지. 무효 판정은 **순수 헬퍼 `isSessionValid(tokenIat: number, snap: {status, passwordChangedAt, sessionInvalidatedAt}): boolean`**(`src/lib/auth/session-validity.ts`, task-07 export)로 분리해 session 콜백이 호출하고 task-09가 단위테스트한다. `SessionUser`에 `mustChangePassword: boolean` 추가(types.ts).
 - **중앙 게이트**(`src/kernel/access` 또는 `src/lib/auth`에 공유 헬퍼): `getPermissionSummary(userId)`가 `mustChangePassword === true`면 **빈 `{keys:[]}` 반환**(fail-closed). `requirePermission`도 must-change면 거부. allowlist = `change-password`·`logout` 경로만 예외. UI 미들웨어 리다이렉트는 UX일 뿐.
-- **라우트 열거 테스트**(task-09): must-change 세션으로 allowlist 외 모든 기존 API가 403/빈 summary임을 증명.
+- **access-layer를 거치지 않는 인증 경로도 차단**: `requirePermission`/`getPermissionSummary`를 호출하지 않는 인증 API(예: 기존 `/api/auth/verify`의 `verifySession`/federation 헤더·그룹 발급)도 **동일 must-change/세션무효 차단을 공유 세션 해석 계층에서 적용** — must-change·비활성 사용자는 federation 헤더/그룹도 받지 못한다. 세션 해석(`isSessionValid`+must-change)을 모든 인증 진입점이 공유하는 단일 헬퍼로 강제(개별 핸들러 인가 방식 비의존).
+- **라우트 열거 meta-test**(task-09): `src/app/api/**/route.ts` 파일을 **코드로 열거**해 **명시적 public allowlist**(login·signup·verify-email·resend-verification·nextauth 등)에 대조 — 그 외 모든 라우트가 must-change/비활성 세션에서 차단됨을 증명. **수기 테이블 의존 금지**(신규 라우트 누락 시 게이트 누수 방지).
 
 ### S10. 공유 상수 (task-06 D18, task-01/06 토큰)
 
@@ -220,7 +225,7 @@ export const RATE_WINDOW_MS = 60 * 60 * 1000;// 레이트 윈도우 1시간
 export const PENDING_UNVERIFIED_CAP = 200;  // 미처리 미검증 PENDING 전역 상한(bounded creation)
 ```
 
-D18 강제는 **원자적·사전(pre-write)**: `RateBucket` upsert+increment를 트랜잭션으로 수행하고 `count > limit`이면 **User/MailDelivery 행 생성 전에** `RateLimitError`. 윈도우 만료(`windowStartedAt + RATE_WINDOW_MS < now`) 시 `count=1`·`windowStartedAt=now`로 리셋.
+D18 강제는 **원자적·사전(pre-write)·race-safe**: read-then-write(`findUnique`→`upsert`) 금지 — 동시 첫-윈도우/막만료 요청이 모두 통과해 카운터를 1로 덮어쓰는 race가 생긴다. 대신 ① **atomic conditional increment**(`UPDATE RateBucket SET count=count+1 WHERE scope=? AND key=? AND windowStartedAt > now-window`; affected=0이면 신규/만료이므로 advisory lock 후 `count=1`로 reset-upsert) 또는 ② **advisory lock(`pg_advisory_xact_lock(hashtext(scope||key))`)으로 직렬화** 중 하나로 구현한다. `count > limit`이면 **User/MailDelivery 행 생성 전에** `RateLimitError`. **`PENDING_UNVERIFIED_CAP` 검사와 User 생성은 같은 트랜잭션/락 안에서** 수행한다(standalone `count` 후 별도 생성 금지 — 동시 요청이 모두 capacity를 관측해 cap 초과하는 것 방지).
 
 ---
 
