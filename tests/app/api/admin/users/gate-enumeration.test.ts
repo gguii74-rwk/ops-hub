@@ -154,6 +154,7 @@ const exercisedRoutes: GateCase[] = [
   { path: "/api/admin/users/[id]/reject",         via: "requirePermission", call: () => rejectRoute.POST(makeReq("POST", bodies.reject), idCtx) },
   { path: "/api/admin/users/[id]/roles",          via: "requirePermission", call: () => rolesRoute.POST(makeReq("POST", bodies.roles), idCtx) },
   { path: "/api/admin/users/[id]/overrides",      via: "requirePermission", call: () => overridesRoute.POST(makeReq("POST", bodies.override), idCtx) },
+  { path: "/api/admin/users/[id]/overrides",      via: "requirePermission", call: () => overridesRoute.DELETE(new Request("http://x/api/_gate?overrideId=ov1", { method: "DELETE" }), idCtx) },
   // reset-password: body 없이 authorize 호출 — 이미 403 정상 동작.
   { path: "/api/admin/users/[id]/reset-password", via: "requirePermission", call: () => resetPwRoute.POST(makeReq("POST"), idCtx) },
   { path: "/api/admin/audit",                     via: "requirePermission", call: () => auditRoute.GET() },

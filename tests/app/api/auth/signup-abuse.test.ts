@@ -112,6 +112,22 @@ describe("D18 미처리 PENDING 전역 상한(bounded creation)", () => {
   });
 });
 
+describe("D18 resend per-IP 한도 초과 → 429, refreshVerifyToken 미호출", () => {
+  it(`resend per-IP enforceRateLimit가 RateLimitError를 던지면 429이고 refreshVerifyToken·mailDelivery 미호출`, async () => {
+    // resend 라우트는 enforceRateLimit("resend:ip", ip, SIGNUP_IP_LIMIT, now)를 첫 번째로 호출.
+    // 이 per-IP 체크가 초과되면 enforceResendCooldown/refreshVerifyToken에 도달하기 전에 차단된다.
+    h.enforceRateLimit.mockRejectedValueOnce(new RateLimitError("요청이 너무 많습니다."));
+    const res = await resendPOST(jsonReq({ email: "new@x.com" }));
+    expect(res.status).toBe(429);
+    expect(h.refreshVerifyToken).not.toHaveBeenCalled();
+    expect(h.enforceResendCooldown).not.toHaveBeenCalled();
+  });
+  it(`SIGNUP_IP_LIMIT 상수가 resend per-IP 한도로 사용됨(계약 고정)`, () => {
+    // resend:ip 스코프는 SIGNUP_IP_LIMIT를 재사용(저장증폭 완화 F3 — signup과 동일 버킷 한도).
+    expect(SIGNUP_IP_LIMIT).toBe(10);
+  });
+});
+
 describe("D18 resend 쿨다운 위반 → 429, refreshVerifyToken 미호출", () => {
   it(`enforceResendCooldown이 RateLimitError를 던지면 429이고 refreshVerifyToken 미호출`, async () => {
     // resend 쿨다운 위반: enforceResendCooldown이 RateLimitError throw.
