@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { getPermissionSummary, requirePermission } from "@/kernel/access";
 import { listUsersForView, createUserByAdmin } from "@/modules/admin/users/services";
 import { adminCreateSchema } from "@/modules/admin/users/validations";
-import { buildActorCtx, mapError } from "./_shared";
+import { authorize, buildActorCtx, mapError } from "./_shared";
 
 const STATUSES = ["PENDING", "INVITED", "ACTIVE", "DISABLED", "REJECTED"] as const;
 type Status = (typeof STATUSES)[number];
@@ -43,8 +42,7 @@ export async function GET(req: Request) {
     pageSize: Math.min(parsePositiveInt(sp.get("pageSize"), 20), MAX_PAGE_SIZE),
   };
   try {
-    await requirePermission(session.user.id, "admin.users", "view");
-    const summary = await getPermissionSummary(session.user.id);
+    const summary = await authorize(session.user.id, "admin.users", "view");
     const result = await listUsersForView(buildActorCtx(session.user, summary), filter);
     return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
@@ -60,8 +58,7 @@ export async function POST(req: Request) {
   const parsed = adminCreateSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "invalid input" }, { status: 400 });
   try {
-    await requirePermission(session.user.id, "admin.users", "create");
-    const summary = await getPermissionSummary(session.user.id);
+    const summary = await authorize(session.user.id, "admin.users", "create");
     const created = await createUserByAdmin(buildActorCtx(session.user, summary), parsed.data);
     return NextResponse.json({ id: created.id }, { status: 201 });
   } catch (error) {

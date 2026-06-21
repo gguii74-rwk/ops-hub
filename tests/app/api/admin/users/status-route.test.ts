@@ -46,11 +46,16 @@ describe("POST /api/admin/users/[id]/status (finding E — 상태 토글 전용)
     expect(res.status).toBe(400);
     expect(h.setUserStatus).not.toHaveBeenCalled();
   });
-  it("ACTIVE→DISABLED 정상 200 + :update 검사 + ctx·id·status 위임(세션무효화는 service 책임)", async () => {
+  it("ACTIVE→DISABLED 정상 200 + admin.users:update 키 포함 summary → ctx·id·status 위임(authorize, 세션무효화는 service 책임)", async () => {
     const res = await setStatus(new Request("http://x", { method: "POST", body: disable }), ctx);
     expect(res.status).toBe(200);
-    expect(h.requirePermission).toHaveBeenCalledWith("admin1", "admin.users", "update");
     expect(h.setUserStatus).toHaveBeenCalledWith(expect.objectContaining({ userId: "admin1" }), "u1", "DISABLED");
+  });
+  it("다른 키만 있고 admin.users:update 없으면 403(키 특정성 검증)", async () => {
+    h.getPermissionSummary.mockResolvedValueOnce({ keys: ["admin.users:view"], isOwner: false });
+    const res = await setStatus(new Request("http://x", { method: "POST", body: disable }), ctx);
+    expect(res.status).toBe(403);
+    expect(h.setUserStatus).not.toHaveBeenCalled();
   });
   it("DISABLED→ACTIVE 재활성도 같은 경로로 위임", async () => {
     const res = await setStatus(new Request("http://x", { method: "POST", body: JSON.stringify({ status: "ACTIVE" }) }), ctx);

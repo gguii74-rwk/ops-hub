@@ -46,11 +46,16 @@ describe("POST .../[id]/approve", () => {
     expect(res.status).toBe(400);
     expect(h.approveUser).not.toHaveBeenCalled();
   });
-  it("정상 200 + admin.users:approve 검사 + ctx·id·decision 위임", async () => {
+  it("정상 200 + admin.users:approve 키 포함 summary → ctx·id·decision 위임(authorize)", async () => {
     const res = await approve(new Request("http://x", { method: "POST", body: valid }), ctx);
     expect(res.status).toBe(200);
-    expect(h.requirePermission).toHaveBeenCalledWith("admin1", "admin.users", "approve");
     expect(h.approveUser).toHaveBeenCalledWith(expect.objectContaining({ userId: "admin1" }), "u1", expect.objectContaining({ roleKeys: ["developer"], systemRole: "MEMBER" }));
+  });
+  it("다른 키만 있고 admin.users:approve 없으면 403(키 특정성 검증)", async () => {
+    h.getPermissionSummary.mockResolvedValueOnce({ keys: ["admin.users:view"], isOwner: false });
+    const res = await approve(new Request("http://x", { method: "POST", body: valid }), ctx);
+    expect(res.status).toBe(403);
+    expect(h.approveUser).not.toHaveBeenCalled();
   });
   it("service가 UserConflictError(더블승인 CAS/미검증)면 409", async () => {
     h.approveUser.mockRejectedValueOnce(new UserConflictError("이미 처리된 신청입니다."));
@@ -68,10 +73,9 @@ describe("POST .../[id]/reject", () => {
     h.auth.mockResolvedValueOnce(null);
     expect((await reject(new Request("http://x", { method: "POST", body: valid }), ctx)).status).toBe(401);
   });
-  it("정상 200 + admin.users:approve 검사 + ctx·id·reason 위임", async () => {
+  it("정상 200 + admin.users:approve 키 포함 summary → ctx·id·reason 위임(authorize)", async () => {
     const res = await reject(new Request("http://x", { method: "POST", body: valid }), ctx);
     expect(res.status).toBe(200);
-    expect(h.requirePermission).toHaveBeenCalledWith("admin1", "admin.users", "approve");
     expect(h.rejectUser).toHaveBeenCalledWith(expect.objectContaining({ userId: "admin1" }), "u1", "자격 미달");
   });
   it("service가 UserConflictError(CAS 충돌)면 409", async () => {

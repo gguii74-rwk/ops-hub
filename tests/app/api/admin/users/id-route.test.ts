@@ -39,11 +39,16 @@ describe("GET /api/admin/users/[id]", () => {
     h.auth.mockResolvedValueOnce(null);
     expect((await GET(new Request("http://x"), ctx)).status).toBe(401);
   });
-  it("정상 200 + :view 검사 + ctx·id 위임", async () => {
+  it("정상 200 + admin.users:view 키 포함 summary → ctx·id 위임(authorize)", async () => {
     const res = await GET(new Request("http://x"), ctx);
     expect(res.status).toBe(200);
-    expect(h.requirePermission).toHaveBeenCalledWith("admin1", "admin.users", "view");
     expect(h.getUserForEdit).toHaveBeenCalledWith(expect.objectContaining({ userId: "admin1" }), "u1");
+  });
+  it("다른 키만 있고 admin.users:view 없으면 403(키 특정성 검증)", async () => {
+    h.getPermissionSummary.mockResolvedValueOnce({ keys: ["admin.users:update"], isOwner: false });
+    const res = await GET(new Request("http://x"), ctx);
+    expect(res.status).toBe(403);
+    expect(h.getUserForEdit).not.toHaveBeenCalled();
   });
   it("대상 없음(null)이면 404", async () => {
     h.getUserForEdit.mockResolvedValueOnce(null);
@@ -71,10 +76,9 @@ describe("PATCH /api/admin/users/[id]", () => {
     expect(res.status).toBe(400);
     expect(h.updateUser).not.toHaveBeenCalled();
   });
-  it("정상 200 + :update 검사 + ctx·id·patch 위임", async () => {
+  it("정상 200 + admin.users:update 키 포함 summary → ctx·id·patch 위임(authorize)", async () => {
     const res = await PATCH(new Request("http://x", { method: "PATCH", body: valid }), ctx);
     expect(res.status).toBe(200);
-    expect(h.requirePermission).toHaveBeenCalledWith("admin1", "admin.users", "update");
     expect(h.updateUser).toHaveBeenCalledWith(expect.objectContaining({ userId: "admin1" }), "u1", expect.objectContaining({ name: "수정", systemRole: "MEMBER" }));
   });
   it("service가 EscalationError(D12: 비-OWNER가 OWNER/ADMIN 부여)면 403", async () => {

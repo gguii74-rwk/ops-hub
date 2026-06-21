@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { getPermissionSummary, requirePermission } from "@/kernel/access";
 import { upsertOverride, removeOverride } from "@/modules/admin/users/services";
 import { overrideSchema } from "@/modules/admin/users/validations";
-import { buildActorCtx, mapError } from "../../_shared";
+import { authorize, buildActorCtx, mapError } from "../../_shared";
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await auth();
@@ -14,8 +13,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const parsed = overrideSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "invalid input" }, { status: 400 });
   try {
-    await requirePermission(session.user.id, "admin.users", "update");
-    const summary = await getPermissionSummary(session.user.id);
+    const summary = await authorize(session.user.id, "admin.users", "update");
     const created = await upsertOverride(buildActorCtx(session.user, summary), id, parsed.data);
     return NextResponse.json({ id: created.id }, { status: 201 });
   } catch (error) {
@@ -30,8 +28,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
   const overrideId = new URL(req.url).searchParams.get("overrideId");
   if (!overrideId) return NextResponse.json({ error: "overrideId required" }, { status: 400 });
   try {
-    await requirePermission(session.user.id, "admin.users", "update");
-    const summary = await getPermissionSummary(session.user.id);
+    const summary = await authorize(session.user.id, "admin.users", "update");
     await removeOverride(buildActorCtx(session.user, summary), id, overrideId);
     return NextResponse.json({ ok: true });
   } catch (error) {

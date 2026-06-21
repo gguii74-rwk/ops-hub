@@ -71,10 +71,9 @@ describe("GET /api/admin/users", () => {
     const res = await GET(new Request("http://x/api/admin/users"));
     expect(res.status).toBe(401);
   });
-  it("정상 조회 200 + admin.users:view 검사 + ActorContext·필터 위임", async () => {
+  it("정상 조회 200 + admin.users:view 키 포함 summary → ActorContext·필터 위임(authorize)", async () => {
     const res = await GET(new Request("http://x/api/admin/users?status=PENDING&q=kim&page=2&pageSize=20"));
     expect(res.status).toBe(200);
-    expect(h.requirePermission).toHaveBeenCalledWith("admin1", "admin.users", "view");
     expect(h.listUsersForView).toHaveBeenCalledWith(
       expect.objectContaining({ userId: "admin1", isOwner: false, permissionKeys: new Set(["admin.users:view", "admin.users:create"]) }),
       expect.objectContaining({ status: "PENDING", q: "kim", page: 2, pageSize: 20 }),
@@ -103,8 +102,14 @@ describe("GET /api/admin/users", () => {
       expect.objectContaining({ pageSize: 100 }),
     );
   });
-  it("권한 없으면 403(requirePermission throw → mapError)", async () => {
-    h.requirePermission.mockRejectedValueOnce(new h.FakeForbidden("denied"));
+  it("권한 키 없으면 403(authorize) — summary에 admin.users:view 없으면 서비스 미호출", async () => {
+    h.getPermissionSummary.mockResolvedValueOnce({ keys: [], isOwner: false });
+    const res = await GET(new Request("http://x/api/admin/users"));
+    expect(res.status).toBe(403);
+    expect(h.listUsersForView).not.toHaveBeenCalled();
+  });
+  it("다른 키만 있고 admin.users:view 없으면 403(키 특정성 검증)", async () => {
+    h.getPermissionSummary.mockResolvedValueOnce({ keys: ["admin.users:create"], isOwner: false });
     const res = await GET(new Request("http://x/api/admin/users"));
     expect(res.status).toBe(403);
     expect(h.listUsersForView).not.toHaveBeenCalled();
@@ -132,10 +137,9 @@ describe("POST /api/admin/users (직접추가)", () => {
     expect(res.status).toBe(400);
     expect(h.createUserByAdmin).not.toHaveBeenCalled();
   });
-  it("정상 201 + admin.users:create 검사 + ActorContext·입력 위임", async () => {
+  it("정상 201 + admin.users:create 키 포함 summary → ActorContext·입력 위임(authorize)", async () => {
     const res = await POST(new Request("http://x/api/admin/users", { method: "POST", body: valid }));
     expect(res.status).toBe(201);
-    expect(h.requirePermission).toHaveBeenCalledWith("admin1", "admin.users", "create");
     expect(h.createUserByAdmin).toHaveBeenCalledWith(
       expect.objectContaining({ userId: "admin1", isOwner: false }),
       expect.objectContaining({ email: "new@x.com", roleKeys: ["developer"], systemRole: "MEMBER" }),

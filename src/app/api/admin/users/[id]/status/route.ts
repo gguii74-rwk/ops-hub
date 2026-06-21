@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
-import { getPermissionSummary, requirePermission } from "@/kernel/access";
 import { setUserStatus } from "@/modules/admin/users/services";
-import { buildActorCtx, mapError } from "../../_shared";
+import { authorize, buildActorCtx, mapError } from "../../_shared";
 
 const statusSchema = z.object({ status: z.enum(["ACTIVE", "DISABLED"]) });
 
@@ -16,8 +15,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const parsed = statusSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "invalid input" }, { status: 400 });
   try {
-    await requirePermission(session.user.id, "admin.users", "update");
-    const summary = await getPermissionSummary(session.user.id);
+    const summary = await authorize(session.user.id, "admin.users", "update");
     await setUserStatus(buildActorCtx(session.user, summary), id, parsed.data.status);
     return NextResponse.json({ ok: true });
   } catch (error) {

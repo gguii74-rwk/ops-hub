@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { getPermissionSummary, requirePermission } from "@/kernel/access";
 import { approveUser } from "@/modules/admin/users/services";
 import { approveSchema } from "@/modules/admin/users/validations";
-import { buildActorCtx, mapError } from "../../_shared";
+import { authorize, buildActorCtx, mapError } from "../../_shared";
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await auth();
@@ -14,8 +13,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const parsed = approveSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "invalid input" }, { status: 400 });
   try {
-    await requirePermission(session.user.id, "admin.users", "approve");
-    const summary = await getPermissionSummary(session.user.id);
+    const summary = await authorize(session.user.id, "admin.users", "approve");
     await approveUser(buildActorCtx(session.user, summary), id, parsed.data);
     return NextResponse.json({ ok: true });
   } catch (error) {

@@ -1,11 +1,21 @@
 import { NextResponse } from "next/server";
-import { ForbiddenError, type PermissionSummary } from "@/kernel/access";
+import { ForbiddenError, getPermissionSummary, type PermissionSummary } from "@/kernel/access";
 import type { SessionUser } from "@/lib/auth/types";
 import type { ActorContext } from "@/modules/admin/users/services/guards";
 import {
   EscalationError, MinAvailabilityError, RateLimitError, TokenError,
   UserConflictError, UserValidationError,
 } from "@/modules/admin/users/errors";
+
+// 단일 권위 권한 스냅샷: getPermissionSummary 한 번으로 게이트와 ActorContext를 모두 만든다(Finding A).
+// 두 read(requirePermission+getPermissionSummary)의 divergence(회수 race)를 없앤다. 키 부재면 ForbiddenError(→403).
+export async function authorize(userId: string, resource: string, action: string): Promise<PermissionSummary> {
+  const summary = await getPermissionSummary(userId);
+  if (!summary.keys.includes(`${resource}:${action}`)) {
+    throw new ForbiddenError(`${resource}:${action} 권한이 없습니다.`);
+  }
+  return summary;
+}
 
 // S4 도메인 에러 → HTTP 매핑. 알 수 없는 에러는 재throw해 500을 삼키지 않는다(leave _shared.ts와 동형).
 export function mapError(error: unknown): NextResponse {
