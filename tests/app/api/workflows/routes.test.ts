@@ -7,7 +7,7 @@ const h = vi.hoisted(() => {
     getSession: () => session,
     setSession: (v: any) => { session = v; },
     FakeForbidden,
-    getPermissionSummary: vi.fn(async (..._a: unknown[]) => ({ keys: [] as string[] })),
+    getPermissionSummary: vi.fn(async (..._a: unknown[]) => ({ keys: [] as string[], isOwner: false, isAdmin: false })),
     getTaskList: vi.fn(async (..._a: unknown[]) => [] as any[]),
     getTaskDetailView: vi.fn(async (..._a: unknown[]) => null as any),
     createTask: vi.fn(async (..._a: unknown[]) => ({ id: "new" })),
@@ -46,7 +46,7 @@ const P = <T>(v: T) => Promise.resolve(v);
 beforeEach(() => {
   h.setSession({ user: { id: "u1", systemRole: "MEMBER", email: "u1@x", name: "U1", employmentType: "REGULAR", jobFunction: "PM" } });
   for (const k of ["getPermissionSummary", "getTaskList", "getTaskDetailView", "createTask", "cancelTask", "retryDelivery", "resolveDelivery"] as const) (h[k] as any).mockClear();
-  h.getPermissionSummary.mockResolvedValue({ keys: ["workflows.weekly:view", "workflows.weekly:create", "workflows.weekly:send"] });
+  h.getPermissionSummary.mockResolvedValue({ keys: ["workflows.weekly:view", "workflows.weekly:create", "workflows.weekly:send"], isOwner: false, isAdmin: false });
 });
 
 describe("GET /api/workflows", () => {
@@ -70,12 +70,22 @@ describe("POST /api/workflows", () => {
   it("잘못된 입력 → 400", async () => {
     expect((await createPOST(req("/api/workflows", { typeId: "" }))).status).toBe(400);
   });
-  it("OWNER 세션이면 ctx.isOwner=true로 createTask 호출, 201", async () => {
+  it("summary.isOwner=true면 ctx.isOwner=true로 createTask 호출, 201 (권위는 getPermissionSummary)", async () => {
+    h.getPermissionSummary.mockResolvedValue({ keys: [], isOwner: true, isAdmin: true });
     h.setSession({ user: { id: "u1", systemRole: "OWNER", email: "o@x", name: "O", employmentType: "REGULAR", jobFunction: "PM" } });
     const res = await createPOST(req("/api/workflows", { typeId: "wf-weekly", scheduledAt: "2026-06-20T00:00:00.000Z" }));
     expect(res.status).toBe(201);
     const ctxArg = (h.createTask.mock.calls[0] as unknown as [unknown, { isOwner: boolean }])[1];
     expect(ctxArg.isOwner).toBe(true);
+  });
+  it("must-change OWNER(summary.isOwner=false)면 session.systemRole=OWNER여도 ctx.isOwner=false — D17 우회 차단", async () => {
+    // getPermissionSummary가 must-change면 빈 keys·isOwner=false 반환(중앙 게이트). ctx는 session.systemRole이 아닌 이 권위를 따라야 한다.
+    h.getPermissionSummary.mockResolvedValue({ keys: [], isOwner: false, isAdmin: false });
+    h.setSession({ user: { id: "u1", systemRole: "OWNER", email: "o@x", name: "O", employmentType: "REGULAR", jobFunction: "PM" } });
+    const res = await createPOST(req("/api/workflows", { typeId: "wf-weekly", scheduledAt: "2026-06-20T00:00:00.000Z" }));
+    expect(res.status).toBe(201);
+    const ctxArg = (h.createTask.mock.calls[0] as unknown as [unknown, { isOwner: boolean }])[1];
+    expect(ctxArg.isOwner).toBe(false);
   });
   it("createTask ForbiddenError → 403", async () => {
     h.createTask.mockRejectedValue(new h.FakeForbidden("denied"));
@@ -127,12 +137,21 @@ describe("POST mail resolve", () => {
   it("잘못된 to → 400", async () => {
     expect((await resolvePOST(req("/api/workflows/t1/mail/d1/resolve", { to: "NOPE" }), { params: P({ id: "t1", deliveryId: "d1" }) })).status).toBe(400);
   });
-  it("ADMIN 세션 → isAdmin=true로 resolveDelivery 호출, 200", async () => {
+  it("summary.isAdmin=true → isAdmin=true로 resolveDelivery 호출, 200 (권위는 getPermissionSummary)", async () => {
+    h.getPermissionSummary.mockResolvedValue({ keys: [], isOwner: false, isAdmin: true });
     h.setSession({ user: { id: "a1", systemRole: "ADMIN", email: "a@x", name: "A", employmentType: "REGULAR", jobFunction: "PM" } });
     const res = await resolvePOST(req("/api/workflows/t1/mail/d1/resolve", { to: "FAILED" }), { params: P({ id: "t1", deliveryId: "d1" }) });
     expect(res.status).toBe(200);
     const ctxArg = (h.resolveDelivery.mock.calls[0] as unknown as [unknown, { isAdmin: boolean }])[1];
     expect(ctxArg.isAdmin).toBe(true);
+  });
+  it("must-change ADMIN(summary.isAdmin=false)면 session.systemRole=ADMIN여도 ctx.isAdmin=false — resolve 우회 차단", async () => {
+    h.getPermissionSummary.mockResolvedValue({ keys: [], isOwner: false, isAdmin: false });
+    h.setSession({ user: { id: "a1", systemRole: "ADMIN", email: "a@x", name: "A", employmentType: "REGULAR", jobFunction: "PM" } });
+    const res = await resolvePOST(req("/api/workflows/t1/mail/d1/resolve", { to: "FAILED" }), { params: P({ id: "t1", deliveryId: "d1" }) });
+    expect(res.status).toBe(200);
+    const ctxArg = (h.resolveDelivery.mock.calls[0] as unknown as [unknown, { isAdmin: boolean }])[1];
+    expect(ctxArg.isAdmin).toBe(false);
   });
   it("비-admin resolveDelivery ForbiddenError → 403", async () => {
     h.resolveDelivery.mockRejectedValue(new h.FakeForbidden());

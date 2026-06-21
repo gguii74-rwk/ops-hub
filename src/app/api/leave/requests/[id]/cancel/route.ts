@@ -18,7 +18,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   try {
     await requirePermission(session.user.id, "leave.request", "cancel");
     const summary = await getPermissionSummary(session.user.id);
-    await cancel(id, buildLeaveCtx(session.user, summary.keys), reason);
+    await cancel(id, buildLeaveCtx(session.user, summary), reason);
     return NextResponse.json({ ok: true });
   } catch (error) {
     return mapError(error);

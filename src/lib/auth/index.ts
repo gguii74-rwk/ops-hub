@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { authConfig } from "@/lib/auth/config";
+import { sessionCallback } from "@/lib/auth/session-callback";
 
 const credentialsSchema = z.object({
   email: z.string().min(1),
@@ -12,6 +13,8 @@ const credentialsSchema = z.object({
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
+  // node 전용 session 콜백을 서버 인스턴스에만 결합(Edge 미들웨어는 edge-safe authConfig만 사용).
+  callbacks: { ...authConfig.callbacks, session: sessionCallback },
   providers: [
     Credentials({
       credentials: {

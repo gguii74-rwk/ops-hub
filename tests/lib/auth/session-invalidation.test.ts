@@ -7,10 +7,11 @@ const h = vi.hoisted(() => {
 vi.mock("@/lib/prisma", () => ({ prisma: h.db }));
 
 import { authConfig } from "@/lib/auth/config";
+import { sessionCallback } from "@/lib/auth/session-callback";
 
-// 콜백 핸들 추출(NextAuthConfig.callbacks).
+// 콜백 핸들 추출. jwt는 edge-safe config(config.ts)에, session은 node 전용 모듈(session-callback.ts)에 있다.
 const jwtCb = authConfig.callbacks!.jwt as unknown as (a: { token: Record<string, unknown>; user?: Record<string, unknown> }) => Promise<Record<string, unknown>> | Record<string, unknown>;
-const sessionCb = authConfig.callbacks!.session as unknown as (a: { session: Record<string, unknown>; token: Record<string, unknown> }) => Promise<Record<string, unknown>> | Record<string, unknown>;
+const sessionCb = sessionCallback as unknown as (a: { session: Record<string, unknown>; token: Record<string, unknown> }) => Promise<Record<string, unknown>> | Record<string, unknown>;
 
 const ISSUED = Math.floor(new Date("2026-06-10T00:00:00Z").getTime() / 1000); // token.iat(초)
 const baseToken = () => ({
@@ -26,6 +27,13 @@ const dbActive = (over: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => vi.clearAllMocks());
+
+describe("edge 안전성 — Edge 미들웨어가 쓰는 authConfig는 DB 의존 session 콜백을 갖지 않는다", () => {
+  it("authConfig.callbacks.session은 정의되지 않음(prisma는 node 전용 session-callback.ts로 분리)", () => {
+    // config.ts가 session 콜백(prisma 의존)을 가지면 src/middleware.ts(Edge)가 PrismaClient를 번들해 깨진다.
+    expect(authConfig.callbacks?.session).toBeUndefined();
+  });
+});
 
 describe("jwt 콜백 — 로그인 시 클레임 저장", () => {
   it("user가 있으면 mustChange/status/식별 클레임을 토큰에 저장", async () => {

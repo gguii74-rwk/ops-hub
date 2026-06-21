@@ -52,7 +52,7 @@ export async function POST(req: Request) {
     const summary = await getPermissionSummary(session.user.id);
     const { id } = await createTask(
       { typeId: parsed.data.typeId, scheduledAt },
-      buildTransitionCtx(session.user, summary.keys),
+      buildTransitionCtx(session.user, summary),
     );
     return NextResponse.json({ id }, { status: 201 });
   } catch (error) {
