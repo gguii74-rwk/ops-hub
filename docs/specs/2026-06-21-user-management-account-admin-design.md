@@ -103,7 +103,7 @@ model User {
 - **승인**: `PENDING → ACTIVE`. **`emailVerifiedAt` 필수**(미검증이면 승인 거부). 관리자가 고용형태·직무·`AccessRole`을 확정. 결과 메일 발송.
 - **거절**: `PENDING → REJECTED`. 결과 메일 발송.
 - **직접추가**: `∅ → ACTIVE` (임시비번, `mustChangePassword=true`).
-- **비활성/재활성**: `ACTIVE ↔ DISABLED`. `REJECTED → ACTIVE`는 관리자만(재활성).
+- **비활성/재활성**: `ACTIVE ↔ DISABLED`. `REJECTED → ACTIVE`는 관리자만(재활성). **비활성화는 즉시 기존 세션을 무효화한다**: status 변경 시 `passwordChangedAt`와 동형의 세션 무효화 기준 시각(예: `sessionInvalidatedAt`)을 갱신해 그 이전 발급 JWT를 jwt/session 콜백에서 거부하고, 콜백은 추가로 `User.status===ACTIVE`를 fail-closed로 재검사한다 → 비활성화된 사용자는 토큰 만료를 기다리지 않고 로그인뿐 아니라 **이미 발급된 세션의 모든 인증 API까지 즉시 차단**된다.
 - **로그인**(`authorize`): 비-ACTIVE는 기존대로 차단. ACTIVE이면서 `mustChangePassword=true`면 로그인은 되되 **강제로 비밀번호 변경 페이지로 리다이렉트**(세션 클레임 + 미들웨어/가드). 단 리다이렉트는 UX일 뿐 — **D17**에 따라 API/권한 계층이 `change-password`·`logout` 외 모든 요청을 거부한다(직접 API 호출 봉쇄).
 - **비밀번호 변경·재설정 인증**(D15·D14): 자발적 변경은 현재 비밀번호 확인. 강제변경은 현재(임시) 비밀번호/ fresh 로그인 확인. 변경·재설정 시 `passwordChangedAt` 갱신 → 그 이전 발급 JWT는 jwt/session 콜백에서 거부(타 세션 무효화). 특권 대상 재설정은 OWNER만(D14).
 - **중복 이메일**(D10·D16): `email` unique. 검증완료·활성·REJECTED로 존재하면 가입 거부(409, 중립 메시지). 단 **만료된 미검증 PENDING**이면 기존 행을 교체해 재신청 허용(이메일 영구 예약 방지). 미검증·미승인 PENDING은 7일 후 만료(정리 작업/충돌 시 지연 정리).
@@ -144,7 +144,7 @@ model User {
 | `/api/admin/users/[id]/overrides` | POST / DELETE | `:update` | `UserPermissionOverride` CRUD |
 | `/api/admin/users/[id]/reset-password` | POST | `:update` | 임시비번 발급 + `mustChangePassword` |
 
-`roles`·`overrides`·`[id]`(PATCH)·`reset-password` 라우트는 `admin.users:update` 키를 통과하더라도 **서비스 계층에서 D13 가드를 추가 적용**한다(자가 mutation 금지, 특권 역할 OWNER-only, ALLOW override 보유 한도). 위반 시 403. `reset-password`는 추가로 **D14**(특권 대상 OWNER-only·세션 무효화), `change-password`는 **D15**(현재 비번 확인·세션 무효화)를 적용한다.
+**역할·권한·`systemRole`·status를 부여·변경하는 모든 라우트** — `POST /api/admin/users`(생성)·`approve`(승인 확정)·`roles`·`overrides`·`[id]`(PATCH)·`reset-password` — 는 권한키(`:create`/`:approve`/`:update`)를 통과하더라도 **서비스 계층에서 D12/D13 가드를 동일하게 적용**한다(특권 역할 `pm`/`admin`(`"*"`·`admin.*` 포함)·`OWNER`/`ADMIN` `systemRole` 부여는 OWNER-only, 비-OWNER 자가 mutation 금지, ALLOW override 보유 한도, 최소 가용성 보존). **생성·승인도 역할 부여 경로이므로 동일 가드 서비스를 공유**해야 한다 — 위임 admin이 `:create`/`:approve`로 `pm`/`admin`/`"*"`/`admin.*`/`OWNER`/`ADMIN`을 부여·확정하지 못한다. 위반 시 403. `reset-password`는 추가로 **D14**(특권 대상 OWNER-only·세션 무효화), `change-password`는 **D15**(현재 비번 확인·세션 무효화)를 적용한다.
 
 ### 개인 override 패널(섹션 7 편집 화면 내)
 
@@ -156,7 +156,7 @@ model User {
 
 - **감사로그**(`AuditLog`): create/approve/reject/edit/role변경/override/status변경/비번재설정 모두 `actorId`·`entityType="User"`·`action`·`metadata`로 기록. **트랜잭션 내** 기록.
 - **메일**: 승인/거절 결과 메일을 `MailDelivery` 아웃박스에 enqueue(승인 트랜잭션 내), background drain(연차 워커 재사용). 발송 실패가 승인/거절 자체를 막지 않음.
-- **트랜잭션·동시성**(D11): 승인/거절 = status-CAS(`updateMany where status=PENDING`, `count===0` → 409). 직접추가 중복 이메일 = `P2002` → 409. 역할 부여 idempotent(`UserAccessRole` unique `userId_roleId`, `createMany skipDuplicates`).
+- **트랜잭션·동시성**(D11): 승인/거절 = status-CAS(`updateMany where status=PENDING`, `count===0` → 409). 직접추가 중복 이메일 = `P2002` → 409. 역할 부여 idempotent(`UserAccessRole` unique `userId_roleId`, `createMany skipDuplicates`). **D13ⓔ 최소 가용성 불변식의 race-safe 구현**(role제거·override·disable·reset-password 등 availability-affecting mutation이 동시 실행 시 0명 관리자/audit 조회자로 수렴하지 않도록 보장하는 직렬화/락 모델)은 **plan에서 확정**한다 — Serializable 트랜잭션+재시도 또는 advisory lock + 커밋 전 불변식 재검사가 후보.
 - **에러 처리**: zod 검증(400), 충돌(409), fail-closed 게이트(403). 비밀번호 정책은 기존 시드 정책(12자+) 재사용.
 - **공개 엔드포인트 남용 통제**(D18): `signup`·`resend-verification`에 per-IP·per-email 레이트리밋, 재발송 쿨다운, 미처리 PENDING 생성 상한, 메일 enqueue 상한. 한도 초과는 행/메일 생성 전 429로 거부.
 - **모듈 배치**: `src/modules/admin/users/{services,repositories,validations}/`. `Route Handler → Service → Repository → Prisma`.
@@ -170,12 +170,13 @@ model User {
 - **approve·reject**: PENDING→ACTIVE + 역할 + 메일 enqueue + 감사 / 더블승인 CAS 충돌(409) / reject→REJECTED + 메일.
 - **admin-add**: ACTIVE + `mustChangePassword` / 중복 409.
 - **password**: 자가변경(현재 비번 확인, 틀리면 거부) / 최초로그인 강제 리다이렉트 / 변경 후 플래그 해제 / 변경·재설정 후 `passwordChangedAt` 이전 JWT 거부(타 세션 무효화) / 위임 admin의 특권 대상(OWNER·pm) 재설정 거부·OWNER만 허용(D14).
+- **status/세션 무효화**: 유효 세션 획득 → 관리자가 비활성화(`ACTIVE→DISABLED`) → 기존 세션 JWT로 모든 인증 API 거부(토큰 만료 전 즉시 차단) / 재활성 후 재로그인 가능.
 - **override**: 생성·삭제 / 엔진 반영(override DENY가 역할 ALLOW를 이김).
 - **게이트**: 각 라우트 `admin.users:*` 요구(미보유 403), `admin` 역할로 접근 가능, 비관리자 거부.
 - **mustChangePassword 게이트(D17)**: **라우트 열거 테스트** — must-change 세션으로 allowlist(`change-password`·`logout`) 외 모든 API가 403. `requirePermission` 경로와 `getPermissionSummary`(빈 summary) 경로 양쪽 검증.
 - **공개 남용 통제(D18)**: per-IP/per-email 가입 한도 초과·재발송 쿨다운 위반 시 **User/MailDelivery 행이 생성되지 않고** 429.
 - **권한 상승 가드**: 비-OWNER가 OWNER/ADMIN 부여 불가(403), 마지막 OWNER 보존.
-- **위임 anti-escalation(D13)**: 위임 admin이 ⓐ 자기 자신에게 `pm` 역할 부여 → 거부(403), ⓑ 본인 역할/override/systemRole/status 자가 변경 → 거부, ⓒ `pm`/`admin` 특권 역할 타인 부여 → 위임 admin 거부·OWNER만, ⓓ 미보유 권한 ALLOW override → 거부, ⓔ 동료 admin의 `admin.*`/audit 권한 DENY override → 위임 admin 거부·OWNER만(lockout 방지), ⓕ 마지막 user-management 관리자/audit 조회자를 제거하거나 must-change/세션무효화로 사용 불가하게 만드는 mutation(role/override/status/**reset-password** 포함) → 거부(최소 가용성 보존). 각각 테스트.
+- **위임 anti-escalation(D13)**: 위임 admin이 ⓐ 자기 자신에게 `pm` 역할 부여 → 거부(403), ⓑ 본인 역할/override/systemRole/status 자가 변경 → 거부, ⓒ `pm`/`admin` 특권 역할 타인 부여(**`roles`·직접추가(`:create`)·승인(`:approve`) 경로 전부**) → 위임 admin 거부·OWNER만, ⓓ 미보유 권한 ALLOW override → 거부, ⓔ 동료 admin의 `admin.*`/audit 권한 DENY override → 위임 admin 거부·OWNER만(lockout 방지), ⓕ 마지막 user-management 관리자/audit 조회자를 제거하거나 must-change/세션무효화로 사용 불가하게 만드는 mutation(role/override/status/**reset-password** 포함) → 거부(최소 가용성 보존). 각각 테스트.
 - **감사로그**: 각 mutation이 `AuditLog`에 기록되는지.
 
 ## 11. 미해결 / 후속
