@@ -1,12 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   assertNotSelfMutation,
   assertCanAssignRoles,
   assertCanSetSystemRole,
   assertOverrideWithinActorGrant,
+  countAvailableByPermission,
+  assertMinAvailability,
   type ActorContext,
 } from "@/modules/admin/users/services/guards";
-import { EscalationError } from "@/modules/admin/users/errors";
+import { EscalationError, MinAvailabilityError } from "@/modules/admin/users/errors";
+import type { PrismaTx } from "@/lib/prisma";
 
 const owner = (id = "owner1"): ActorContext => ({ userId: id, isOwner: true, permissionKeys: new Set() });
 const delegate = (keys: string[], id = "admin1"): ActorContext => ({
@@ -118,5 +121,91 @@ describe("assertOverrideWithinActorGrant (D13ⓒⓓ — critical은 effect 무�
     expect(() => assertOverrideWithinActorGrant(owner(), "admin.users:update", "DENY")).not.toThrow();
     expect(() => assertOverrideWithinActorGrant(owner(), "admin.audit:view", "ALLOW")).not.toThrow();
     expect(() => assertOverrideWithinActorGrant(owner(), "leave.approval:approve", "ALLOW")).not.toThrow();
+  });
+});
+
+// permission.findUnique → user.count(OWNER 보존) → user.findMany → rolePermission.findMany 를 모킹한 fake tx.
+// owners: assertMinAvailability의 ACTIVE OWNER 카운트(finding 1). 기본 1(기존 테스트 호환), 0이면 OWNER 보존 위반.
+function fakeTx(opts: {
+  permissionId: string | null;
+  owners?: number;
+  users: Array<{
+    systemRole: string;
+    roleAssignments?: Array<{ roleId: string; startsAt: Date | null; endsAt: Date | null }>;
+    permissionOverrides?: Array<{ effect: "ALLOW" | "DENY"; scope: string; startsAt: Date | null; endsAt: Date | null }>;
+  }>;
+  rolePerms?: Array<{ roleId: string; effect: "ALLOW" | "DENY"; scope: string }>;
+}): PrismaTx {
+  const tx = {
+    permission: {
+      findUnique: vi.fn(async () => (opts.permissionId ? { id: opts.permissionId } : null)),
+    },
+    user: {
+      count: vi.fn(async () => opts.owners ?? 1), // ACTIVE OWNER 카운트(finding 1)
+      findMany: vi.fn(async () =>
+        opts.users.map((u) => ({
+          systemRole: u.systemRole,
+          roleAssignments: u.roleAssignments ?? [],
+          permissionOverrides: u.permissionOverrides ?? [],
+        })),
+      ),
+    },
+    rolePermission: { findMany: vi.fn(async () => opts.rolePerms ?? []) },
+  };
+  return tx as unknown as PrismaTx;
+}
+
+describe("countAvailableByPermission (computeDecision 재사용)", () => {
+  it("OWNER는 권한 미정의여도 보유로 카운트", async () => {
+    const tx = fakeTx({ permissionId: null, users: [{ systemRole: "OWNER" }, { systemRole: "MEMBER" }] });
+    expect(await countAvailableByPermission(tx, "admin.users:update")).toBe(1);
+  });
+  it("역할 ALLOW(all) 보유자 카운트, override DENY는 제외(Deny우선)", async () => {
+    const tx = fakeTx({
+      permissionId: "p1",
+      users: [
+        { systemRole: "MEMBER", roleAssignments: [{ roleId: "r1", startsAt: null, endsAt: null }] },
+        {
+          systemRole: "MEMBER",
+          roleAssignments: [{ roleId: "r1", startsAt: null, endsAt: null }],
+          permissionOverrides: [{ effect: "DENY", scope: "all", startsAt: null, endsAt: null }],
+        },
+      ],
+      rolePerms: [{ roleId: "r1", effect: "ALLOW", scope: "all" }],
+    });
+    expect(await countAvailableByPermission(tx, "admin.users:update")).toBe(1);
+  });
+  it("만료된 역할 부여는 미보유(유효기간 밖)", async () => {
+    const past = new Date("2000-01-01T00:00:00Z");
+    const tx = fakeTx({
+      permissionId: "p1",
+      users: [{ systemRole: "MEMBER", roleAssignments: [{ roleId: "r1", startsAt: null, endsAt: past }] }],
+      rolePerms: [{ roleId: "r1", effect: "ALLOW", scope: "all" }],
+    });
+    expect(await countAvailableByPermission(tx, "admin.users:update")).toBe(0);
+  });
+});
+
+describe("assertMinAvailability (D13ⓔ·D12 OWNER 보존)", () => {
+  it("user-management 가용 0 → MinAvailabilityError", async () => {
+    const tx = fakeTx({ permissionId: "p1", users: [] }); // OWNER 1(기본)이나 권한 보유자 0
+    await expect(assertMinAvailability(tx)).rejects.toThrow(MinAvailabilityError);
+  });
+  it("user-management·audit 모두 ≥1 → 통과(OWNER 한 명이 둘 다 충족)", async () => {
+    const tx = fakeTx({ permissionId: null, users: [{ systemRole: "OWNER" }] });
+    await expect(assertMinAvailability(tx)).resolves.toBeUndefined();
+  });
+  it("finding 1: ACTIVE OWNER 0명이면 MinAvailabilityError(권한 카운트 충족과 무관)", async () => {
+    // owners=0이지만 user-management·audit는 충족(권한 보유 MEMBER) → 그래도 OWNER 보존 위반으로 거부.
+    const tx = fakeTx({
+      permissionId: "p1",
+      owners: 0,
+      users: [{ systemRole: "MEMBER", roleAssignments: [{ roleId: "r1", startsAt: null, endsAt: null }] }],
+      rolePerms: [{ roleId: "r1", effect: "ALLOW", scope: "all" }],
+    });
+    await expect(assertMinAvailability(tx)).rejects.toThrow(MinAvailabilityError);
+    expect((tx.user.count as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { systemRole: "OWNER", status: "ACTIVE" } }),
+    );
   });
 });
