@@ -263,4 +263,4 @@ git commit -m "feat(user-mgmt): admin AccessRole·권한 키 catalog/seed 보강
 - **`seed.ts`의 `ACCESS_ROLES` 배열을 직접 작성하지 말 것.** 이유: `ACCESS_ROLE_KEYS.map`으로 파생되는 단일 출처다. step 7(catalog) + step 10(ROLE_NAMES) 두 곳만 고치면 `admin` 역할이 자동 시드된다(드리프트 방지).
 - **`EXTRA_PERMISSIONS`에 `admin.users:view`를 추가하지 말 것.** 이유: `VIEW_RESOURCES`(전 resource×view)가 이미 생성한다 — 중복. 단 seed의 `defs.set` dedup이 흡수하므로 깨지진 않으나 의도 키만 둔다.
 - **RolePermission 시드 패턴(`deleteMany`→`createMany`)을 바꾸지 말 것.** 이유: 매트릭스를 정확히 반영(stale ALLOW 누수 방지, seed.ts F1 주석). 단순 upsert로 바꾸면 권한이 샌다.
-- **이 task에서 `admin` 권한 게이트 로직(가드·서비스·라우트)을 구현하지 말 것.** 이유: anti-escalation 가드는 task-02, repository는 task-03 — 여기는 스키마·카탈로그·시드만. 가드 상수(`PRIVILEGED_ROLE_KEYS` 등)는 entrypoint §S3(task-02 정의)를 참조.
+- **이 task에서 `admin` 권한 게이트 로직(가드·서비스·라우트)을 구현하지 말 것.** 이유: anti-escalation 가드는 task-02, repository는 task-03 — 여기는 스키마·카탈로그·시드만. 가드 상수(`NON_PRIVILEGED_ROLE_KEYS` 등)는 entrypoint §S3(task-02 정의)를 참조.

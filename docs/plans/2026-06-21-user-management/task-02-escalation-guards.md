@@ -42,7 +42,7 @@
 ```ts
 import { describe, expect, it } from "vitest";
 import {
-  PRIVILEGED_ROLE_KEYS,
+  NON_PRIVILEGED_ROLE_KEYS,
   PRIVILEGED_SYSTEM_ROLES,
   CRITICAL_RESOURCE_PREFIXES,
   USER_MGMT_PERMISSION,
@@ -51,8 +51,10 @@ import {
 } from "@/modules/admin/users/policy";
 
 describe("policy 상수", () => {
-  it("특권 역할 키는 pm·admin (D13ⓑ)", () => {
-    expect([...PRIVILEGED_ROLE_KEYS]).toEqual(["pm", "admin"]);
+  it("비특권 역할 키 allowlist는 개발/외주 4종 (D13ⓑ·finding I)", () => {
+    expect([...NON_PRIVILEGED_ROLE_KEYS]).toEqual([
+      "regular-developer", "contractor-developer", "contractor-content", "contractor-civil-response",
+    ]);
   });
   it("특권 systemRole은 OWNER·ADMIN (D12)", () => {
     expect([...PRIVILEGED_SYSTEM_ROLES]).toEqual(["OWNER", "ADMIN"]);
@@ -66,19 +68,24 @@ describe("policy 상수", () => {
   });
 });
 
-describe("isPrivilegedRoleKey (sync, 멤버십 판정 — DB 조회 없음)", () => {
-  it("pm·admin은 특권", () => {
-    expect(isPrivilegedRoleKey("pm")).toBe(true);
-    expect(isPrivilegedRoleKey("admin")).toBe(true);
-  });
-  it("개발/외주 4종은 비특권", () => {
+describe("isPrivilegedRoleKey (sync, fail-closed — 비특권 allowlist 반전, finding I)", () => {
+  it("개발/외주 4종만 비특권", () => {
     expect(isPrivilegedRoleKey("regular-developer")).toBe(false);
     expect(isPrivilegedRoleKey("contractor-developer")).toBe(false);
     expect(isPrivilegedRoleKey("contractor-content")).toBe(false);
     expect(isPrivilegedRoleKey("contractor-civil-response")).toBe(false);
   });
-  it("미지의 키도 비특권(allowlist 방식)", () => {
-    expect(isPrivilegedRoleKey("unknown")).toBe(false);
+  it("pm·admin은 특권", () => {
+    expect(isPrivilegedRoleKey("pm")).toBe(true);
+    expect(isPrivilegedRoleKey("admin")).toBe(true);
+  });
+  it("미지의 키는 **특권**(fail-closed — finding I, 이전 fail-open 반전)", () => {
+    expect(isPrivilegedRoleKey("unknown")).toBe(true);
+  });
+  it("다른 키로 admin 권한을 묶은 seeded/import/future 역할도 특권(비특권 allowlist에 없음)", () => {
+    // 예: 카탈로그 외 키 'superadmin'·'auditor' 등 — admin.* 권한 보유 여부와 무관하게 allowlist에 없으면 특권으로 보호.
+    expect(isPrivilegedRoleKey("superadmin")).toBe(true);
+    expect(isPrivilegedRoleKey("auditor")).toBe(true);
   });
 });
 ```
@@ -90,8 +97,11 @@ describe("isPrivilegedRoleKey (sync, 멤버십 판정 — DB 조회 없음)", ()
 `src/modules/admin/users/policy.ts`:
 
 ```ts
-// 위임 admin(비-OWNER)이 부여/회수할 수 없는 특권 역할 키(OWNER-only). spec D13ⓑ.
-export const PRIVILEGED_ROLE_KEYS = ["pm", "admin"] as const;
+// 위임 admin(비-OWNER)이 자유롭게 부여/회수할 수 있는 **비특권** 역할 키 allowlist(seed 고정 — 개발/외주 4종). spec D13ⓑ·finding I.
+// 이 4종은 `prisma/seed-roles.ts`상 admin.*·"*" 권한이 전혀 없음이 보장된다(under-classify 위험 없음).
+export const NON_PRIVILEGED_ROLE_KEYS = [
+  "regular-developer", "contractor-developer", "contractor-content", "contractor-civil-response",
+] as const;
 
 // OWNER-only 로 부여 가능한 특권 systemRole. spec D12.
 export const PRIVILEGED_SYSTEM_ROLES = ["OWNER", "ADMIN"] as const;
@@ -104,10 +114,11 @@ export const USER_MGMT_PERMISSION = "admin.users:update";
 // "가용 감사 조회자"로 인정하는 권한 키 (최소 1명 보존). spec D13ⓔ.
 export const AUDIT_PERMISSION = "admin.audit:view";
 
-// 역할 키가 특권인지 판정. PRIVILEGED_ROLE_KEYS 멤버십만으로 결정한다(DB 조회 없음 — spec D13ⓑ).
-// pm·admin 역할은 "*"/admin.* 권한을 묶으므로 부여·회수를 OWNER로 제한한다.
+// 역할 키가 특권인지 판정 — **fail-closed**(finding I). 비특권 allowlist에 없으면 특권으로 본다(DB 조회 없음·sync).
+// pm·admin뿐 아니라 다른 키로 admin.* 권한을 묶은 seeded/import/future 역할, 미지의 키까지 모두 특권으로 보호한다.
+// (이전 `PRIVILEGED_ROLE_KEYS=["pm","admin"]` 화이트리스트는 그 밖의 admin-bearing 역할을 비특권으로 흘리는 fail-open이었다.)
 export function isPrivilegedRoleKey(key: string): boolean {
-  return (PRIVILEGED_ROLE_KEYS as readonly string[]).includes(key);
+  return !(NON_PRIVILEGED_ROLE_KEYS as readonly string[]).includes(key);
 }
 ```
 
@@ -605,7 +616,7 @@ commit: `test(user-mgmt): task-02 가용성 카운트·최소가용성 단위테
 
 - **advisory lock 키는 고정 상수**(`4815162342n`, bigint). leave 도메인의 advisory lock(`LEAVE_OVERLAP_LOCK_NS=0x6c76`, 2-인자 `int4` 형태)과 **다른 시그니처**(1-인자 `bigint`)라 키스페이스가 겹치지 않는다. 전역 직렬화가 목적이므로 사용자/리소스별로 쪼개지 말 것.
 - **`withAvailabilityLock`/`assertMinAvailability`는 본 task에서 정의만** 한다. 실제 호출(repository의 `setStatusTx`/`resetPasswordTx`/`setRoles`/`createOverride`/`updateUserTx` systemRole 강등이 이 래퍼 안에서 커밋 전 `assertMinAvailability(tx)` 호출)은 **task-03**이다 — 여기서 호출처를 만들지 말 것(범위 밖, 미사용 코드 금지 원칙에 걸리지 않게 export만 노출).
-- **`isPrivilegedRoleKey`는 sync·멤버십 판정**(DB 조회 금지, D13ⓑ). 역할의 실제 RolePermission(`"*"`/`admin.*`)을 조회해 판정하지 않는다 — pm·admin은 시드로 고정된 특권 역할이고, 카탈로그 외 역할은 비특권으로 본다(allowlist, fail-safe).
+- **`isPrivilegedRoleKey`는 sync·fail-closed 판정**(DB 조회 없음, D13ⓑ·finding I). 비특권 allowlist(`NON_PRIVILEGED_ROLE_KEYS` = 개발/외주 4종)에 **없으면 특권**이다 — pm·admin은 물론 다른 키로 admin.* 권한을 묶은 seeded/import/future 역할, 미지/커스텀 키까지 모두 특권으로 보호한다(이전 `["pm","admin"]` 화이트리스트의 fail-open을 반전). 비특권 4종은 `prisma/seed-roles.ts`상 admin.*·"*" 권한이 전혀 없으므로 under-classify 위험이 없다 — 데이터 기반 런타임 RolePermission 조회 없이도 정확하고 보수적이다(hot 가드 경로를 sync로 단순 유지).
 - **`assertCanAssignRoles`·`assertCanSetSystemRole`는 "원하는 새 값"만이 아니라 "현재↔원하는 상태"를 비교한다(finding C).** `assertCanAssignRoles`는 `currentRoleKeys`↔`nextRoleKeys`의 **차집합(추가∪제거)** 중 특권 역할이 있으면, `assertCanSetSystemRole`은 **`currentRole` 또는 `newRole`** 이 OWNER/ADMIN이면 비-OWNER를 거부한다. 그래야 위임 admin이 ① 기존 OWNER/ADMIN을 강등하거나 ② 기존 pm/admin 역할을 목록에서 빼서 제거하는 lockout을 막는다. 따라서 호출자(service, task-04)는 **mutation 전에 대상의 현재 systemRole·roleKeys를 로드**해 넘겨야 한다(§S6 `getUserDetail`의 `systemRole`·`roleKeys`).
 - **`assertOverrideWithinActorGrant`는 critical(`admin.*`) 권한을 effect와 무관하게 OWNER-only로 막는다(finding D).** ALLOW도 예외가 아니다 — 위임 admin이 `admin.users:update`·`admin.audit:view` 등을 **보유하고 있더라도** ALLOW override로 타인에게 동등 admin 권한을 부여할 수 없다(보호된 역할/systemRole 부여 없이 OWNER-only 위임 경계를 우회하는 것 방지). 비-critical 권한만 기존 로직(ALLOW=actor 보유 한도 내, DENY=허용)을 따른다. critical 판정은 `CRITICAL_RESOURCE_PREFIXES`(`admin.`) `startsWith` 매칭(`isCriticalKey`)으로 한다.
 - **`computeDecision`은 scope="all" ALLOW만 전역 허가로 인정**한다(`decision.ts` 주석). `countAvailableByPermission`은 target 컨텍스트 없는 전역 카운트이므로 own/team/assigned ALLOW는 가용으로 치지 않는다 — 이는 보수적(fail-closed)이라 최소가용성 불변식을 더 강하게 보존한다(의도된 동작).

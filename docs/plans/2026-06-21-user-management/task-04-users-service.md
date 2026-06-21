@@ -295,6 +295,13 @@ describe("approveUser", () => {
     await expect(approveUser(delegate([], "admin1"), "admin1", input)).rejects.toBeInstanceOf(EscalationError);
     expect(r.approveTx).not.toHaveBeenCalled();
   });
+  it("finding J: 대상 name의 HTML이 승인 메일 bodyHtml에 escape되어 들어간다(stored injection 차단)", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ name: "<script>alert(1)</script>" }) as never);
+    await approveUser(owner, "u1", input);
+    const mailArg = r.approveTx.mock.calls[0][3] as { bodyHtml: string };
+    expect(mailArg.bodyHtml).not.toContain("<script>");
+    expect(mailArg.bodyHtml).toContain("&lt;script&gt;");
+  });
 });
 
 describe("rejectUser", () => {
@@ -306,6 +313,12 @@ describe("rejectUser", () => {
   it("위임 admin 자가 거절 → EscalationError", async () => {
     r.getUserDetail.mockResolvedValue(detail({ id: "admin1" }) as never);
     await expect(rejectUser(delegate([], "admin1"), "admin1", "x")).rejects.toBeInstanceOf(EscalationError);
+  });
+  it("finding J: reason의 HTML이 거절 메일 bodyHtml에 escape된다", async () => {
+    await rejectUser(owner, "u1", "<img src=x onerror=alert(1)>");
+    const mailArg = r.rejectTx.mock.calls[0][3] as { bodyHtml: string };
+    expect(mailArg.bodyHtml).not.toContain("<img");
+    expect(mailArg.bodyHtml).toContain("&lt;img");
   });
 });
 
@@ -363,9 +376,16 @@ describe("updateUser", () => {
 });
 
 describe("assignRoles (현재↔원하는 역할 집합 비교 — finding C)", () => {
-  it("정상(비특권 역할 추가): 현재 [] → setRoles 호출", async () => {
+  it("정상(비특권 역할 추가): 현재 [] → setRoles 호출(락 안 재검사 recheck 콜백 동반 — finding H)", async () => {
     await assignRoles(delegate(), "u1", ["regular-developer"]);
-    expect(r.setRoles).toHaveBeenCalledWith("u1", ["regular-developer"], "admin1");
+    expect(r.setRoles).toHaveBeenCalledWith("u1", ["regular-developer"], "admin1", expect.any(Function));
+  });
+  it("finding H: setRoles에 넘긴 recheck 콜백이 락 안 fresh 역할로 가드를 재실행한다(stale 특권 부여 시 throw)", async () => {
+    // 정상 호출로 setRoles에 전달된 recheck 클로저를 꺼내, 락 안에서 fresh로 pm이 관측됐다고 가정해 호출 → EscalationError.
+    await assignRoles(delegate(), "u1", ["regular-developer"]);
+    const recheck = r.setRoles.mock.calls[0][3] as (cur: string[]) => void;
+    expect(() => recheck(["pm", "regular-developer"])).toThrow(EscalationError); // fresh에 pm이 끼면 제거=특권 회수 거부
+    expect(() => recheck([])).not.toThrow(); // fresh가 비특권만이면 통과
   });
   it("위임 admin이 특권 역할(pm) 부여 → EscalationError", async () => {
     await expect(assignRoles(delegate(), "u1", ["pm"])).rejects.toBeInstanceOf(EscalationError);
@@ -380,7 +400,7 @@ describe("assignRoles (현재↔원하는 역할 집합 비교 — finding C)", 
   it("위임 admin이 비특권만 추가·제거(pm 그대로 유지) → 허용(특권 차집합 비어 있음)", async () => {
     r.getUserDetail.mockResolvedValue(detail({ roleKeys: ["pm", "regular-developer"] }) as never);
     await assignRoles(delegate(), "u1", ["pm", "contractor-content"]);
-    expect(r.setRoles).toHaveBeenCalledWith("u1", ["pm", "contractor-content"], "admin1");
+    expect(r.setRoles).toHaveBeenCalledWith("u1", ["pm", "contractor-content"], "admin1", expect.any(Function));
   });
   it("위임 admin이 자기 자신 역할 변경 → EscalationError", async () => {
     r.getUserDetail.mockResolvedValue(detail({ id: "admin1" }) as never);
@@ -436,12 +456,21 @@ describe("setUserStatus", () => {
 });
 
 describe("resetPassword (D14 — 특권 대상 OWNER-only)", () => {
-  it("OWNER가 비특권 대상 재설정 → 임시비번 해시 후 resetPasswordTx + 결과 반환(임시비번 전달용)", async () => {
+  it("OWNER가 비특권 대상 재설정 → 임시비번 해시 후 resetPasswordTx + 결과 반환(임시비번 전달용·락 안 recheck 동반)", async () => {
     r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE", systemRole: "MEMBER", roleKeys: [] }) as never);
     const res = await resetPassword(owner, "u1");
     expect(typeof res.tempPassword).toBe("string");
     expect(res.tempPassword.length).toBeGreaterThanOrEqual(12);
-    expect(r.resetPasswordTx).toHaveBeenCalledWith("u1", "HASHED", "owner1", expect.any(Date));
+    expect(r.resetPasswordTx).toHaveBeenCalledWith("u1", "HASHED", "owner1", expect.any(Date), expect.any(Function));
+  });
+  it("finding H: resetPasswordTx에 넘긴 recheck가 락 안 fresh state로 특권 대상을 재거부한다", async () => {
+    // 위임 admin이 비특권 대상으로 사전 검사를 통과해도, 락 안에서 fresh로 특권(ADMIN)이 관측되면 recheck가 EscalationError.
+    r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE", systemRole: "MEMBER", roleKeys: ["regular-developer"] }) as never);
+    await resetPassword(delegate(), "u1");
+    const recheck = r.resetPasswordTx.mock.calls[0][4] as (t: { systemRole: string; roleKeys: string[] }) => void;
+    expect(() => recheck({ systemRole: "ADMIN", roleKeys: [] })).toThrow(EscalationError);
+    expect(() => recheck({ systemRole: "MEMBER", roleKeys: ["pm"] })).toThrow(EscalationError); // 특권 역할 보유도 거부
+    expect(() => recheck({ systemRole: "MEMBER", roleKeys: ["regular-developer"] })).not.toThrow();
   });
   it("위임 admin이 특권 대상(systemRole=ADMIN) 재설정 → EscalationError, repo 미호출", async () => {
     r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE", systemRole: "ADMIN", roleKeys: [] }) as never);
@@ -512,20 +541,28 @@ function generateTempPassword(): string {
   return randomBytes(16).toString("base64url");
 }
 
+// HTML 본문에 들어가는 모든 동적 텍스트는 이걸로 이스케이프 — 저장형 HTML 인젝션/피싱 차단(finding J, leave mail-templates의 esc와 동형).
+// name(자가신청 입력)·reason(관리자 자유 입력)은 임의 HTML/링크를 담을 수 있어 수신자 메일함에 stored XSS-유사 위험이 된다.
+const HTML_ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => HTML_ESC[c]);
+}
+
 // 사용자 도메인 메일 본문 — 공통 MailDelivery로 enqueue할 {recipients,subject,bodyHtml}(S8).
 // leave는 전용 mail-templates가 있으나 사용자 메일은 본 증분에서 본문이 단순(승인/거절 통지)하므로 서비스에서 직접 구성한다.
+// 동적 필드(name·reason)는 반드시 escapeHtml로 보간한다(finding J).
 function buildApprovedMail(email: string, name: string): UserMailJob {
   return {
     recipients: [email],
     subject: "[ops-hub] 계정 가입이 승인되었습니다",
-    bodyHtml: `<p>${name}님, ops-hub 계정 가입이 승인되었습니다. 이제 로그인하실 수 있습니다.</p>`,
+    bodyHtml: `<p>${escapeHtml(name)}님, ops-hub 계정 가입이 승인되었습니다. 이제 로그인하실 수 있습니다.</p>`,
   };
 }
 function buildRejectedMail(email: string, name: string, reason: string): UserMailJob {
   return {
     recipients: [email],
     subject: "[ops-hub] 계정 가입이 거절되었습니다",
-    bodyHtml: `<p>${name}님, ops-hub 계정 가입 신청이 거절되었습니다.</p><p>사유: ${reason}</p>`,
+    bodyHtml: `<p>${escapeHtml(name)}님, ops-hub 계정 가입 신청이 거절되었습니다.</p><p>사유: ${escapeHtml(reason)}</p>`,
   };
 }
 
@@ -608,11 +645,15 @@ export async function updateUser(actor: ActorContext, id: string, patch: UpdateU
 // ── 역할 부여(D13ⓐ ⓑ): 자가 금지 + 특권 역할 가드 → setRoles(가용성은 repo가 보장). ──
 // 가드는 현재↔원하는 역할 집합을 비교(finding C). mutation 전에 대상의 현재 roleKeys를 로드해
 // 넘긴다 — 그래야 위임 admin이 목록에서 pm/admin을 빼서 제거(추가가 아닌)하는 lockout도 차단된다.
+// finding H: stale 스냅샷(target.roleKeys)으로는 사전 거부만 하고, **권위 검사는 setRoles 락 안 fresh 역할로 재실행**한다
+// (동시 OWNER action이 부여한 특권을 stale로 못 보고 빼버리는 lockout/race 차단). recheck 클로저가 actor를 캡처해 락 안에서 호출된다.
 export async function assignRoles(actor: ActorContext, id: string, roleKeys: string[]): Promise<void> {
   const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
-  assertCanAssignRoles(actor, target.roleKeys, roleKeys);
-  await setRoles(id, roleKeys, actor.userId);
+  assertCanAssignRoles(actor, target.roleKeys, roleKeys); // 사전 검사(빠른 거부; stale 스냅샷)
+  await setRoles(id, roleKeys, actor.userId, (currentRoleKeys) =>
+    assertCanAssignRoles(actor, currentRoleKeys, roleKeys), // 락 안 권위 재검사(fresh)
+  );
 }
 
 // ── override 생성(D13ⓐ ⓒ ⓓ): 자가 금지 + ALLOW 보유한도/critical DENY 가드 → createOverride. ──
@@ -647,16 +688,23 @@ export async function setUserStatus(actor: ActorContext, id: string, status: "AC
 }
 
 // ── 비번 재설정(D14): 자가 금지 + 특권 대상은 OWNER-only → 임시비번 해시 → resetPasswordTx. 임시비번은 반환(관리자 전달용). ──
+// finding H: 특권 대상 판정은 stale 스냅샷으로 사전 거부만 하고, **권위 검사는 resetPasswordTx 락 안 fresh state로 재실행**한다
+// (대상이 특권이 된 직후 위임 admin이 reset해 임시비번을 탈취하는 race 차단). recheck 클로저가 actor를 캡처해 락 안에서 호출된다.
 export async function resetPassword(actor: ActorContext, id: string): Promise<{ tempPassword: string }> {
   const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
-  // 특권 대상(OWNER/ADMIN systemRole 또는 pm/admin 역할)은 OWNER만 재설정 가능(위임 admin 거부).
+  // 특권 대상(OWNER/ADMIN systemRole 또는 특권 역할)은 OWNER만 재설정 가능(위임 admin 거부). 사전 검사(빠른 거부; stale 스냅샷).
   if (!actor.isOwner && isPrivilegedTarget(target)) {
     throw new EscalationError("특권 사용자의 비밀번호 재설정은 OWNER만 가능합니다.");
   }
   const tempPassword = generateTempPassword();
   const passwordHash = await bcrypt.hash(tempPassword, BCRYPT_ROUNDS);
-  await resetPasswordTx(id, passwordHash, actor.userId, new Date());
+  await resetPasswordTx(id, passwordHash, actor.userId, new Date(), (fresh) => {
+    // 락 안 fresh systemRole·roleKeys로 권위 재검사.
+    if (!actor.isOwner && isPrivilegedTarget(fresh)) {
+      throw new EscalationError("특권 사용자의 비밀번호 재설정은 OWNER만 가능합니다.");
+    }
+  });
   return { tempPassword };
 }
 ```
@@ -704,9 +752,11 @@ commit(이미 분리 커밋했으면 생략 가능): `test(user-mgmt): task-04 s
 ## Cautions
 
 - **가드는 서비스 계층에서 강제(spec D13·§8) — 라우트 권한키와 별개.** `:create`/`:approve`/`:update` 권한키를 통과해도 `approveUser`/`createUserByAdmin`/`updateUser`/`assignRoles`/`upsertOverride`/`setUserStatus`/`resetPassword`는 반드시 본문 첫 부분에서 가드를 호출한다. **생성·승인도 역할 부여 경로**이므로 `assertCanSetSystemRole`+`assertCanAssignRoles`를 동일 적용한다(위임 admin이 `:create`/`:approve`로 `pm`/`admin`/`OWNER`/`ADMIN`을 부여·확정 못 함).
-- **새 가드 시그니처는 현재↔원하는 상태 비교 — 현재 상태를 mutation 전에 로드한다(finding C).** `assertCanAssignRoles(actor, target.roleKeys, nextRoleKeys)`·`assertCanSetSystemRole(actor, target.systemRole, nextRole)`. 그래야 위임 admin이 ① 기존 OWNER/ADMIN을 강등하거나 ② 기존 pm/admin을 목록에서 빼서 제거하는 lockout까지 막는다(추가만 막던 이전 시그니처의 누락). `updateUser`·`assignRoles`는 `getUserDetail`로 대상 현재 `systemRole`·`roleKeys`를 로드해 넘기고(§S6 반환에 둘 다 포함), `approveUser`는 이미 로드한 `target`을 재사용한다. `createUserByAdmin`은 신규 생성이라 현재 상태가 없으므로 비특권 기준선(`"MEMBER"`, `[]`)을 넘긴다(추가만 검사됨). **별도 재조회 추가 금지** — `getUserDetail` 한 번으로 가드·CAS(updatedAt)·메일을 모두 충족한다.
+- **새 가드 시그니처는 현재↔원하는 상태 비교 — 현재 상태를 mutation 전에 로드한다(finding C).** `assertCanAssignRoles(actor, target.roleKeys, nextRoleKeys)`·`assertCanSetSystemRole(actor, target.systemRole, nextRole)`. 그래야 위임 admin이 ① 기존 OWNER/ADMIN을 강등하거나 ② 기존 pm/admin을 목록에서 빼서 제거하는 lockout까지 막는다(추가만 막던 이전 시그니처의 누락). `updateUser`·`assignRoles`는 `getUserDetail`로 대상 현재 `systemRole`·`roleKeys`를 로드해 넘기고(§S6 반환에 둘 다 포함), `approveUser`는 이미 로드한 `target`을 재사용한다. `createUserByAdmin`은 신규 생성이라 현재 상태가 없으므로 비특권 기준선(`"MEMBER"`, `[]`)을 넘긴다(추가만 검사됨). **서비스는 `getUserDetail`을 한 번만** 호출해 사전 가드·CAS(updatedAt)·메일을 충족한다(서비스 계층에서 두 번 재조회 금지) — 락 안 fresh 재검사는 아래 finding H 패턴으로 **repo가** 수행한다(서비스 재조회 아님).
+- **stale 가드 race는 `setRoles`/`resetPasswordTx`의 recheck 콜백으로 닫는다(finding H).** `assignRoles`·`resetPassword`의 사전 가드(stale `target` 기반)는 빠른 거부일 뿐 권위가 아니다. 동시 OWNER action이 대상의 역할/특권을 바꾸면 stale 검사가 무력화되므로(role 부여 직후 빼서 lockout / 특권이 된 직후 reset해 임시비번 탈취), 권위 검사는 **repo 락 안 fresh 상태로 재실행**한다. `assignRoles`는 `setRoles(id, roleKeys, actorId, (cur) => assertCanAssignRoles(actor, cur, roleKeys))`, `resetPassword`는 `resetPasswordTx(id, hash, actorId, now, (fresh) => { if (!actor.isOwner && isPrivilegedTarget(fresh)) throw new EscalationError(...) })`로 actor를 캡처한 sync 클로저를 넘긴다. recheck는 repo가 락 안에서 fresh state를 읽어 호출한다(task-03). `User.updatedAt` CAS는 role 변경을 못 잡으므로(UserAccessRole 쓰기는 updatedAt 미갱신) 이 재검사가 필수다. `updateUser`의 systemRole 변경은 User 행 CAS(updatedAt)가 동시 변경을 잡으므로 recheck 불필요.
 - **S5/S6 함수는 import 호출, 재정의 금지.** `withAvailabilityLock`/`assertMinAvailability`/최소가용성 카운트는 repository(task-03)가 mutation 내부에서 호출한다 — 서비스는 그 호출처를 만들지 않는다(중복 락 금지). 서비스는 sync 가드 4종 + D14 특권대상 검사만 자체 수행한다.
-- **D14 특권 대상 reset-password는 서비스 전용 가드.** sync 가드 4종으로는 안 잡힌다(대상의 systemRole/역할을 조회해야 판정). `isPrivilegedTarget(target)` + `actor.isOwner` 조합으로 `EscalationError`. 비-OWNER가 자기 자신을 admin 라우트로 재설정하는 것은 `assertNotSelfMutation`이 먼저 막는다.
+- **D14 특권 대상 reset-password는 서비스 전용 가드.** sync 가드 4종으로는 안 잡힌다(대상의 systemRole/역할을 조회해야 판정). `isPrivilegedTarget(target)` + `actor.isOwner` 조합으로 `EscalationError`. 비-OWNER가 자기 자신을 admin 라우트로 재설정하는 것은 `assertNotSelfMutation`이 먼저 막는다. **이 판정은 사전(stale)·락 안(fresh) 양쪽에서** 한다 — 사전은 `resetPassword`에서, 권위 판정은 `resetPasswordTx`에 넘긴 recheck 클로저가 락 안 fresh state로(finding H). `isPrivilegedTarget`은 `{systemRole, roleKeys}`만 받으므로 stale `target`과 fresh state 양쪽에 동일 적용된다.
+- **메일 동적 필드는 escapeHtml로 보간한다(finding J).** `buildApprovedMail`(name)·`buildRejectedMail`(name·reason)은 사용자/관리자 자유 입력을 bodyHtml에 직접 넣으면 수신자 메일함 stored HTML injection/phishing이 된다. `escapeHtml`(leave `mail-templates.ts`의 `esc`와 동형 `&<>"'` 치환)로 감싼다. leave 파일을 import/수정하지 말고 본 서비스에 동형 헬퍼를 둔다(surgical).
 - **CAS 기준 `updatedAt`은 `getUserDetail`이 반환한 스냅샷을 그대로 repo에 넘긴다.** approve/reject/update가 stale read로 덮어쓰지 않게 — repo가 `where:{...,updatedAt}` 낙관락으로 `count===0` 충돌 검출(task-03). 서비스에서 별도 재조회·재계산하지 않는다.
 - **임시비번/새 비번 해시는 서비스 책임, repo는 `passwordHash`만 받는다(task-03).** `bcrypt.hash(pw, 10)`. `resetPassword`는 평문 임시비번을 반환하되(관리자 화면 1회 표시·전달용, D4/D14) **DB·메일·로그에 평문을 남기지 않는다** — repo엔 해시만 전달.
 - **메일은 승인/거절만(D5).** `approveTx`/`rejectTx` 트랜잭션 내 1회 enqueue는 repo가 하고(멱등키 불필요 — CAS가 더블승인 차단), 서비스는 `{recipients:[email],subject,bodyHtml}` 본문을 만들어 넘기고 커밋 후 `triggerLeaveMailDrain()`(fire-and-forget). status/role/override/reset 변경에는 메일을 보내지 않는다.

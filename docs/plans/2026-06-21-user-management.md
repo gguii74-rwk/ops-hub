@@ -83,16 +83,22 @@ model RateBucket {
 `src/modules/admin/users/policy.ts`:
 
 ```ts
-// 위임 admin이 부여/회수할 수 없는 특권 역할 키(OWNER-only)
-export const PRIVILEGED_ROLE_KEYS = ["pm", "admin"] as const;
+// 위임 admin이 자유롭게 부여/회수할 수 있는 **비특권** 역할 키 allowlist(seed 고정 — 4종 개발/외주 역할).
+// 이 목록에 없는 모든 키(pm·admin·미지/커스텀/임포트 역할)는 특권으로 본다(fail-closed, finding I).
+export const NON_PRIVILEGED_ROLE_KEYS = [
+  "regular-developer", "contractor-developer", "contractor-content", "contractor-civil-response",
+] as const;
 // 특권 systemRole (OWNER-only 부여)
 export const PRIVILEGED_SYSTEM_ROLES = ["OWNER", "ADMIN"] as const;
-// 위임 admin이 타인에게 DENY override를 걸 수 없는 critical 리소스 prefix
+// 위임 admin이 타인에게 override(ALLOW·DENY 무관)를 걸 수 없는 critical 리소스 prefix
 export const CRITICAL_RESOURCE_PREFIXES = ["admin."] as const;
 // "가용 user-management 관리자"로 인정하는 권한 키 (최소 1명 보존)
 export const USER_MGMT_PERMISSION = "admin.users:update";
 export const AUDIT_PERMISSION = "admin.audit:view";
-// 역할이 보유한 RolePermission에 "*"/admin.* 가 있으면 특권 역할로 간주
+// 역할 키가 특권인지 — **fail-closed**(finding I). 비특권 allowlist(NON_PRIVILEGED_ROLE_KEYS)에 없으면 특권.
+// pm·admin뿐 아니라 다른 키로 admin 권한(admin.*)을 묶은 seeded/import/future 역할, 미지의 키까지 모두 특권으로 보호한다.
+// (이전 `PRIVILEGED_ROLE_KEYS=["pm","admin"]` 화이트리스트는 미지/커스텀 admin-bearing 역할을 비특권으로 흘리는 fail-open이었다.
+//  비특권 4종은 seed상 admin.* 권한이 전혀 없음이 보장되므로 — `prisma/seed-roles.ts` — 이 반전은 under-classify 위험이 없다.)
 export function isPrivilegedRoleKey(key: string): boolean;
 ```
 
@@ -144,6 +150,8 @@ export async function countAvailableByPermission(tx: PrismaTx, permissionKey: st
 
 availability-affecting repository 함수(`setStatusTx`/`resetPasswordTx`/`setRoles`/`createOverride`/`updateUserTx`의 systemRole 강등)는 **내부에서 `withAvailabilityLock`로 감싸고 커밋 전 `assertMinAvailability(tx)`를 호출**한다(그래서 repository task-03이 guards task-02를 import → deps 02).
 
+**target-state 의존 anti-escalation 가드는 락 안에서 fresh 상태로 재검사한다(finding H — read-check-write 원자화).** 서비스가 mutation 전에 로드한 `target`은 stale일 수 있다: 가드 통과 후 mutation 사이에 동시 OWNER action이 대상의 역할/특권을 바꾸면, stale 스냅샷으로 검사한 불변식이 무력화된다(① 위임 admin이 OWNER가 방금 부여한 pm을 모르고 목록에서 빼 lockout, ② 대상이 특권이 된 직후 reset해 임시비번 탈취). `User.updatedAt` CAS만으로는 **역할 변경(`UserAccessRole` 쓰기는 `User.updatedAt`을 올리지 않음)** 을 못 잡으므로, 대상 상태에 의존하는 가드(`assertCanAssignRoles`의 currentRoleKeys, reset-password의 특권 대상 판정)는 **`withAvailabilityLock` 트랜잭션 안에서 대상 상태를 재로드해 다시 검사**한다. 구현은 `setRoles`/`resetPasswordTx`가 받는 **recheck 콜백**(S6) — 서비스가 `actor`를 클로저로 캡처한 sync 검사를 넘기고, repo가 락 안에서 fresh state를 읽어 호출한다(위반 시 `EscalationError`). 가드는 모두 sync pure 함수라 그대로 콜백 안에서 호출 가능(task-02 시그니처 변경 없음). `withAvailabilityLock`이 전역 advisory lock으로 모든 가용성/역할/특권 변경 mutation을 직렬화하므로, 락 안 재검사 시점엔 동시 변경이 끼어들 수 없다. `updateUserTx`의 systemRole 변경은 `User` 행을 직접 바꿔 `updatedAt` CAS가 동시 변경을 잡으므로 별도 recheck 불필요(기존 CAS 유지).
+
 "가용(available)" 정의: `status === "ACTIVE" && mustChangePassword === false` 이고 해당 권한(USER_MGMT_PERMISSION / AUDIT_PERMISSION)을 `computeDecision`상 보유. advisory lock 키 = 고정 상수 `pg_advisory_xact_lock(4815162342)`(전역 직렬화).
 
 ### S6. Repository 시그니처 (task-03; task-04/05/07 호출)
@@ -177,7 +185,8 @@ export async function approveTx(id: string, actorId: string, decision: { employm
 export async function rejectTx(id: string, actorId: string, reason: string, mail: UserMailJob, expectedUpdatedAt: Date): Promise<void>;
 
 export async function updateUserTx(id: string, patch: { name?: string; department?: string | null; employmentType?: string; jobFunction?: string; systemRole?: string }, actorId: string, expectedUpdatedAt: Date): Promise<void>;
-export async function setRoles(id: string, roleKeys: string[], actorId: string): Promise<void>; // createMany skipDuplicates + deleteMany(차집합)
+// recheck(finding H): 락 안에서 fresh currentRoleKeys로 anti-escalation 재검사(throw 시 mutation 중단·롤백). 서비스가 actor 캡처 클로저로 주입.
+export async function setRoles(id: string, roleKeys: string[], actorId: string, recheck?: (currentRoleKeys: string[]) => void): Promise<void>; // createMany skipDuplicates + deleteMany(차집합)
 export async function createOverride(id: string, o: OverrideInput, actorId: string): Promise<{ id: string }>;
 export async function deleteOverride(id: string, overrideId: string, actorId: string): Promise<void>;
 
@@ -185,7 +194,8 @@ export async function deleteOverride(id: string, overrideId: string, actorId: st
 export async function setStatusTx(id: string, status: "ACTIVE" | "DISABLED", actorId: string, now: Date): Promise<void>;
 export async function reactivateRejectedTx(id: string, actorId: string, now: Date): Promise<void>; // REJECTED→ACTIVE
 // reset-password(D14): 임시비번 → mustChangePassword=true + sessionInvalidatedAt=now
-export async function resetPasswordTx(id: string, passwordHash: string, actorId: string, now: Date): Promise<void>;
+// recheck(finding H): 락 안에서 fresh {systemRole,roleKeys}로 특권 대상 판정 재검사(throw 시 중단·롤백). 서비스가 actor 캡처 클로저로 주입.
+export async function resetPasswordTx(id: string, passwordHash: string, actorId: string, now: Date, recheck?: (target: { systemRole: string; roleKeys: string[] }) => void): Promise<void>;
 // 강제변경/자가변경(D15): passwordHash + passwordChangedAt=now, mustChangePassword=false
 export async function changePasswordTx(id: string, passwordHash: string, now: Date): Promise<void>;
 // (가용성 카운트 함수는 S5 guards 소속 — 여기서 정의하지 않음)
