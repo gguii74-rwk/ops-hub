@@ -10,10 +10,19 @@ type Status = (typeof STATUSES)[number];
 function isStatus(v: string): v is Status {
   return (STATUSES as readonly string[]).includes(v);
 }
+const EMPLOYMENT_TYPES = ["REGULAR", "CONTRACTOR"] as const;
+function isEmploymentType(v: string): v is (typeof EMPLOYMENT_TYPES)[number] {
+  return (EMPLOYMENT_TYPES as readonly string[]).includes(v);
+}
+const JOB_FUNCTIONS = ["PM", "DEVELOPER", "CONTENT_MANAGER", "CIVIL_RESPONSE"] as const;
+function isJobFunction(v: string): v is (typeof JOB_FUNCTIONS)[number] {
+  return (JOB_FUNCTIONS as readonly string[]).includes(v);
+}
 function parsePositiveInt(v: string | null, fallback: number): number {
   const n = v ? Number(v) : NaN;
   return Number.isInteger(n) && n >= 1 ? n : fallback;
 }
+const MAX_PAGE_SIZE = 100;
 
 export async function GET(req: Request) {
   const session = await auth();
@@ -21,13 +30,17 @@ export async function GET(req: Request) {
   const sp = new URL(req.url).searchParams;
   const status = sp.get("status");
   if (status && !isStatus(status)) return NextResponse.json({ error: "invalid status" }, { status: 400 });
+  const employmentType = sp.get("employmentType");
+  if (employmentType && !isEmploymentType(employmentType)) return NextResponse.json({ error: "invalid employmentType" }, { status: 400 });
+  const jobFunction = sp.get("jobFunction");
+  if (jobFunction && !isJobFunction(jobFunction)) return NextResponse.json({ error: "invalid jobFunction" }, { status: 400 });
   const filter = {
     status: status ? (status as Status) : undefined,
-    employmentType: sp.get("employmentType") ?? undefined,
-    jobFunction: sp.get("jobFunction") ?? undefined,
+    employmentType: employmentType ?? undefined,
+    jobFunction: jobFunction ?? undefined,
     q: sp.get("q") ?? undefined,
     page: parsePositiveInt(sp.get("page"), 1),
-    pageSize: parsePositiveInt(sp.get("pageSize"), 20),
+    pageSize: Math.min(parsePositiveInt(sp.get("pageSize"), 20), MAX_PAGE_SIZE),
   };
   try {
     await requirePermission(session.user.id, "admin.users", "view");

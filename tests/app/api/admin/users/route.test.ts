@@ -85,6 +85,24 @@ describe("GET /api/admin/users", () => {
     expect(res.status).toBe(400);
     expect(h.listUsersForView).not.toHaveBeenCalled();
   });
+  it("잘못된 employmentType 쿼리는 400(service 미호출)", async () => {
+    const res = await GET(new Request("http://x/api/admin/users?employmentType=BOGUS"));
+    expect(res.status).toBe(400);
+    expect(h.listUsersForView).not.toHaveBeenCalled();
+  });
+  it("잘못된 jobFunction 쿼리는 400(service 미호출)", async () => {
+    const res = await GET(new Request("http://x/api/admin/users?jobFunction=BOGUS"));
+    expect(res.status).toBe(400);
+    expect(h.listUsersForView).not.toHaveBeenCalled();
+  });
+  it("pageSize 상한 초과(99999)는 100으로 클램프 후 200 + service 호출", async () => {
+    const res = await GET(new Request("http://x/api/admin/users?pageSize=99999"));
+    expect(res.status).toBe(200);
+    expect(h.listUsersForView).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ pageSize: 100 }),
+    );
+  });
   it("권한 없으면 403(requirePermission throw → mapError)", async () => {
     h.requirePermission.mockRejectedValueOnce(new h.FakeForbidden("denied"));
     const res = await GET(new Request("http://x/api/admin/users"));

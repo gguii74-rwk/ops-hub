@@ -320,10 +320,16 @@ export async function createOverride(id: string, o: OverrideInput, actorId: stri
   return withAvailabilityLock(async (tx) => {
     const perm = await tx.permission.findUnique({ where: { resource_action: { resource: o.resource, action: o.action } }, select: { id: true } });
     if (!perm) throw new UserConflictError("알 수 없는 권한입니다.");
-    const created = await tx.userPermissionOverride.create({
-      data: { userId: id, permissionId: perm.id, effect: o.effect, scope: o.scope, reason: o.reason, startsAt: o.startsAt, endsAt: o.endsAt },
-      select: { id: true },
-    });
+    let created: { id: string };
+    try {
+      created = await tx.userPermissionOverride.create({
+        data: { userId: id, permissionId: perm.id, effect: o.effect, scope: o.scope, reason: o.reason, startsAt: o.startsAt, endsAt: o.endsAt },
+        select: { id: true },
+      });
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") throw new UserConflictError("이미 존재하는 권한 예외입니다.");
+      throw e;
+    }
     await writeAudit(tx, { actorId, entityType: "User", entityId: id, action: "create_override", metadata: { resource: o.resource, action: o.action, effect: o.effect, scope: o.scope } });
     await assertMinAvailability(tx);
     return { id: created.id };

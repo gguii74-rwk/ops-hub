@@ -322,6 +322,14 @@ describe("createOverride / deleteOverride (가용성)", () => {
     await expect(createOverride("u1", { resource: "x.y", action: "z", effect: "ALLOW", scope: "all", reason: null, startsAt: null, endsAt: null }, "admin1"))
       .rejects.toBeInstanceOf(UserConflictError);
   });
+  it("중복 override(P2002 — @@unique[userId,permissionId,scope])이면 UserConflictError(500 아님)", async () => {
+    h.db.permission.findUnique.mockResolvedValue({ id: "perm1" });
+    h.db.userPermissionOverride.create.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("dup", { code: "P2002", clientVersion: "x" }),
+    );
+    await expect(createOverride("u1", { resource: "leave.approval", action: "view", effect: "ALLOW", scope: "all", reason: null, startsAt: null, endsAt: null }, "admin1"))
+      .rejects.toBeInstanceOf(UserConflictError);
+  });
   it("deleteOverride: 본인 소유 override만 삭제(deleteMany), 0행이면 UserConflictError + lock", async () => {
     h.db.userPermissionOverride.deleteMany.mockResolvedValue({ count: 0 }); // 본인 소유 행 없음 → 충돌
     await expect(deleteOverride("u1", "ov1", "admin1")).rejects.toBeInstanceOf(UserConflictError);

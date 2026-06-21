@@ -30,7 +30,7 @@ vi.mock("@/modules/admin/users/services", () => ({
 import { POST as setRoles } from "@/app/api/admin/users/[id]/roles/route";
 import { POST as addOverride, DELETE as delOverride } from "@/app/api/admin/users/[id]/overrides/route";
 import { POST as resetPw } from "@/app/api/admin/users/[id]/reset-password/route";
-import { EscalationError, MinAvailabilityError } from "@/modules/admin/users/errors";
+import { EscalationError, MinAvailabilityError, UserConflictError } from "@/modules/admin/users/errors";
 
 const ctx = { params: Promise.resolve({ id: "u1" }) };
 
@@ -88,6 +88,10 @@ describe("POST .../[id]/overrides", () => {
   it("service가 EscalationError(D13ⓒ/ⓓ: 미보유 ALLOW·critical DENY)면 403", async () => {
     h.upsertOverride.mockRejectedValueOnce(new EscalationError("보유하지 않은 권한은 부여할 수 없습니다."));
     expect((await addOverride(new Request("http://x", { method: "POST", body: valid }), ctx)).status).toBe(403);
+  });
+  it("service가 UserConflictError(중복 override P2002)면 409(500 아님)", async () => {
+    h.upsertOverride.mockRejectedValueOnce(new UserConflictError("이미 존재하는 권한 예외입니다."));
+    expect((await addOverride(new Request("http://x", { method: "POST", body: valid }), ctx)).status).toBe(409);
   });
 });
 
