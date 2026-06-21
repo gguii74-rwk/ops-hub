@@ -12,6 +12,11 @@ export const PENDING_UNVERIFIED_CAP = 200;    // 미처리 미검증 PENDING 전
 export const CHANGE_PASSWORD_LIMIT = 10;      // per-user 비번변경 시도 윈도우 상한(온라인 추측·bcrypt DoS 방지)
 
 // IP는 x-forwarded-for의 첫 항목(클라이언트). 서버가 망 제한 뒤라 신뢰 가능(D1). 헤더 없으면 공유 'unknown' 버킷.
+// ⚠️ 배포 계약(필수): 이 첫-값 신뢰는 신뢰 가능한 ingress(reverse proxy)가 **client가 보낸 X-Forwarded-For를
+//    제거하고 실제 클라이언트 IP로 덮어쓸 때만** 성립한다. ingress가 client XFF를 append/passthrough하면
+//    공격자가 첫 값을 위조해 임의 per-IP 버킷을 골라 per-IP 통제를 우회할 수 있다(docs/architecture.md 배포 섹션).
+//    단, per-IP는 defense-in-depth 계층일 뿐 — hard 경계(PENDING_UNVERIFIED_CAP 트랜잭션 내·per-email·쿨다운·
+//    토큰 256bit 엔트로피·emailVerifyTokenHash 인덱스)는 IP에 의존하지 않아 XFF가 위조돼도 유지된다.
 export function extractClientIp(req: Request): string {
   const xff = req.headers.get("x-forwarded-for");
   if (!xff) return "unknown";
