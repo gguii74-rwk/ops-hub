@@ -28,4 +28,3 @@ CREATE TABLE "kernel"."RateBucket" (
 );
 CREATE UNIQUE INDEX "RateBucket_scope_key_key" ON "kernel"."RateBucket"("scope", "key");
 CREATE INDEX "RateBucket_scope_windowStartedAt_idx" ON "kernel"."RateBucket"("scope", "windowStartedAt");
-CREATE INDEX "User_emailVerifyTokenHash_idx" ON "kernel"."User"("emailVerifyTokenHash");
