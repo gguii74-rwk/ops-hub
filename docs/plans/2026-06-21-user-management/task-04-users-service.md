@@ -459,8 +459,8 @@ describe("resetPassword (D14 — 특권 대상 OWNER-only)", () => {
   it("OWNER가 비특권 대상 재설정 → 임시비번 해시 후 resetPasswordTx + 결과 반환(임시비번 전달용·락 안 recheck 동반)", async () => {
     r.getUserDetail.mockResolvedValue(detail({ status: "ACTIVE", systemRole: "MEMBER", roleKeys: [] }) as never);
     const res = await resetPassword(owner, "u1");
-    expect(typeof res.tempPassword).toBe("string");
-    expect(res.tempPassword.length).toBeGreaterThanOrEqual(12);
+    expect(typeof res.temporaryPassword).toBe("string");
+    expect(res.temporaryPassword.length).toBeGreaterThanOrEqual(12);
     expect(r.resetPasswordTx).toHaveBeenCalledWith("u1", "HASHED", "owner1", expect.any(Date), expect.any(Function));
   });
   it("finding H: resetPasswordTx에 넘긴 recheck가 락 안 fresh state로 특권 대상을 재거부한다", async () => {
@@ -690,7 +690,7 @@ export async function setUserStatus(actor: ActorContext, id: string, status: "AC
 // ── 비번 재설정(D14): 자가 금지 + 특권 대상은 OWNER-only → 임시비번 해시 → resetPasswordTx. 임시비번은 반환(관리자 전달용). ──
 // finding H: 특권 대상 판정은 stale 스냅샷으로 사전 거부만 하고, **권위 검사는 resetPasswordTx 락 안 fresh state로 재실행**한다
 // (대상이 특권이 된 직후 위임 admin이 reset해 임시비번을 탈취하는 race 차단). recheck 클로저가 actor를 캡처해 락 안에서 호출된다.
-export async function resetPassword(actor: ActorContext, id: string): Promise<{ tempPassword: string }> {
+export async function resetPassword(actor: ActorContext, id: string): Promise<{ temporaryPassword: string }> {
   const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
   // 특권 대상(OWNER/ADMIN systemRole 또는 특권 역할)은 OWNER만 재설정 가능(위임 admin 거부). 사전 검사(빠른 거부; stale 스냅샷).
@@ -705,7 +705,8 @@ export async function resetPassword(actor: ActorContext, id: string): Promise<{ 
       throw new EscalationError("특권 사용자의 비밀번호 재설정은 OWNER만 가능합니다.");
     }
   });
-  return { tempPassword };
+  // 응답 필드명은 `temporaryPassword`로 통일(finding 3) — 라우트(task-05)·UI(task-08)가 같은 키로 1회 노출/표시.
+  return { temporaryPassword: tempPassword };
 }
 ```
 

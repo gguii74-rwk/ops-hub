@@ -142,7 +142,7 @@ export function assertOverrideWithinActorGrant(actor: ActorContext, key: string,
 // D13ⓔ 최소 가용성 — advisory lock으로 직렬화 + 커밋 전 재검사
 // availability-affecting mutation(role제거·override·disable·reset-password·systemRole강등)은 반드시 이 래퍼 안에서.
 export async function withAvailabilityLock<T>(fn: (tx: PrismaTx) => Promise<T>): Promise<T>;
-// 트랜잭션 내 커밋 전 호출. 가용 관리자/감사조회자 < 1 이면 MinAvailabilityError throw.
+// 트랜잭션 내 커밋 전 호출. ① ACTIVE OWNER < 1 (D12 OWNER 보존) ② 가용 관리자 < 1 ③ 가용 감사조회자 < 1 이면 MinAvailabilityError throw.
 export async function assertMinAvailability(tx: PrismaTx): Promise<void>;
 // 가용 카운트 (assertMinAvailability가 사용; computeDecision 재사용해 권한 보유 판정). guards.ts 소속.
 export async function countAvailableByPermission(tx: PrismaTx, permissionKey: string): Promise<number>;
@@ -153,6 +153,8 @@ availability-affecting repository 함수(`setStatusTx`/`resetPasswordTx`/`setRol
 **target-state 의존 anti-escalation 가드는 락 안에서 fresh 상태로 재검사한다(finding H — read-check-write 원자화).** 서비스가 mutation 전에 로드한 `target`은 stale일 수 있다: 가드 통과 후 mutation 사이에 동시 OWNER action이 대상의 역할/특권을 바꾸면, stale 스냅샷으로 검사한 불변식이 무력화된다(① 위임 admin이 OWNER가 방금 부여한 pm을 모르고 목록에서 빼 lockout, ② 대상이 특권이 된 직후 reset해 임시비번 탈취). `User.updatedAt` CAS만으로는 **역할 변경(`UserAccessRole` 쓰기는 `User.updatedAt`을 올리지 않음)** 을 못 잡으므로, 대상 상태에 의존하는 가드(`assertCanAssignRoles`의 currentRoleKeys, reset-password의 특권 대상 판정)는 **`withAvailabilityLock` 트랜잭션 안에서 대상 상태를 재로드해 다시 검사**한다. 구현은 `setRoles`/`resetPasswordTx`가 받는 **recheck 콜백**(S6) — 서비스가 `actor`를 클로저로 캡처한 sync 검사를 넘기고, repo가 락 안에서 fresh state를 읽어 호출한다(위반 시 `EscalationError`). 가드는 모두 sync pure 함수라 그대로 콜백 안에서 호출 가능(task-02 시그니처 변경 없음). `withAvailabilityLock`이 전역 advisory lock으로 모든 가용성/역할/특권 변경 mutation을 직렬화하므로, 락 안 재검사 시점엔 동시 변경이 끼어들 수 없다. `updateUserTx`의 systemRole 변경은 `User` 행을 직접 바꿔 `updatedAt` CAS가 동시 변경을 잡으므로 별도 recheck 불필요(기존 CAS 유지).
 
 "가용(available)" 정의: `status === "ACTIVE" && mustChangePassword === false` 이고 해당 권한(USER_MGMT_PERMISSION / AUDIT_PERMISSION)을 `computeDecision`상 보유. advisory lock 키 = 고정 상수 `pg_advisory_xact_lock(4815162342)`(전역 직렬화).
+
+**OWNER 보존 불변식(finding 1·D12).** 권한 카운트(user-management·audit)와 **별개로** `assertMinAvailability`는 **최소 1명의 ACTIVE OWNER**(`systemRole==="OWNER" && status==="ACTIVE"`)도 보존한다(`tx.user.count`). 권한 카운트만으로는 부족하다: 위임 admin이 `admin.users:update`·`admin.audit:view`를 모두 충족하는 상태에서 마지막 OWNER를 강등(`updateUserTx` systemRole)·비활성(`setStatusTx` disable)하면 두 권한 카운트는 통과하지만 OWNER가 0이 되어 OWNER-only 복구 작업(특권 역할/systemRole 부여·critical override·특권 대상 reset)이 모두 막힌다(DB 직접 개입 외 복구 불가). OWNER 카운트는 mutation 후·커밋 전 상태를 보므로(updateMany 후 호출) 강등/비활성된 OWNER가 즉시 카운트에서 빠진다. must-change ACTIVE OWNER는 스스로 비번 변경으로 복귀 가능하므로 `status==="ACTIVE"`만으로 충분(non-must-change까지 요구하면 정당한 작업을 과차단).
 
 ### S6. Repository 시그니처 (task-03; task-04/05/07 호출)
 

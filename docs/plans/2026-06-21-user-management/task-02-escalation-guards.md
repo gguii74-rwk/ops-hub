@@ -402,8 +402,15 @@ export async function withAvailabilityLock<T>(fn: (tx: PrismaTx) => Promise<T>):
   });
 }
 
-// 커밋 전 호출. 가용 user-management 관리자 또는 audit 조회자가 1명 미만이면 거부.
+// 커밋 전 호출. ① ACTIVE OWNER 보존(D12·finding 1) ② 가용 user-management 관리자 ③ 가용 audit 조회자가 각각 1명 미만이면 거부.
 export async function assertMinAvailability(tx: PrismaTx): Promise<void> {
+  // finding 1: 권한 카운트와 별개로 최소 1명의 ACTIVE OWNER를 보존한다. mutation 후·커밋 전 상태를 보므로
+  // 마지막 OWNER 강등(updateUserTx systemRole)·비활성(setStatusTx disable)이 즉시 카운트에서 빠져 차단된다.
+  // (위임 admin이 user-management·audit 권한을 모두 충족해도 OWNER가 0이면 OWNER-only 복구가 막히는 lockout 방지.)
+  const owners = await tx.user.count({ where: { systemRole: "OWNER", status: "ACTIVE" } });
+  if (owners < 1) {
+    throw new MinAvailabilityError("최소 1명의 활성 OWNER가 남아야 합니다.");
+  }
   const userMgmt = await countAvailableByPermission(tx, USER_MGMT_PERMISSION);
   if (userMgmt < 1) {
     throw new MinAvailabilityError("최소 1명의 가용 사용자 관리자가 남아야 합니다.");
@@ -514,9 +521,11 @@ import { countAvailableByPermission, assertMinAvailability } from "@/modules/adm
 import { MinAvailabilityError } from "@/modules/admin/users/errors";
 import type { PrismaTx } from "@/lib/prisma";
 
-// permissionId 조회 → user.findMany → rolePermission.findMany 를 모킹한 fake tx.
+// permission.findUnique → user.count(OWNER 보존) → user.findMany → rolePermission.findMany 를 모킹한 fake tx.
+// owners: assertMinAvailability의 ACTIVE OWNER 카운트(finding 1). 기본 1(기존 테스트 호환), 0이면 OWNER 보존 위반.
 function fakeTx(opts: {
   permissionId: string | null;
+  owners?: number;
   users: Array<{
     systemRole: string;
     roleAssignments?: Array<{ roleId: string; startsAt: Date | null; endsAt: Date | null }>;
@@ -529,6 +538,7 @@ function fakeTx(opts: {
       findUnique: vi.fn(async () => (opts.permissionId ? { id: opts.permissionId } : null)),
     },
     user: {
+      count: vi.fn(async () => opts.owners ?? 1), // ACTIVE OWNER 카운트(finding 1)
       findMany: vi.fn(async () =>
         opts.users.map((u) => ({
           systemRole: u.systemRole,
@@ -573,14 +583,27 @@ describe("countAvailableByPermission (computeDecision 재사용)", () => {
   });
 });
 
-describe("assertMinAvailability (D13ⓔ)", () => {
+describe("assertMinAvailability (D13ⓔ·D12 OWNER 보존)", () => {
   it("user-management 가용 0 → MinAvailabilityError", async () => {
-    const tx = fakeTx({ permissionId: "p1", users: [] }); // 아무도 권한 없음
+    const tx = fakeTx({ permissionId: "p1", users: [] }); // OWNER 1(기본)이나 권한 보유자 0
     await expect(assertMinAvailability(tx)).rejects.toThrow(MinAvailabilityError);
   });
   it("user-management·audit 모두 ≥1 → 통과(OWNER 한 명이 둘 다 충족)", async () => {
     const tx = fakeTx({ permissionId: null, users: [{ systemRole: "OWNER" }] });
     await expect(assertMinAvailability(tx)).resolves.toBeUndefined();
+  });
+  it("finding 1: ACTIVE OWNER 0명이면 MinAvailabilityError(권한 카운트 충족과 무관)", async () => {
+    // owners=0이지만 user-management·audit는 충족(권한 보유 MEMBER) → 그래도 OWNER 보존 위반으로 거부.
+    const tx = fakeTx({
+      permissionId: "p1",
+      owners: 0,
+      users: [{ systemRole: "MEMBER", roleAssignments: [{ roleId: "r1", startsAt: null, endsAt: null }] }],
+      rolePerms: [{ roleId: "r1", effect: "ALLOW", scope: "all" }],
+    });
+    await expect(assertMinAvailability(tx)).rejects.toThrow(MinAvailabilityError);
+    expect((tx.user.count as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { systemRole: "OWNER", status: "ACTIVE" } }),
+    );
   });
 });
 ```
@@ -620,6 +643,7 @@ commit: `test(user-mgmt): task-02 가용성 카운트·최소가용성 단위테
 - **`assertCanAssignRoles`·`assertCanSetSystemRole`는 "원하는 새 값"만이 아니라 "현재↔원하는 상태"를 비교한다(finding C).** `assertCanAssignRoles`는 `currentRoleKeys`↔`nextRoleKeys`의 **차집합(추가∪제거)** 중 특권 역할이 있으면, `assertCanSetSystemRole`은 **`currentRole` 또는 `newRole`** 이 OWNER/ADMIN이면 비-OWNER를 거부한다. 그래야 위임 admin이 ① 기존 OWNER/ADMIN을 강등하거나 ② 기존 pm/admin 역할을 목록에서 빼서 제거하는 lockout을 막는다. 따라서 호출자(service, task-04)는 **mutation 전에 대상의 현재 systemRole·roleKeys를 로드**해 넘겨야 한다(§S6 `getUserDetail`의 `systemRole`·`roleKeys`).
 - **`assertOverrideWithinActorGrant`는 critical(`admin.*`) 권한을 effect와 무관하게 OWNER-only로 막는다(finding D).** ALLOW도 예외가 아니다 — 위임 admin이 `admin.users:update`·`admin.audit:view` 등을 **보유하고 있더라도** ALLOW override로 타인에게 동등 admin 권한을 부여할 수 없다(보호된 역할/systemRole 부여 없이 OWNER-only 위임 경계를 우회하는 것 방지). 비-critical 권한만 기존 로직(ALLOW=actor 보유 한도 내, DENY=허용)을 따른다. critical 판정은 `CRITICAL_RESOURCE_PREFIXES`(`admin.`) `startsWith` 매칭(`isCriticalKey`)으로 한다.
 - **`computeDecision`은 scope="all" ALLOW만 전역 허가로 인정**한다(`decision.ts` 주석). `countAvailableByPermission`은 target 컨텍스트 없는 전역 카운트이므로 own/team/assigned ALLOW는 가용으로 치지 않는다 — 이는 보수적(fail-closed)이라 최소가용성 불변식을 더 강하게 보존한다(의도된 동작).
+- **`assertMinAvailability`는 권한 카운트와 별개로 ACTIVE OWNER ≥ 1도 보존한다(finding 1·D12).** `tx.user.count({where:{systemRole:"OWNER",status:"ACTIVE"}})`를 **권한 카운트보다 먼저** 검사한다 — 위임 admin이 user-management·audit 권한을 모두 충족하는 상태에서 마지막 OWNER를 강등/비활성하면 권한 카운트는 통과하지만 OWNER가 0이 되어 OWNER-only 복구가 영구 차단되기 때문이다. mutation(updateMany) 후·커밋 전에 호출되므로 강등/비활성된 OWNER가 즉시 카운트에서 빠진다. must-change ACTIVE OWNER는 스스로 복귀 가능하므로 `status==="ACTIVE"`만 보고 `mustChangePassword`는 보지 않는다(정당한 작업 과차단 방지).
 - **에러 매핑은 라우트(task-05) 책임**이다. 본 task는 throw만 하고 HTTP 상태로 변환하지 않는다.
 - **surgical**: 기존 파일(`access/*`, `leave/*`)을 수정하지 않는다. 본 task는 신규 모듈 3개 + 테스트 2개만 추가한다.
 - `permissionOverrides`를 조건부 `select`(permissionId 없으면 `false`)로 가져오므로, 코드에서 `u.permissionOverrides ?? []`로 안전 접근한다(타입상 select:false면 필드 부재).

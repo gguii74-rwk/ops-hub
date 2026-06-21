@@ -205,11 +205,12 @@ export function UserAttrFields({
 }
 ```
 
-`tests/app/admin/users/payload.test.ts` — override 폼 상태 → 페이로드 변환만 순수 함수로 검증(아래 step 7에서 정의하는 `toOverridePayload`).
+`tests/app/admin/users/payload.test.ts` — 폼 상태 → 페이로드 변환을 순수 함수로 검증: override(`toOverridePayload`, step 7) + 직접추가(`toCreateUserPayload`, step 8 — finding 3 계약 회귀 가드).
 
 ```ts
 import { describe, it, expect } from "vitest";
 import { toOverridePayload } from "@/app/(app)/admin/users/[id]/_components/override-panel";
+import { toCreateUserPayload } from "@/app/(app)/admin/users/new/_components/create-user-form";
 
 describe("override 폼 페이로드 변환", () => {
   it("빈 startsAt/endsAt/reason은 null로 정규화하고 권한키를 resource/action으로 분해한다", () => {
@@ -224,6 +225,24 @@ describe("override 폼 페이로드 변환", () => {
     expect(p.startsAt).toBe("2026-07-01");
     expect(p.endsAt).toBe("2026-07-31");
     expect(p.reason).toBe("임시 회수");
+  });
+});
+
+describe("직접추가 폼 페이로드 변환 (finding 3 — 비번 필드 계약)", () => {
+  const state = {
+    email: "n@x.com", name: "신규", password: "abcdefghijkl", department: "",
+    employmentType: "REGULAR" as const, jobFunction: "DEVELOPER" as const,
+    systemRole: "MEMBER" as const, roleKeys: ["regular-developer"],
+  };
+  it("비번 필드는 `password`로 보낸다(adminCreateSchema 일치) — tempPassword/temporaryPassword 키 금지", () => {
+    const p = toCreateUserPayload(state) as Record<string, unknown>;
+    expect(p.password).toBe("abcdefghijkl");
+    expect(p).not.toHaveProperty("tempPassword");
+    expect(p).not.toHaveProperty("temporaryPassword");
+  });
+  it("빈 department는 null로 정규화한다", () => {
+    expect(toCreateUserPayload(state).department).toBeNull();
+    expect(toCreateUserPayload({ ...state, department: "플랫폼" }).department).toBe("플랫폼");
   });
 });
 ```
@@ -858,11 +877,26 @@ import type { SystemRole } from "@/lib/auth/types";
 
 const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
 
+export interface CreateUserState {
+  email: string; name: string; password: string; department: string;
+  employmentType: AttrState["employmentType"]; jobFunction: AttrState["jobFunction"];
+  systemRole: SystemRole; roleKeys: string[];
+}
+
+// 폼 상태 → POST /api/admin/users 페이로드. 비번 필드는 **`adminCreateSchema`와 동일한 `password`** (finding 3 — 3자 계약 통일).
+// step 2 단위테스트 대상: `tempPassword`/`temporaryPassword` 같은 다른 키를 보내 zod 검증이 실패하는 회귀를 막는다.
+export function toCreateUserPayload(s: CreateUserState) {
+  return {
+    email: s.email, name: s.name, password: s.password, department: s.department || null,
+    employmentType: s.employmentType, jobFunction: s.jobFunction, systemRole: s.systemRole, roleKeys: s.roleKeys,
+  };
+}
+
 export function CreateUserForm() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
-  const [tempPassword, setTempPassword] = useState("");
+  const [password, setPassword] = useState(""); // 임시 비밀번호(최초 로그인 시 변경) — 와이어 필드명은 password(스키마 일치)
   const [department, setDepartment] = useState("");
   const [systemRole, setSystemRole] = useState<SystemRole>("MEMBER");
   const [attr, setAttr] = useState<AttrState>(emptyAttrState);
@@ -873,17 +907,17 @@ export function CreateUserForm() {
       const res = await fetch("/api/admin/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email, name, tempPassword, department: department || null,
+        body: JSON.stringify(toCreateUserPayload({
+          email, name, password, department,
           employmentType: attr.employmentType, jobFunction: attr.jobFunction, systemRole, roleKeys: attr.roleKeys,
-        }),
+        })),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `추가 실패 (${res.status})`);
     },
     onSuccess: () => router.push("/admin/users"),
   });
 
-  const canSubmit = email && name && tempPassword.length >= 12 && !m.isPending;
+  const canSubmit = email && name && password.length >= 12 && !m.isPending;
   return (
     <Card>
       <CardContent className="grid gap-3">
@@ -897,7 +931,7 @@ export function CreateUserForm() {
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="temp">임시 비밀번호 (12자 이상)</Label>
-          <Input id="temp" value={tempPassword} onChange={(e) => setTempPassword(e.target.value)} aria-invalid={tempPassword.length > 0 && tempPassword.length < 12} />
+          <Input id="temp" value={password} onChange={(e) => setPassword(e.target.value)} aria-invalid={password.length > 0 && password.length < 12} />
           <p className="text-xs text-muted-foreground">추가 후 사용자는 최초 로그인 시 비밀번호를 변경해야 합니다.</p>
         </div>
         <div className="grid gap-1.5">
@@ -998,6 +1032,7 @@ function UserEditInner({ detail, canUpdate, invalidate }: { detail: Detail; canU
   const [systemRole, setSystemRole] = useState<SystemRole>(detail.systemRole);
   const [roleKeys, setRoleKeys] = useState<string[]>(detail.roleKeys);
   const [error, setError] = useState<string | null>(null);
+  const [tempPasswordResult, setTempPasswordResult] = useState<string | null>(null); // reset 1회용 임시비번(finding 2)
 
   const call = async (input: RequestInfo, init: RequestInit, okFail: string) => {
     setError(null);
@@ -1031,8 +1066,20 @@ function UserEditInner({ detail, canUpdate, invalidate }: { detail: Detail; canU
       }, "상태 변경 실패");
     },
   });
+  // finding 2: reset는 1회용 임시비번을 응답(body.temporaryPassword)으로 받아 화면에 표시해야 한다.
+  // 불리언만 반환하는 call() 헬퍼로는 임시비번이 유실되어 대상이 lockout된다 → 응답을 직접 파싱해 state에 담는다.
   const resetPw = useMutation({
-    mutationFn: () => call(`/api/admin/users/${detail.id}/reset-password`, { method: "POST" }, "재설정 실패"),
+    mutationFn: async () => {
+      setError(null);
+      const res = await fetch(`/api/admin/users/${detail.id}/reset-password`, { method: "POST" }).catch(() => null);
+      if (!res || !res.ok) {
+        setError((res && (await res.json().catch(() => ({}))).error) || "재설정 실패");
+        return;
+      }
+      const body = (await res.json().catch(() => ({}))) as { temporaryPassword?: string };
+      if (typeof body.temporaryPassword === "string") setTempPasswordResult(body.temporaryPassword);
+      invalidate(); // 같은 id → key 유지 → tempPasswordResult state는 보존됨
+    },
   });
 
   const toggleRole = (key: string) => setRoleKeys((cur) => (cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]));
@@ -1078,6 +1125,17 @@ function UserEditInner({ detail, canUpdate, invalidate }: { detail: Detail; canU
             <p className="text-xs text-muted-foreground">OWNER·ADMIN 부여·마지막 OWNER 강등은 서버가 거부할 수 있습니다.</p>
           </div>
           {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          {tempPasswordResult ? (
+            <div className="rounded-lg border border-amber-500/40 bg-amber-50 p-3 text-sm dark:bg-amber-950/30">
+              <p className="font-medium">임시 비밀번호 (1회만 표시)</p>
+              <code className="mt-1 block break-all rounded bg-background px-2 py-1 font-mono">{tempPasswordResult}</code>
+              <p className="mt-1 text-xs text-muted-foreground">이 값은 다시 표시되지 않습니다. 사용자에게 안전하게 전달한 뒤 닫으세요.</p>
+              <div className="mt-2 flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => void navigator.clipboard?.writeText(tempPasswordResult)}>복사</Button>
+                <Button size="sm" variant="ghost" onClick={() => setTempPasswordResult(null)}>닫기</Button>
+              </div>
+            </div>
+          ) : null}
           {canUpdate ? (
             <div className="flex flex-wrap justify-end gap-2">
               <Button variant="outline" disabled={resetPw.isPending} onClick={() => resetPw.mutate()}>비밀번호 재설정</Button>
@@ -1301,14 +1359,16 @@ git commit -m "feat(user-mgmt): 사용자 관리 UI(가입·검증·강제변경
 - `npm run typecheck` → 그린(에러 0). 라벨 union·`SessionUser.mustChangePassword`(task-07 추가) 참조가 컴파일된다.
 - `npm run lint` → 그린(boundaries 위반 0). UI 컴포넌트는 `@/kernel/access/catalog`(순수 상수)·`@/lib/auth/types`만 import하고 repository/service를 직접 import하지 않는다.
 - `npm run build` → 성공(`/signup`·`/verify-email`·`/account/password`·`/admin/users`·`/admin/users/new`·`/admin/users/[id]` 라우트 컴파일).
-- `npm test -- tests/app/admin/users` → PASS. 기대출력: `labels` 3 케이스 + `payload` 2 케이스 모두 통과.
+- `npm test -- tests/app/admin/users` → PASS. 기대출력: `labels` 3 케이스 + `payload` 4 케이스(override 2 + 직접추가 2 — finding 3 비번 필드 회귀 가드 포함) 모두 통과.
 - `npm test` 전체 → PASS(기존 회귀 없음).
 - 수동 검증(DB 연결 시, task-05/06/07 머지 후):
   - `/signup` 제출 → `?sent=1` 중립 안내; DB에 PENDING 행 + 검증 메일 enqueue 확인(task-06 동작).
   - 검증 메일 링크 `/verify-email?token=…` → 비번 설정 폼 → 설정 후 "승인 대기" 안내.
   - `admin.users:view` 보유자로 `/admin/users` 진입 → 목록·필터·페이지네이션·PENDING 배지. 미보유자는 `/dashboard`로 리다이렉트.
   - PENDING 행 "승인·거절" → 모달에서 고용형태·직무·역할·systemRole 확정 → 승인 시 목록에서 ACTIVE로 갱신.
-  - 편집 화면에서 속성/역할 저장·비활성화·비번 재설정·override 추가/삭제가 각각 API 호출로 반영.
+  - 편집 화면에서 속성/역할 저장·비활성화·override 추가/삭제가 각각 API 호출로 반영.
+  - **비번 재설정** 클릭 → 응답의 1회용 임시비번이 "1회만 표시" 블록에 노출(복사·닫기) — 새로고침/재조회해도 닫기 전까지 유지(finding 2). 표시된 비번으로 대상이 로그인 → must-change 강제변경 흐름 진입.
+  - **직접추가**(`/admin/users/new`) 제출 → `password` 필드로 POST되어 201 생성(finding 3). 위임 admin이 OWNER/ADMIN·pm/admin 선택 시 403 안내.
 
 ## Cautions
 - **Don't `Button`에 `asChild`를 쓰지 마라 — 미지원이다.** Reason: `src/components/ui/button.tsx`는 native `<button>` props만 받는다(`asChild` 없음). 링크를 버튼처럼 보이게 하려면 `<Link className={buttonVariants({ size, variant })}>` 또는 `<a className={buttonVariants(...)}>`를 쓴다(이 task의 "직접 추가"·"편집" 링크가 그 패턴). 새 ui 프리미티브를 만들지 말 것.
@@ -1317,6 +1377,8 @@ git commit -m "feat(user-mgmt): 사용자 관리 UI(가입·검증·강제변경
 - **Don't `account/password`를 권한 summary로 게이트하지 마라.** Reason: must-change 세션은 중앙 게이트(S9/D17)에서 빈 summary를 받으므로, 이 페이지를 `admin.*`/임의 permission으로 막으면 정작 강제변경 사용자가 들어올 수 없다. 세션 존재만 확인하고(`auth()`), allowlist 경로(`change-password`)로서 권한 검사 없이 폼을 렌더한다.
 - **Don't signup/verify 결과를 구체적으로 노출하지 마라.** Reason: 중복 이메일(D10)·레이트리밋(D18)은 **중립 메시지**로 수렴해야 한다(이메일 존재 여부·시도 한도 노출 금지). signup server action은 응답 상태와 무관하게 `?sent=1` 안내로 끝내고, verify 실패는 "링크가 만료되었거나 올바르지 않습니다"로 통일한다.
 - **Don't 비번 정책 검사를 클라이언트에만 두지 마라.** Reason: 12자+ 일치 검사는 UX 보조일 뿐 권위가 아니다. 서버(zod `min(12)`, task-04/06/07)가 최종 검증한다. 클라이언트 검사를 통과시키되 서버 400을 항상 화면에 반영한다.
-- **Don't `tempPassword`/`currentPassword` 같은 비밀값을 로깅하거나 쿼리스트링에 넣지 마라.** Reason: 모두 POST 바디로만 전송한다. signup/verify의 토큰만 쿼리스트링을 쓰고(메일 링크), 비밀번호는 절대 URL에 싣지 않는다.
+- **Don't `password`/`temporaryPassword`/`currentPassword` 같은 비밀값을 로깅하거나 쿼리스트링에 넣지 마라.** Reason: 모두 POST 바디로만 전송한다. signup/verify의 토큰만 쿼리스트링을 쓰고(메일 링크), 비밀번호는 절대 URL에 싣지 않는다.
+- **Don't 직접추가 비번 필드를 `tempPassword`/`temporaryPassword`로 보내지 마라(finding 3).** Reason: `adminCreateSchema`는 `password`만 받는다 — 다른 키를 보내면 zod가 strip해 400(또는 빈 비번)으로 D4 생성이 실패한다. UI는 `toCreateUserPayload`로 **`password`** 키를 보내고(`payload.test.ts`가 회귀 가드), 요청 비번 계약은 서비스·라우트·테스트·UI가 모두 `password`로 통일한다. (reset **응답**의 1회용 비번 필드는 별개로 `temporaryPassword`로 통일 — 아래.)
+- **Don't 비번 재설정 응답의 1회용 임시비번을 버리지 마라(finding 2).** Reason: `reset-password`는 세션 무효화 + `mustChangePassword`를 걸므로, 응답 `{ temporaryPassword }`를 표시하지 않으면 대상이 비번 없이 lockout된다. reset mutation은 불리언만 반환하는 `call()` 헬퍼를 쓰지 말고 응답 JSON을 직접 파싱해 `temporaryPassword`를 state(`tempPasswordResult`)에 담아 **1회용 표시 블록**(복사·닫기)으로 렌더한다. `invalidate()`는 같은 id라 컴포넌트 key가 유지되어 state가 보존된다. 응답 필드명은 service(task-04)·route(task-05)와 동일한 `temporaryPassword`다.
 - **Don't enum 라벨 union을 넓은 `string`으로 바꾸지 마라.** Reason: `STATUS_LABEL`·`EMPLOYMENT_LABEL` 등은 `Record<리터럴유니온, …>`로 손수 좁힌 것이다(workflows `labels.ts` 규약). enum 값이 늘면 여기 누락 시 typecheck가 깨지게 두는 것이 의도다 — `labels.test.ts`가 가드.
 - **Don't 새 API 엔드포인트를 만들지 마라.** Reason: 이 task는 task-05/06/07이 확정한 라우트(`/api/admin/users…`·`/api/auth/…`)만 fetch한다. 역할 목록·권한 카탈로그는 서버 호출 없이 정적 상수(`ROLE_OPTIONS`)·`catalog.ts`(`RESOURCES×ACTIONS`)에서 합성한다 — 별도 조회 API 추가 금지(증분 범위 밖).
