@@ -4,6 +4,11 @@
 export const ROLE_ALLOW: Record<string, string[]> = {
   // pm 권한은 OWNER systemRole로 전부 허용되지만, 비-OWNER PM 대비 명시 ALLOW도 부여.
   pm: ["*"],
+  // 위임 사용자 관리자(D8) — OWNER 없이 사용자관리를 위임. pm/admin 특권 부여는 서비스 가드(D12/D13)가 OWNER-only로 제한.
+  admin: [
+    "admin.users:view", "admin.users:create", "admin.users:update", "admin.users:approve",
+    "admin.settings:configure", "admin.audit:view",
+  ],
   "regular-developer": [
     "dashboard:view", "calendar.work:view", "calendar.leave:view", "calendar.personal:view",
     "calendar.team:view", "workflows.weekly:view", "workflows.billing:view",

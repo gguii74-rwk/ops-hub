@@ -14,6 +14,7 @@ export const ACTIONS = [
 
 export const ACCESS_ROLE_KEYS = [
   "pm",
+  "admin",
   "regular-developer",
   "contractor-developer",
   "contractor-content",

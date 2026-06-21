@@ -27,6 +27,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // 허용목록(fail-closed): ACTIVE만 통과. INVITED(미활성)·DISABLED는 거부.
         if (!user || user.status !== "ACTIVE") return null;
 
+        // passwordHash가 null이면 set-password 미완료(PENDING 자가가입) — 로그인 거부
+        if (!user.passwordHash) return null;
         const valid = await bcrypt.compare(password, user.passwordHash);
         if (!valid) return null;
 
