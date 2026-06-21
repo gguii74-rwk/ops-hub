@@ -82,6 +82,8 @@ describe("D18 signup per-IP 한도 초과 → 429, createPendingSignup 미호출
     const res = await signupPOST(jsonReq(validSignup));
     expect(res.status).toBe(429);
     expect(h.createPendingSignup).not.toHaveBeenCalled();
+    // 와이어링: 첫 번째 호출이 signup:ip 스코프 + 추출된 IP + SIGNUP_IP_LIMIT이어야 한다.
+    expect(h.enforceRateLimit).toHaveBeenCalledWith("signup:ip", "1.2.3.4", SIGNUP_IP_LIMIT, expect.any(Date));
   });
   it(`SIGNUP_IP_LIMIT 상수 값이 10(계약 고정)`, () => {
     expect(SIGNUP_IP_LIMIT).toBe(10);
@@ -97,6 +99,8 @@ describe("D18 signup per-email 한도 초과 → 429", () => {
     const res = await signupPOST(jsonReq(validSignup));
     expect(res.status).toBe(429);
     expect(h.createPendingSignup).not.toHaveBeenCalled();
+    // 와이어링: 두 번째 호출이 signup:email 스코프 + 소문자 이메일 + SIGNUP_EMAIL_LIMIT이어야 한다.
+    expect(h.enforceRateLimit).toHaveBeenCalledWith("signup:email", "new@x.com", SIGNUP_EMAIL_LIMIT, expect.any(Date));
   });
   it(`SIGNUP_EMAIL_LIMIT 상수 값이 3(계약 고정)`, () => {
     expect(SIGNUP_EMAIL_LIMIT).toBe(3);
@@ -121,6 +125,8 @@ describe("D18 resend per-IP 한도 초과 → 429, refreshVerifyToken 미호출"
     expect(res.status).toBe(429);
     expect(h.refreshVerifyToken).not.toHaveBeenCalled();
     expect(h.enforceResendCooldown).not.toHaveBeenCalled();
+    // 와이어링: resend:ip 스코프 + 추출된 IP + SIGNUP_IP_LIMIT(signup과 동일 한도)이어야 한다.
+    expect(h.enforceRateLimit).toHaveBeenCalledWith("resend:ip", "1.2.3.4", SIGNUP_IP_LIMIT, expect.any(Date));
   });
   it(`SIGNUP_IP_LIMIT 상수가 resend per-IP 한도로 사용됨(계약 고정)`, () => {
     // resend:ip 스코프는 SIGNUP_IP_LIMIT를 재사용(저장증폭 완화 F3 — signup과 동일 버킷 한도).
@@ -135,6 +141,8 @@ describe("D18 resend 쿨다운 위반 → 429, refreshVerifyToken 미호출", ()
     const res = await resendPOST(jsonReq({ email: "new@x.com" }));
     expect(res.status).toBe(429);
     expect(h.refreshVerifyToken).not.toHaveBeenCalled();
+    // 와이어링: enforceResendCooldown은 소문자 이메일로 호출되어야 한다.
+    expect(h.enforceResendCooldown).toHaveBeenCalledWith("new@x.com", expect.any(Date));
   });
   it(`RESEND_COOLDOWN_MS 상수 값이 60000(1분, 계약 고정)`, () => {
     expect(RESEND_COOLDOWN_MS).toBe(60 * 1000);
@@ -146,6 +154,27 @@ describe("D18 정상 흐름: 한도 내면 통과(차단 회귀 방지)", () => 
     const res = await signupPOST(jsonReq(validSignup));
     expect(res.status).not.toBe(429);
     expect(h.createPendingSignup).toHaveBeenCalled();
+  });
+});
+
+describe("D18 와이어링 계약: signup enforceRateLimit 호출 순서·인자", () => {
+  it("signup 정상 흐름에서 enforceRateLimit를 signup:ip → signup:email 순서로 올바른 인자로 호출한다", async () => {
+    await signupPOST(jsonReq(validSignup));
+    // 첫 번째 호출: per-IP (추출된 IP, SIGNUP_IP_LIMIT)
+    expect(h.enforceRateLimit).toHaveBeenNthCalledWith(1, "signup:ip", "1.2.3.4", SIGNUP_IP_LIMIT, expect.any(Date));
+    // 두 번째 호출: per-email (소문자 정규화 이메일, SIGNUP_EMAIL_LIMIT)
+    expect(h.enforceRateLimit).toHaveBeenNthCalledWith(2, "signup:email", "new@x.com", SIGNUP_EMAIL_LIMIT, expect.any(Date));
+    expect(h.enforceRateLimit).toHaveBeenCalledTimes(2);
+  });
+
+  it("resend 정상 흐름에서 enforceRateLimit(resend:ip)·enforceResendCooldown을 올바른 인자로 호출한다", async () => {
+    await resendPOST(jsonReq({ email: "new@x.com" }));
+    // enforceRateLimit: resend:ip 스코프 + IP + SIGNUP_IP_LIMIT
+    expect(h.enforceRateLimit).toHaveBeenCalledWith("resend:ip", "1.2.3.4", SIGNUP_IP_LIMIT, expect.any(Date));
+    expect(h.enforceRateLimit).toHaveBeenCalledTimes(1);
+    // enforceResendCooldown: 소문자 정규화 이메일
+    expect(h.enforceResendCooldown).toHaveBeenCalledWith("new@x.com", expect.any(Date));
+    expect(h.enforceResendCooldown).toHaveBeenCalledTimes(1);
   });
 });
 
