@@ -141,7 +141,13 @@ export async function createPendingSignup(args: {
       const replaceable = existing.status === "PENDING" && existing.emailVerifiedAt === null
         && existing.emailVerifyExpiresAt !== null && existing.emailVerifyExpiresAt < now;
       if (!replaceable) throw new UserConflictError("이미 등록된 이메일입니다.");
-      await tx.user.update({ where: { id: existing.id }, data });
+      // NF1: id-only update → conditional updateMany. where에 replaceability 조건(status+emailVerifiedAt+만료)을 반복해
+      // read와 write 사이에 동시 rejectTx가 REJECTED로 바꾼 경우를 count=0으로 감지 → UserConflictError.
+      const replaced = await tx.user.updateMany({
+        where: { id: existing.id, status: "PENDING", emailVerifiedAt: null, emailVerifyExpiresAt: { lt: now } },
+        data,
+      });
+      if (replaced.count === 0) throw new UserConflictError("이미 등록된 이메일입니다.");
       id = existing.id;
     } else {
       const created = await tx.user.create({ data: { email: args.email, ...data } });
@@ -211,10 +217,14 @@ export async function createActiveUserByAdminTx(args: {
 }
 
 // ── 승인/거절(D11 — status-CAS + 역할확정 + 감사 + 메일 enqueue) ──
+// NF2: recheck?(currentRoleKeys) — CAS 후 applyRoles 전에 대상의 현재 역할을 fresh reload해 호출한다.
+// UserAccessRole 쓰기는 User.updatedAt을 올리지 않아 CAS 만으로는 잡히지 않는 동시 역할부여 race를 닫는다.
+// throw 시 트랜잭션 롤백 — applyRoles·mail 미실행. setRoles의 finding-H recheck 패턴과 동형.
 export async function approveTx(
   id: string, actorId: string,
   decision: { employmentType: string; jobFunction: string; systemRole: string; roleKeys: string[] },
   mail: UserMailJob, expectedUpdatedAt: Date,
+  recheck?: (currentRoleKeys: string[]) => void,
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
     const u = await tx.user.findUnique({ where: { id }, select: { status: true, emailVerifiedAt: true, updatedAt: true } });
@@ -231,6 +241,10 @@ export async function approveTx(
       },
     });
     if (updated.count === 0) throw new UserConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요.");
+    if (recheck) {
+      const cur = await tx.userAccessRole.findMany({ where: { userId: id }, select: { role: { select: { key: true } } } });
+      recheck(cur.map((r) => r.role.key)); // EscalationError 시 applyRoles 전에 중단(트랜잭션 롤백)
+    }
     await applyRoles(tx, id, decision.roleKeys);
     await writeAudit(tx, { actorId, entityType: "User", entityId: id, action: "approve", metadata: { systemRole: decision.systemRole, roleKeys: decision.roleKeys } });
     await enqueueUserMail(tx, { eventType: "APPROVED", ...mail });

@@ -75,16 +75,20 @@ export function getUserForEdit(_actor: ActorContext, id: string): Promise<UserDe
 // ── 승인(D11·D13ⓐⓑ·D12): 자가 금지 + 특권 역할/ systemRole 부여 가드 → approveTx(메일·CAS) → 트리거. ──
 // 가드는 현재↔원하는 상태를 비교(finding C). 대상은 PENDING이라 현재 systemRole/roleKeys가 기준선이며,
 // 승인으로 특권 systemRole·역할을 "추가"하는 것이 비-OWNER에게 차단된다(target.systemRole/roleKeys = 현재 상태).
+// NF2: setRoles finding-H 패턴과 동형으로 recheck 클로저를 approveTx에 주입한다.
+// UserAccessRole 쓰기는 User.updatedAt을 올리지 않아 CAS 단독으로 잡히지 않는 동시 역할부여 race를 트랜잭션 내 fresh reload로 닫는다.
 export async function approveUser(actor: ActorContext, id: string, input: ApproveInput): Promise<void> {
   const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
   assertCanSetSystemRole(actor, target.systemRole, input.systemRole);
-  assertCanAssignRoles(actor, target.roleKeys, input.roleKeys);
+  assertCanAssignRoles(actor, target.roleKeys, input.roleKeys); // 사전 검사(빠른 거부; stale 스냅샷)
   const mail = buildApprovedMail(target.email, target.name);
   await approveTx(id, actor.userId, {
     employmentType: input.employmentType, jobFunction: input.jobFunction,
     systemRole: input.systemRole, roleKeys: input.roleKeys,
-  }, mail, target.updatedAt);
+  }, mail, target.updatedAt,
+    (currentRoleKeys) => assertCanAssignRoles(actor, currentRoleKeys, input.roleKeys), // 락 안 권위 재검사(fresh)
+  );
   triggerLeaveMailDrain();
 }
 

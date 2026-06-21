@@ -56,15 +56,25 @@ beforeEach(() => {
 
 describe("approveUser", () => {
   const input = { employmentType: "REGULAR" as const, jobFunction: "DEVELOPER" as const, systemRole: "MEMBER" as const, roleKeys: ["regular-developer"] };
-  it("정상: approveTx(decision·mail[email]·updatedAt) 호출 + 메일 트리거", async () => {
+  it("정상: approveTx(decision·mail[email]·updatedAt·recheck) 호출 + 메일 트리거", async () => {
     await approveUser(owner, "u1", input);
     expect(r.approveTx).toHaveBeenCalledWith(
       "u1", "owner1",
       expect.objectContaining({ systemRole: "MEMBER", roleKeys: ["regular-developer"] }),
       expect.objectContaining({ recipients: ["u@x.com"] }),
       new Date("2026-06-01T00:00:00Z"),
+      expect.any(Function), // NF2: recheck 콜백
     );
     expect(trigger).toHaveBeenCalled();
+  });
+  it("NF2: approveTx에 넘긴 recheck 콜백이 fresh 역할에 특권(pm)이 있으면 EscalationError를 던진다(위임 admin actor 기준)", async () => {
+    // 위임 admin이 비특권 역할만 승인 시도 — 사전 검사는 통과. recheck는 actor를 캡처해 락 안 fresh로 재검사.
+    await approveUser(delegate(), "u1", input);
+    const recheck = r.approveTx.mock.calls[0][5] as (cur: string[]) => void;
+    // 비특권만이면 통과
+    expect(() => recheck(["regular-developer"])).not.toThrow();
+    // 특권 역할(pm)이 fresh currentRoleKeys에 있으면 — 부여 목록에 없으므로 제거 시도가 되어 EscalationError
+    expect(() => recheck(["pm", "regular-developer"])).toThrow(EscalationError);
   });
   it("대상 없음 → UserConflictError, approveTx 미호출", async () => {
     r.getUserDetail.mockResolvedValue(null);
