@@ -47,6 +47,7 @@
 | **D10** | 중복 이메일 가입은 **거부(409, 중립 메시지)**. `REJECTED` 이메일의 자가 재신청도 차단하고, 관리자만 재활성한다. |
 | **D11** | 승인/거절은 **status-CAS 트랜잭션**(`updateMany({where:{id,status:PENDING}})`, `count===0` → 409 충돌). 같은 트랜잭션에서 역할 부여·감사로그·메일 enqueue를 처리한다. |
 | **D12** | **권한 상승 가드**: 비-OWNER는 OWNER/ADMIN `systemRole`을 부여할 수 없다(403). 마지막 OWNER의 강등/박탈을 막는다(최소 1 OWNER 보존). |
+| **D13** | **권한 위임 anti-escalation(D12 확장)**. 위임 `admin`(비-OWNER)에 대해: (a) **자가 권한 mutation 금지** — 본인의 역할·override·`systemRole`·`status`를 스스로 변경할 수 없다(OWNER만). → "나에게 `pm` 부여" 차단. (b) **특권 역할 부여는 OWNER만** — `pm`·`admin` 등 시스템 역할 또는 `"*"`/`admin.*`를 포함한 역할의 부여·회수는 OWNER만. 위임 admin은 비특권 역할(개발/외주 4종)만 부여한다. (c) **보유 권한 한도 내 위임** — 위임 admin은 자신이 실제 보유한 권한에 한해서만 ALLOW override를 부여할 수 있다(가진 것 이상 못 줌). DENY override는 접근을 줄이므로 항상 허용. 모든 가드는 **라우트 permission 키 검사와 별개로 서비스 계층에서 강제**한다(권한키 분할 대신). |
 
 ## 4. 데이터 모델 / 마이그레이션
 
@@ -100,6 +101,7 @@ model User {
 
 - **`admin` 역할**(D8): `admin.users:{view,create,update,approve}`, `admin.settings:configure`, `admin.audit:view`를 묶는다. PM(OWNER) 외에도 사용자관리를 위임할 수 있다. 기존 `pm` 역할은 `"*"`라 영향 없음.
 - **권한 상승 가드**(D12): `systemRole`을 `OWNER`/`ADMIN`으로 설정·변경하는 요청은 행위자가 `OWNER`일 때만 허용(아니면 403). 마지막 `OWNER`를 강등/비활성하려는 시도는 거부.
+- **위임 anti-escalation**(D13): `admin.users:update` 하나가 역할 부여·override·status·비번재설정을 모두 게이트하므로, **서비스 계층**에서 추가 가드를 강제한다 — ⓐ 비-OWNER의 자기 자신 역할/override/systemRole/status mutation 금지, ⓑ 특권 역할(`pm`/`admin`, `"*"`·`admin.*` 포함 역할) 부여·회수는 OWNER만, ⓒ ALLOW override는 행위자가 보유한 권한 범위 내에서만(DENY는 항상 허용). 위반 시 403. 이 가드들은 라우트 권한키 검사를 통과해도 별도로 적용된다.
 - **UI↔API 키 일치**: 모든 관리자 라우트는 UI `useCan(...)`와 서버 `requirePermission(...)`가 동일 permission 키를 검사한다(메뉴 숨김은 UX, 실행 권한은 API에서). 개인 override는 엔진(`computeDecision`)이 이미 소비하므로 UI만 추가하면 즉시 반영된다(override DENY가 역할 ALLOW를 이김, OWNER만 예외).
 
 ## 7. 화면 (UI)
@@ -128,6 +130,8 @@ model User {
 | `/api/admin/users/[id]/overrides` | POST / DELETE | `:update` | `UserPermissionOverride` CRUD |
 | `/api/admin/users/[id]/reset-password` | POST | `:update` | 임시비번 발급 + `mustChangePassword` |
 
+`roles`·`overrides`·`[id]`(PATCH)·`reset-password` 라우트는 `admin.users:update` 키를 통과하더라도 **서비스 계층에서 D13 가드를 추가 적용**한다(자가 mutation 금지, 특권 역할 OWNER-only, ALLOW override 보유 한도). 위반 시 403.
+
 ### 개인 override 패널(섹션 7 편집 화면 내)
 
 `UserPermissionOverride` CRUD. 입력 = 권한키 선택기(카탈로그 `resource:action`), `effect`(ALLOW/DENY), `scope`(own/team/assigned/all), `reason`, `startsAt`/`endsAt`. 사용자별 기존 override 목록(유효기간·만료 표시).
@@ -153,6 +157,7 @@ model User {
 - **override**: 생성·삭제 / 엔진 반영(override DENY가 역할 ALLOW를 이김).
 - **게이트**: 각 라우트 `admin.users:*` 요구(미보유 403), `admin` 역할로 접근 가능, 비관리자 거부.
 - **권한 상승 가드**: 비-OWNER가 OWNER/ADMIN 부여 불가(403), 마지막 OWNER 보존.
+- **위임 anti-escalation(D13)**: 위임 admin이 ⓐ 자기 자신에게 `pm` 역할 부여 시도 → 거부(403), ⓑ 본인 역할/override/systemRole/status 자가 변경 → 거부, ⓒ `pm`/`admin` 특권 역할을 타인에게 부여 → OWNER만 허용·위임 admin은 거부, ⓓ 자신이 보유하지 않은 권한을 ALLOW override로 부여 → 거부(DENY override는 허용). 각각 테스트.
 - **감사로그**: 각 mutation이 `AuditLog`에 기록되는지.
 
 ## 11. 미해결 / 후속
