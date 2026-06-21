@@ -44,10 +44,13 @@
 | **D7** | **비밀번호 자가변경 + 최초 로그인 강제변경**(`mustChangePassword` 플래그). |
 | **D8** | 사용자관리 권한 = **위임 가능한 `admin` AccessRole 신설**(`admin.users:*` + `admin.settings` + `admin.audit:view`). `systemRole`을 OWNER/ADMIN으로 부여하는 것은 **OWNER만** 가능. |
 | **D9** | 신청 데이터 모델링 = **A안: `User` 행 직접 생성**(`status=PENDING`). 희망값은 기존 `employmentType`/`jobFunction`/`department` 컬럼에 저장하고 `status`로 권위 여부를 구분. 새 컬럼은 `mustChangePassword`만. |
-| **D10** | 중복 이메일 가입은 **거부(409, 중립 메시지)**. `REJECTED` 이메일의 자가 재신청도 차단하고, 관리자만 재활성한다. |
+| **D10** | 중복 이메일 가입은 **거부(409, 중립 메시지)**. `REJECTED` 이메일의 자가 재신청도 차단하고, 관리자만 재활성한다. 단 만료된 미검증 PENDING은 예외로 교체 허용(D16). |
 | **D11** | 승인/거절은 **status-CAS 트랜잭션**(`updateMany({where:{id,status:PENDING}})`, `count===0` → 409 충돌). 같은 트랜잭션에서 역할 부여·감사로그·메일 enqueue를 처리한다. |
 | **D12** | **권한 상승 가드**: 비-OWNER는 OWNER/ADMIN `systemRole`을 부여할 수 없다(403). 마지막 OWNER의 강등/박탈을 막는다(최소 1 OWNER 보존). |
+| **D14** | **비밀번호 재설정(reset-password) 가드**. 대상이 OWNER/ADMIN `systemRole` 또는 특권 역할(`pm`/`admin`) 보유자면 **OWNER만** 재설정 가능(위임 admin 거부). 비-OWNER admin은 자기 자신을 admin 라우트로 재설정 불가. 재설정 성공 후 대상의 **기존 세션 무효화**. D4(임시비번 즉시 ACTIVE·관리자 전달)는 비특권 대상에 한해 유지. |
+| **D15** | **비밀번호 변경 인증**. 자발적 변경은 **현재 비밀번호 확인** 필요. 최초 강제변경(`mustChangePassword`)은 현재(임시) 비밀번호 확인 또는 fresh 로그인 필요. 변경/재설정 성공 후 **다른 활성 세션 무효화** — JWT 세션이므로 `passwordChangedAt` 발급시각 비교로 무효화(jwt/session 콜백). |
 | **D13** | **권한 위임 anti-escalation(D12 확장)**. 위임 `admin`(비-OWNER)에 대해: (a) **자가 권한 mutation 금지** — 본인의 역할·override·`systemRole`·`status`를 스스로 변경할 수 없다(OWNER만). → "나에게 `pm` 부여" 차단. (b) **특권 역할 부여는 OWNER만** — `pm`·`admin` 등 시스템 역할 또는 `"*"`/`admin.*`를 포함한 역할의 부여·회수는 OWNER만. 위임 admin은 비특권 역할(개발/외주 4종)만 부여한다. (c) **보유 권한 한도 내 위임** — 위임 admin은 자신이 실제 보유한 권한에 한해서만 ALLOW override를 부여할 수 있다(가진 것 이상 못 줌). DENY override는 접근을 줄이므로 항상 허용. 모든 가드는 **라우트 permission 키 검사와 별개로 서비스 계층에서 강제**한다(권한키 분할 대신). |
+| **D16** | **이메일 소유 검증**. 자가가입은 PENDING 생성 + 검증 토큰(해시 저장)·검증 메일 발송(MailDelivery, D5 알림과 별개 범주). 공개 라우트 `verify-email`이 토큰·만료 검증 후 `emailVerifiedAt` 기록. **승인은 `emailVerifiedAt` 필수**(미검증 승인 거부). **이메일 예약 방지**: 미검증·미승인 PENDING은 7일 후 만료, 중복 충돌 시 기존 행이 만료된 미검증 PENDING이면 교체 허용(D10 보완); 검증완료·활성 이메일은 중복 거부 유지. 관리자 직접추가는 관리자 보증으로 `emailVerifiedAt=now()` 설정. |
 
 ## 4. 데이터 모델 / 마이그레이션
 
@@ -63,14 +66,18 @@ enum UserStatus {
 model User {
   // ... 기존 필드 유지
   // employmentType/jobFunction/department: PENDING이면 '희망값'(비권위), ACTIVE면 관리자 확정값
-  mustChangePassword Boolean @default(false)  // 신규
+  mustChangePassword  Boolean  @default(false)  // 신규
+  passwordChangedAt   DateTime?                  // 신규 — 세션 무효화 기준(D15)
+  emailVerifiedAt     DateTime?                  // 신규 — 이메일 소유 검증(D16)
+  emailVerifyTokenHash String?                   // 신규 — 검증 토큰 해시
+  emailVerifyExpiresAt DateTime?                  // 신규 — 검증 토큰 만료
 }
 ```
 
 마이그레이션 작업:
 
 1. `UserStatus`에 `PENDING`, `REJECTED` 값 추가.
-2. `User.mustChangePassword Boolean @default(false)` 추가.
+2. `User`에 `mustChangePassword`, `passwordChangedAt`, `emailVerifiedAt`, `emailVerifyTokenHash`, `emailVerifyExpiresAt` 추가.
 3. **`admin` AccessRole 시드**(`key="admin"`, `isSystem=true`): `admin.users:{view,create,update,approve}` + `admin.settings:configure` + `admin.audit:view`.
 4. **권한 카탈로그 보강**: `admin.users:create`(현재 누락), `admin.users:approve`를 시드에 추가(`admin.users:view`/`:update`는 이미 존재). `catalog.ts`의 `ACTIONS`에 `approve`는 이미 있음.
 
@@ -89,13 +96,15 @@ model User {
 
 전이 규칙:
 
-- **자가 신청**: `∅ → PENDING`. 입력 = 이메일·이름·비밀번호 + 희망 고용형태·직무·부서. 비밀번호는 기존 정책(12자+) 재사용.
-- **승인**: `PENDING → ACTIVE`. 관리자가 고용형태·직무·`AccessRole`을 확정. 결과 메일 발송.
+- **자가 신청**: `∅ → PENDING`(`emailVerifiedAt=null`). 입력 = 이메일·이름·비밀번호 + 희망 고용형태·직무·부서. 비밀번호는 기존 정책(12자+) 재사용. 검증 토큰 발급 + 검증 메일 발송(D16).
+- **이메일 검증**(D16): `verify-email` 라우트가 토큰·만료 확인 후 `emailVerifiedAt` 기록. 검증 메일 재발송 경로 제공.
+- **승인**: `PENDING → ACTIVE`. **`emailVerifiedAt` 필수**(미검증이면 승인 거부). 관리자가 고용형태·직무·`AccessRole`을 확정. 결과 메일 발송.
 - **거절**: `PENDING → REJECTED`. 결과 메일 발송.
 - **직접추가**: `∅ → ACTIVE` (임시비번, `mustChangePassword=true`).
 - **비활성/재활성**: `ACTIVE ↔ DISABLED`. `REJECTED → ACTIVE`는 관리자만(재활성).
 - **로그인**(`authorize`): 비-ACTIVE는 기존대로 차단. ACTIVE이면서 `mustChangePassword=true`면 로그인은 되되 **강제로 비밀번호 변경 페이지로 리다이렉트**(세션 클레임 + 미들웨어/가드).
-- **중복 이메일**(D10): `email` unique. 어떤 상태로든 존재하면 가입 거부(409, 중립 메시지). `REJECTED` 자가 재신청도 차단.
+- **비밀번호 변경·재설정 인증**(D15·D14): 자발적 변경은 현재 비밀번호 확인. 강제변경은 현재(임시) 비밀번호/ fresh 로그인 확인. 변경·재설정 시 `passwordChangedAt` 갱신 → 그 이전 발급 JWT는 jwt/session 콜백에서 거부(타 세션 무효화). 특권 대상 재설정은 OWNER만(D14).
+- **중복 이메일**(D10·D16): `email` unique. 검증완료·활성·REJECTED로 존재하면 가입 거부(409, 중립 메시지). 단 **만료된 미검증 PENDING**이면 기존 행을 교체해 재신청 허용(이메일 영구 예약 방지). 미검증·미승인 PENDING은 7일 후 만료(정리 작업/충돌 시 지연 정리).
 
 ## 6. 권한 모델 변경
 
@@ -119,8 +128,10 @@ model User {
 
 | 라우트 | 메서드 | 권한 | 비고 |
 | --- | --- | --- | --- |
-| `/api/auth/signup` | POST | 공개(미인증) | PENDING 생성, 중복 409 |
-| `/api/auth/change-password` | POST | 인증(본인) | 변경 후 `mustChangePassword=false` |
+| `/api/auth/signup` | POST | 공개(미인증) | PENDING 생성, 검증 메일 발송, 중복 409 |
+| `/api/auth/verify-email` | GET/POST | 공개(토큰) | 토큰·만료 검증 → `emailVerifiedAt` |
+| `/api/auth/resend-verification` | POST | 공개 | 검증 메일 재발송 |
+| `/api/auth/change-password` | POST | 인증(본인) | 현재 비번 확인, 후 `mustChangePassword=false`·세션 무효화 |
 | `/api/admin/users` | GET | `admin.users:view` | 목록·필터·페이지네이션 |
 | `/api/admin/users` | POST | `admin.users:create` | 직접추가(임시비번·ACTIVE) |
 | `/api/admin/users/[id]` | GET / PATCH | `:view` / `:update` | 속성·상태·systemRole 편집 |
@@ -130,7 +141,7 @@ model User {
 | `/api/admin/users/[id]/overrides` | POST / DELETE | `:update` | `UserPermissionOverride` CRUD |
 | `/api/admin/users/[id]/reset-password` | POST | `:update` | 임시비번 발급 + `mustChangePassword` |
 
-`roles`·`overrides`·`[id]`(PATCH)·`reset-password` 라우트는 `admin.users:update` 키를 통과하더라도 **서비스 계층에서 D13 가드를 추가 적용**한다(자가 mutation 금지, 특권 역할 OWNER-only, ALLOW override 보유 한도). 위반 시 403.
+`roles`·`overrides`·`[id]`(PATCH)·`reset-password` 라우트는 `admin.users:update` 키를 통과하더라도 **서비스 계층에서 D13 가드를 추가 적용**한다(자가 mutation 금지, 특권 역할 OWNER-only, ALLOW override 보유 한도). 위반 시 403. `reset-password`는 추가로 **D14**(특권 대상 OWNER-only·세션 무효화), `change-password`는 **D15**(현재 비번 확인·세션 무효화)를 적용한다.
 
 ### 개인 override 패널(섹션 7 편집 화면 내)
 
@@ -150,10 +161,11 @@ model User {
 
 `tests/`는 `src/` 레이아웃 미러. 서비스 + route-level:
 
-- **signup**: PENDING 생성 / 중복이메일 409 / 희망값 저장되나 비권위(역할 없음·로그인 불가) 확인.
+- **signup**: PENDING(미검증) 생성 + 검증 메일 enqueue / 중복이메일 409 / 만료된 미검증 PENDING은 재신청 교체 허용 / 희망값 저장되나 비권위(역할 없음·로그인 불가) 확인.
+- **email-verify**(D16): 유효 토큰 → `emailVerifiedAt` 기록 / 만료·위조 토큰 거부 / 미검증 상태로는 승인 거부 / 재발송.
 - **approve·reject**: PENDING→ACTIVE + 역할 + 메일 enqueue + 감사 / 더블승인 CAS 충돌(409) / reject→REJECTED + 메일.
 - **admin-add**: ACTIVE + `mustChangePassword` / 중복 409.
-- **password**: 자가변경 / 최초로그인 강제 리다이렉트 / 변경 후 플래그 해제.
+- **password**: 자가변경(현재 비번 확인, 틀리면 거부) / 최초로그인 강제 리다이렉트 / 변경 후 플래그 해제 / 변경·재설정 후 `passwordChangedAt` 이전 JWT 거부(타 세션 무효화) / 위임 admin의 특권 대상(OWNER·pm) 재설정 거부·OWNER만 허용(D14).
 - **override**: 생성·삭제 / 엔진 반영(override DENY가 역할 ALLOW를 이김).
 - **게이트**: 각 라우트 `admin.users:*` 요구(미보유 403), `admin` 역할로 접근 가능, 비관리자 거부.
 - **권한 상승 가드**: 비-OWNER가 OWNER/ADMIN 부여 불가(403), 마지막 OWNER 보존.
