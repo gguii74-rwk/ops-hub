@@ -134,6 +134,7 @@ src/app/{(auth),dashboard,workflows,leave,admin,api}/
 - `LeaveAllocation.usedDays`는 **캐시 필드**. 승인/취소/관리자 수정/삭제는 반드시 **transaction**으로 처리하고, 별도 `recalculate` 작업을 둔다
 - 연차 상태 전이(approve/cancel/reject/관리자 수정·삭제)는 read 후 `updateMany({where:{id,status}})` **status-CAS + count===0 충돌** 패턴(기존 `src/modules/leave/repositories/index.ts` approveTx/cancelTx). 동시 관리자 수정(days 변경)까지 막으려면 `where`에 `updatedAt` 낙관적 락을 추가 — stale read로 usedDays가 어긋나는 것 방지
 - 같은 기간 `PENDING`/`APPROVED` 신청과 중복 불가. 일반 사용자는 과거 날짜 신청·당일/과거 취소 불가(관리자는 가능)
+- `createLeaveRequest`는 신청 기간이 걸친 연도의 **공휴일 동기화 후에만 통과**(fail-closed). 동기화엔 `DATA_GO_KR_SERVICE_KEY` 필요 — **없으면 유형 무관 모든 신청이 차단**된다(spec D8). 교차연도 ANNUAL은 **시작연도에 전체 일수 일괄 차감**(spec D7, 연도별 분할 아님)
 - 메일 발송은 업무 성공과 분리(background)하되 `MailDelivery` 이력으로 남긴다
 
 ## 코딩 규칙 (AGENTS.md)
@@ -156,3 +157,9 @@ src/app/{(auth),dashboard,workflows,leave,admin,api}/
 ## 개발 사이클 자동화 (적대검증 반복 루프)
 
 각 단계(spec/plan/impl) 완료 후 `review-loop` 스킬로 "커밋→codex 적대검증→보수적 자동수정→재반복(critical/high 0까지/최대 5회)"을 돌린다. 단계 경계(spec→plan, plan→impl)는 **반드시 새 세션**에서 시작한다(핸드오프 작성 후 `/clear`). 컨텍스트 40% 초과 시 Stop 훅(`scripts/context-threshold-hook.mjs`)이 핸드오프+`/clear`를 넛지한다. 자가 `/clear`·자동 단계전환은 불가하므로 실제 초기화는 사람이 한다. 상세: `docs/workflow/review-loop-runbook.md`.
+
+**codex 적대검증은 `docs/specs/`의 결정(번호 `D<n>`)·사용자 기결정·pre-existing 코드를 모른다** — 의도된 설계를 버그로 재지목할 수 있다. finding을 고치기 전 해당 spec 결정과 대조하고, 오탐/이미-결정은 자동수정 말고 ESCALATE·기록으로 처리한다(수렴 안 하면 diminishing-returns 신호).
+
+## dev 테스트 배포 (수동 — 배포 스크립트 없음)
+
+접속·경로·포트·DB는 workspace-env `INVENTORY.md`(SSOT) 참조. 절차: 대상 브랜치 checkout → `.env` 보강 → `npm ci` → `npx prisma migrate deploy` → `npm run db:seed`(새 권한 catalog 등록) → `npm run db:seed:demo`(테스트 데이터) → `npm run build` → `pm2 restart ops-hub`. **마이그레이션 대상은 우리 `opshub` DB — 같은 서버에 동거하는 safety_report 운영 DB는 절대 건드리지 말 것.** `psql "$DATABASE_URL"`은 Prisma 전용 `?schema=public`를 제거해야 동작한다.
