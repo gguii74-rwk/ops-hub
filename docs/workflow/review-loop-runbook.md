@@ -34,6 +34,19 @@
 - 결과 파일은 앞부분에 `[codex] …` 실행 로그가 섞여 있다 — 보고서만 추출: `sed -n '/^# Codex Adversarial Review/,$p' <outfile>`.
 - 큰 plan은 매 회 ~2 high가 새 영역에서 나오는 경향(근본 결함 아님 — 적대검증이 `base..HEAD` 전체를 매번 다시 보기 때문). 그래서 "절대 개수 0"은 도달 불가능할 수 있다 → 목표를 "미판정 blocking 0"으로 두고, **blocking score 2회 연속 비감소면 판정 루프로 전환**해 남은 high를 ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE로 닫아 churn을 끊는다. 영역이 코어 정합성→주변부(UI·배포·타입)로 이동하면 spec/plan의 DEFERRED_TO_IMPL을 impl AC/테스트로 연결하고 impl 전환을 고려.
 
+### impl 리뷰 입도 선택 (per-task vs end-to-end)
+
+impl phase에서 리뷰를 **각 task마다** 돌릴지 **전부 끝나고 한 번** 돌릴지는 plan 구조로 정한다. **spec/plan 단계엔 적용하지 않는다**(문서는 항상 전체 diff 리뷰). 이는 강제 규칙이 아니라 선택 가이드다 — review-loop 스킬의 `--base` 기본값(`main`)·절차는 그대로다.
+
+- **per-task(묶음) 리뷰 + 마지막 통합 리뷰** — task가 많고(대략 5+) **계층형·강결합·보안크리티컬**일 때. 각 task(또는 강결합 묶음) 커밋 직후 `--base <그 task 시작 직전 HEAD>`로 그 task diff만 리뷰 → 결함을 만든 직후·전파 전에 닫는다. 결합도로 묶는다(예: 가드 단독 / repo+service 묶음 / 라우트·세션 각각 단독).
+- **end-to-end 1회** — task가 적거나(2~3) 독립적·약결합일 때. `--base main`으로 전체를 한 번. 이런 경우 per-task는 오버헤드다.
+
+**증분 base 안전조건(필수).** `--base <직전 task>`는 그 task diff만 보므로 **이전 task를 깨는 회귀를 못 본다.** 그래서 per-task 증분 리뷰를 쓸 땐 **반드시 마지막에 통합 리뷰 1회(`--base main`)** 로 회귀 + 교차-task 결함(인터페이스 불일치·교차 모듈 경쟁조건·전체 흐름)을 잡는다. 통합 리뷰 없이 증분만 쓰지 말 것. (review-loop가 증분 검증을 기본 채택하지 않는 이유 = 이 회귀 누락 위험. 통합 리뷰와 짝일 때만 안전하다.)
+
+**판정(ledger) 연계.** per-task 리뷰에서 "상부 task가 와야 검증되는" finding은 `DEFERRED_TO_IMPL`로 ledger에 남기고, 마지막 통합 리뷰에서 그 항목들을 재확인해 닫는다.
+
+**base 잡는 법.** 각 task 시작 시 `git rev-parse HEAD`로 현재 HEAD를 기록해 그 task의 base로 쓴다. 이러면 무관한 커밋(워크플로 문서 등)이 사이에 끼어도 자동 제외된다.
+
 ## 컨텍스트 규율(자동/수동 경계)
 
 - **자동**: Stop 훅(`scripts/context-threshold-hook.mjs`)이 transcript 사용량을 계산해 40% 초과 시 "핸드오프 쓰고 /clear 안내"를 1회 넛지. review-loop도 같은 시점을 자체 점검.
