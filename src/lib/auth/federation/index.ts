@@ -27,9 +27,11 @@ export async function verifySession(): Promise<Identity | null> {
   // must-change는 권한 0(중앙 게이트와 동일) → federation 헤더/그룹도 미발급.
   if (user.mustChangePassword) return null;
   // 상태/무효화 시각 판정은 session 콜백과 동일한 순수 헬퍼를 공유한다.
-  // iat: session 콜백이 이미 무효 세션의 session.user를 비우므로 auth()가 user를 돌려준 시점에서
-  // 세션은 발급시각 기준 유효하다. 방어적으로 DB 시각 자체가 "지금" 이후인 경우만 추가로 거른다
-  // (시계 역행·재설정 직후 레이스). 발급시각 기준은 현재시각(now)을 사용.
-  if (!isSessionValid(Math.floor(Date.now() / 1000), user)) return null;
+  // F-FED: 발급시각 기준은 session 콜백이 검증에 쓴 실제 iat(session.iat)를 사용한다.
+  // auth()가 user를 돌려준 뒤 이 2차 DB read 사이에 비번변경/무효화가 끼면, Date.now() 기준으론
+  // passwordChangedAt이 "과거"라 통과해 무효 토큰에 claims를 발급할 수 있다(TOCTOU). iat 기준이면 차단된다.
+  // session.iat이 없는 예외 상황에선 보수적으로 현재시각으로 폴백(미래시각 무효화는 여전히 걸러짐).
+  const issuedAt = typeof session.iat === "number" ? session.iat : Math.floor(Date.now() / 1000);
+  if (!isSessionValid(issuedAt, user)) return null;
   return issueClaims(user);
 }

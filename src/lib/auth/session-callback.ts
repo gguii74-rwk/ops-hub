@@ -12,7 +12,7 @@ import { isSessionValid } from "@/lib/auth/session-validity";
 // 무효 판정: DB 스냅샷(status/passwordChangedAt/sessionInvalidatedAt)을 순수 헬퍼 isSessionValid에 위임(§S9).
 // 유효하면 session.user를 **DB 권위값으로 fresh 재구성**한다(특히 systemRole — stale JWT 신뢰 금지, finding #1).
 export const sessionCallback: NonNullable<NextAuthConfig["callbacks"]>["session"] = async ({ session, token }) => {
-  const s = session as unknown as { user?: SessionUser };
+  const s = session as unknown as { user?: SessionUser; iat?: number };
   const uid = token.uid;
   const current = uid
     ? await prisma.user.findUnique({
@@ -40,5 +40,7 @@ export const sessionCallback: NonNullable<NextAuthConfig["callbacks"]>["session"
     jobFunction: current.jobFunction as JobFunction,
     mustChangePassword: current.mustChangePassword, // DB 권위(강제변경 진행 중 해제를 즉시 반영)
   };
+  // 검증에 쓴 발급시각을 세션에 실어, 서버 재검증(verifySession)이 동일 기준으로 무효화를 판단(F-FED).
+  s.iat = issuedAt;
   return session;
 };

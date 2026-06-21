@@ -244,16 +244,16 @@ describe("resetPasswordTx (D14)", () => {
 });
 
 describe("changePasswordTx (D15 — 세션 무효화 기준은 passwordChangedAt)", () => {
-  it("expectedCurrentHash CAS where + passwordHash + passwordChangedAt=now + mustChangePassword=false (finding 4)", async () => {
+  it("expectedCurrentHash + status=ACTIVE CAS where + passwordHash + passwordChangedAt=now + mustChangePassword=false (finding 4·F-RACE)", async () => {
     h.db.user.updateMany.mockResolvedValue({ count: 1 });
     const now = new Date("2026-06-10T00:00:00Z");
     await changePasswordTx("u1", "newhash", now, "oldhash");
     expect(h.db.user.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: "u1", passwordHash: "oldhash" }, // 현재 해시 CAS — 그 사이 reset가 끼면 불일치
+      where: { id: "u1", passwordHash: "oldhash", status: "ACTIVE" }, // 현재 해시 + 활성 CAS — reset/disable이 끼면 불일치
       data: { passwordHash: "newhash", passwordChangedAt: now, mustChangePassword: false },
     }));
   });
-  it("finding 4: 검증~쓰기 사이 admin reset 등으로 현재 해시 불일치(count 0)면 UserConflictError(덮어쓰기 방지)", async () => {
+  it("finding 4·F-RACE: 검증~쓰기 사이 admin reset(해시변경) 또는 disable(status≠ACTIVE)로 count 0면 UserConflictError(비활성 계정에 비번 박힘·덮어쓰기 방지)", async () => {
     h.db.user.updateMany.mockResolvedValue({ count: 0 });
     await expect(changePasswordTx("u1", "newhash", new Date(), "oldhash")).rejects.toBeInstanceOf(UserConflictError);
   });

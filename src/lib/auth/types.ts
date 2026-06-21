@@ -15,6 +15,9 @@ export interface SessionUser {
 declare module "next-auth" {
   interface Session {
     user: SessionUser;
+    // 토큰 발급시각(초). session 콜백이 무효 판정에 쓴 실제 iat를 실어, 서버 재검증(verifySession 등)이
+    // Date.now()가 아닌 동일 발급시각 기준으로 무효화를 판단하게 한다(F-FED — auth()와 2차 DB read 사이 TOCTOU 차단).
+    iat?: number;
   }
   interface User {
     systemRole: SystemRole;

@@ -419,9 +419,12 @@ export async function resetPasswordTx(
 // change(자가/강제변경): passwordHash + passwordChangedAt=now(타 세션 무효화 기준) + mustChangePassword 해제. 가용성 무관(스스로 사용 가능 상태로 복귀).
 // finding 4: expectedCurrentHash CAS — 라우트가 현재비번 검증에 쓴 해시를 where에 넣는다. 검증~쓰기 사이에 admin reset(또는 타 변경)이
 // passwordHash를 바꾸면 count 0 → UserConflictError(이전 비번 사용자가 reset/must-change 복구를 덮어쓰는 race 차단). 라우트는 409로 재로그인 유도.
+// F-RACE: where에 status="ACTIVE"도 포함해 **현재 계정 상태에 fail-closed**. 검증~쓰기 사이 admin disable(status=DISABLED·
+// sessionInvalidatedAt만 변경, passwordHash 불변)이 끼면 hash CAS는 통과하므로, status 가드가 없으면 비활성 계정에 비번이 박히고
+// mustChangePassword가 해제돼 추후 재활성화 시 사용자 지정 비번이 잔존한다. status 조건으로 count 0 → UserConflictError(409).
 export async function changePasswordTx(id: string, passwordHash: string, now: Date, expectedCurrentHash: string): Promise<void> {
   const { count } = await prisma.user.updateMany({
-    where: { id, passwordHash: expectedCurrentHash },
+    where: { id, passwordHash: expectedCurrentHash, status: "ACTIVE" },
     data: { passwordHash, passwordChangedAt: now, mustChangePassword: false },
   });
   if (count === 0) throw new UserConflictError("처리 중 비밀번호가 변경되었습니다. 다시 로그인해 주세요.");
