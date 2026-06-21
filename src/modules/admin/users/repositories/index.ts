@@ -385,11 +385,14 @@ export async function reactivateRejectedTx(
   await withAvailabilityLock(async (tx) => {
     const u = await tx.user.findUnique({
       where: { id },
-      select: { status: true, updatedAt: true, systemRole: true, roleAssignments: { select: { role: { select: { key: true } } } } },
+      select: { status: true, updatedAt: true, systemRole: true, emailVerifiedAt: true, roleAssignments: { select: { role: { select: { key: true } } } } },
     });
     if (!u) throw new UserConflictError("사용자를 찾을 수 없습니다.");
     if (recheck) recheck({ systemRole: u.systemRole, roleKeys: u.roleAssignments.map((r) => r.role.key) }); // finding 1
     if (u.status !== "REJECTED") throw new UserConflictError("거절 상태의 사용자만 재활성할 수 있습니다.");
+    // Finding C: 미검증(비번 미설정)으로 거절된 계정을 ACTIVE로 만들면 로그인 불가·검증 토큰 없음 wedged 계정이 된다.
+    // approveTx와 동일 활성화 불변식 강제 — 검증된 계정만 재활성 허용.
+    if (!u.emailVerifiedAt) throw new UserConflictError("이메일 검증(비밀번호 설정) 전 계정은 재활성할 수 없습니다.");
     const updated = await tx.user.updateMany({
       where: { id, status: "REJECTED" },
       data: { status: "ACTIVE" },

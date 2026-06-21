@@ -555,7 +555,7 @@ describe("refreshVerifyToken (재발송 — 토큰갱신 + 메일 재enqueue 원
 
 describe("reactivateRejectedTx", () => {
   it("REJECTED→ACTIVE(CAS) + sessionInvalidatedAt 미갱신", async () => {
-    h.db.user.findUnique.mockResolvedValue({ status: "REJECTED", updatedAt: new Date("2026-06-01T00:00:00Z") });
+    h.db.user.findUnique.mockResolvedValue({ status: "REJECTED", updatedAt: new Date("2026-06-01T00:00:00Z"), emailVerifiedAt: new Date("2026-05-01T00:00:00Z"), systemRole: "MEMBER", roleAssignments: [] });
     h.db.user.updateMany.mockResolvedValue({ count: 1 });
     await reactivateRejectedTx("u1", "admin1", new Date());
     expect(h.db.user.updateMany).toHaveBeenCalledWith(expect.objectContaining({
@@ -563,7 +563,14 @@ describe("reactivateRejectedTx", () => {
     }));
   });
   it("REJECTED 아니면 UserConflictError", async () => {
-    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt: new Date() });
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt: new Date(), emailVerifiedAt: new Date(), systemRole: "MEMBER", roleAssignments: [] });
     await expect(reactivateRejectedTx("u1", "admin1", new Date())).rejects.toBeInstanceOf(UserConflictError);
+  });
+  it("Finding C: emailVerifiedAt=null(미검증 거절)이면 재활성 거부 — UserConflictError, updateMany 미호출", async () => {
+    // 자가 가입 후 비번 미설정 상태에서 거절된 계정 — rejectTx가 verify 토큰을 소거했으므로
+    // ACTIVE로 만들면 로그인도 불가하고 검증 토큰도 없는 wedged 계정이 된다(Finding C).
+    h.db.user.findUnique.mockResolvedValue({ status: "REJECTED", updatedAt: new Date("2026-06-01T00:00:00Z"), emailVerifiedAt: null, systemRole: "MEMBER", roleAssignments: [] });
+    await expect(reactivateRejectedTx("u1", "admin1", new Date())).rejects.toBeInstanceOf(UserConflictError);
+    expect(h.db.user.updateMany).not.toHaveBeenCalled();
   });
 });
