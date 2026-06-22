@@ -1,31 +1,31 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// task-07이 만든 세션 유효성 판정 헬퍼를 직접 검증(순수 함수: tokenIat(초) + DB 스냅샷 → boolean).
-// §S9 확정 시그니처: isSessionValid(tokenIat: number, snap: {status, passwordChangedAt, sessionInvalidatedAt}).
-// 헬퍼명/시그니처는 task-07 §S9 구현을 따른다. 본 import가 그 계약을 고정한다.
+// task-07이 만든 세션 유효성 판정 헬퍼를 직접 검증(순수 함수: 발급시각(ms) + DB 스냅샷 → boolean).
+// 확정 시그니처: isSessionValid(issuedAtMs: number, snap: {status, passwordChangedAt, sessionInvalidatedAt}).
+// 통합리뷰 finding으로 초 단위 iat → ms(token.iatMs)로 전환(같은 초 재로그인 lockout 차단). 본 import가 그 계약을 고정한다.
 import { isSessionValid } from "@/lib/auth/session-validity";
 
 const tokenIssuedAt = new Date("2026-06-10T00:00:00Z");
-const tokenIat = Math.floor(tokenIssuedAt.getTime() / 1000); // JWT iat는 초 단위
+const tokenIatMs = tokenIssuedAt.getTime(); // 발급시각(ms 정밀)
 
 describe("isSessionValid (§S9 — status fail-closed + sessionInvalidatedAt/passwordChangedAt iat 비교)", () => {
   it("ACTIVE + 무효화 시각 없음 → 유효", () => {
-    expect(isSessionValid(tokenIat, { status: "ACTIVE", sessionInvalidatedAt: null, passwordChangedAt: null })).toBe(true);
+    expect(isSessionValid(tokenIatMs, { status: "ACTIVE", sessionInvalidatedAt: null, passwordChangedAt: null })).toBe(true);
   });
   it("status가 DISABLED면 무효(즉시 차단, 토큰 만료 전)", () => {
-    expect(isSessionValid(tokenIat, { status: "DISABLED", sessionInvalidatedAt: null, passwordChangedAt: null })).toBe(false);
+    expect(isSessionValid(tokenIatMs, { status: "DISABLED", sessionInvalidatedAt: null, passwordChangedAt: null })).toBe(false);
   });
   it("sessionInvalidatedAt > 토큰 발급시각이면 무효(비활성화 직후 발급된 토큰만 유효)", () => {
     const invalidatedAfter = new Date(tokenIssuedAt.getTime() + 60_000);
-    expect(isSessionValid(tokenIat, { status: "ACTIVE", sessionInvalidatedAt: invalidatedAfter, passwordChangedAt: null })).toBe(false);
+    expect(isSessionValid(tokenIatMs, { status: "ACTIVE", sessionInvalidatedAt: invalidatedAfter, passwordChangedAt: null })).toBe(false);
   });
   it("sessionInvalidatedAt이 토큰 발급 이전이면 유효(재로그인 후 새 토큰)", () => {
     const invalidatedBefore = new Date(tokenIssuedAt.getTime() - 60_000);
-    expect(isSessionValid(tokenIat, { status: "ACTIVE", sessionInvalidatedAt: invalidatedBefore, passwordChangedAt: null })).toBe(true);
+    expect(isSessionValid(tokenIatMs, { status: "ACTIVE", sessionInvalidatedAt: invalidatedBefore, passwordChangedAt: null })).toBe(true);
   });
   it("passwordChangedAt > 토큰 발급시각이면 무효(타 세션 무효화·D15)", () => {
     const changedAfter = new Date(tokenIssuedAt.getTime() + 60_000);
-    expect(isSessionValid(tokenIat, { status: "ACTIVE", sessionInvalidatedAt: null, passwordChangedAt: changedAfter })).toBe(false);
+    expect(isSessionValid(tokenIatMs, { status: "ACTIVE", sessionInvalidatedAt: null, passwordChangedAt: changedAfter })).toBe(false);
   });
 });
 

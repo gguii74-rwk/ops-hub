@@ -103,14 +103,14 @@ describe("verifySession (fail-closed against live DB, not the JWT snapshot)", ()
     expect(await verifySession()).toBeNull();
   });
 
-  it("F-FED: passwordChangedAt이 토큰 iat 이후·현재시각 이전이어도 null(Date.now() 아닌 session.iat 기준 — TOCTOU 차단)", async () => {
+  it("F-FED: passwordChangedAt이 토큰 발급시각 이후·현재시각 이전이어도 null(Date.now() 아닌 session.iatMs 기준 — TOCTOU 차단)", async () => {
     const { verifySession } = await import("@/lib/auth/federation");
-    const iatSec = Math.floor(Date.now() / 1000) - 3600; // 1시간 전 발급
-    mockAuth.mockResolvedValue({ user: { id: "u1" }, iat: iatSec });
+    const iatMs = Date.now() - 3_600_000; // 1시간 전 발급(ms)
+    mockAuth.mockResolvedValue({ user: { id: "u1" }, iatMs });
     mockFindUnique.mockResolvedValue({
       id: "u1", email: "a@b.com", systemRole: "MEMBER", status: "ACTIVE",
       mustChangePassword: false,
-      passwordChangedAt: new Date((iatSec + 60) * 1000), // iat 이후, now 이전 → Date.now() 기준이면 통과(버그), iat 기준이면 무효
+      passwordChangedAt: new Date(iatMs + 60_000), // 발급 이후, now 이전 → Date.now() 기준이면 통과(버그), 발급시각 기준이면 무효
       sessionInvalidatedAt: null,
     });
     expect(await verifySession()).toBeNull();

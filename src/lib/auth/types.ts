@@ -15,9 +15,10 @@ export interface SessionUser {
 declare module "next-auth" {
   interface Session {
     user: SessionUser;
-    // 토큰 발급시각(초). session 콜백이 무효 판정에 쓴 실제 iat를 실어, 서버 재검증(verifySession 등)이
+    // 토큰 발급시각(ms). session 콜백이 무효 판정에 쓴 발급시각(token.iatMs)을 실어, 서버 재검증(verifySession 등)이
     // Date.now()가 아닌 동일 발급시각 기준으로 무효화를 판단하게 한다(F-FED — auth()와 2차 DB read 사이 TOCTOU 차단).
-    iat?: number;
+    // ms 정밀도 — 표준 JWT iat(초)는 같은 초 내 토큰을 구분 못 해 강제 비번변경 직후 재로그인 lockout이 났다(통합리뷰 finding).
+    iatMs?: number;
   }
   interface User {
     systemRole: SystemRole;
@@ -39,6 +40,8 @@ declare module "@auth/core/jwt" {
     jobFunction: JobFunction;
     mustChange: boolean; // 신규 — 로그인 시점 강제변경 플래그(session 콜백이 DB로 재확인해 최종 결정)
     status: string;      // 신규 — 로그인 시점 status(세션 재검증은 DB가 권위)
-    // iat은 @auth/core가 표준 발급(초 단위). 세션 무효화는 DB 시각 > iat 비교로 판단.
+    // 표준 iat(@auth/core)은 초 단위라 같은 초 내 토큰을 구분 못 한다. sign-in 시 jwt 콜백이 ms 발급시각을
+    // iatMs에 실어, 세션 무효화 판정(DB 시각 > iatMs)이 같은 초 재로그인도 정확히 구분한다.
+    iatMs?: number;
   }
 }

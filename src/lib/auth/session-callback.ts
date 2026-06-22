@@ -12,7 +12,7 @@ import { isSessionValid } from "@/lib/auth/session-validity";
 // 무효 판정: DB 스냅샷(status/passwordChangedAt/sessionInvalidatedAt)을 순수 헬퍼 isSessionValid에 위임(§S9).
 // 유효하면 session.user를 **DB 권위값으로 fresh 재구성**한다(특히 systemRole — stale JWT 신뢰 금지, finding #1).
 export const sessionCallback: NonNullable<NextAuthConfig["callbacks"]>["session"] = async ({ session, token }) => {
-  const s = session as unknown as { user?: SessionUser; iat?: number };
+  const s = session as unknown as { user?: SessionUser; iatMs?: number };
   const uid = token.uid;
   const current = uid
     ? await prisma.user.findUnique({
@@ -23,9 +23,12 @@ export const sessionCallback: NonNullable<NextAuthConfig["callbacks"]>["session"
         },
       })
     : null;
-  // token.iat은 초 단위(@auth/core 표준). 헬퍼 내부에서 iat*1000으로 환산해 DB 시각(ms)과 비교.
-  const issuedAt = typeof token.iat === "number" ? token.iat : 0;
-  if (!uid || !current || !isSessionValid(issuedAt, current)) {
+  // 발급시각은 sign-in 시 jwt 콜백이 실은 ms 정밀 token.iatMs를 우선 사용한다. 표준 token.iat(초)는 같은 초 내 토큰을
+  // 구분 못 해 강제 비번변경 직후 재로그인 lockout을 냈다(통합리뷰 finding). iatMs 없는 구버전 토큰은 iat*1000으로 폴백.
+  const issuedAtMs = typeof token.iatMs === "number"
+    ? token.iatMs
+    : (typeof token.iat === "number" ? token.iat * 1000 : 0);
+  if (!uid || !current || !isSessionValid(issuedAtMs, current)) {
     // 무효: prefilled user가 남아 있으면 새어 나가지 않도록 명시적으로 제거(들어온 session 그대로 반환 금지).
     delete s.user;
     return session;
@@ -40,7 +43,7 @@ export const sessionCallback: NonNullable<NextAuthConfig["callbacks"]>["session"
     jobFunction: current.jobFunction as JobFunction,
     mustChangePassword: current.mustChangePassword, // DB 권위(강제변경 진행 중 해제를 즉시 반영)
   };
-  // 검증에 쓴 발급시각을 세션에 실어, 서버 재검증(verifySession)이 동일 기준으로 무효화를 판단(F-FED).
-  s.iat = issuedAt;
+  // 검증에 쓴 발급시각(ms)을 세션에 실어, 서버 재검증(verifySession)이 동일 기준으로 무효화를 판단(F-FED).
+  s.iatMs = issuedAtMs;
   return session;
 };

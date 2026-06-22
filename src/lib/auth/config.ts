@@ -27,6 +27,9 @@ export const authConfig: NextAuthConfig = {
         token.jobFunction = user.jobFunction;
         token.mustChange = user.mustChangePassword;
         token.status = user.status;
+        // sign-in 시점에만 ms 발급시각 기록(매 요청 refresh가 아님 — user는 sign-in에만 존재). 세션 무효화 판정이
+        // 초 단위 표준 iat 대신 이걸 써, 같은 초 내 강제 비번변경 직후 재로그인이 잘못 무효화되는 lockout을 막는다.
+        token.iatMs = Date.now();
       }
       return token;
     },
