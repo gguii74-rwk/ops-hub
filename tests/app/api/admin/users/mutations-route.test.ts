@@ -41,20 +41,26 @@ beforeEach(() => {
 });
 
 describe("POST .../[id]/roles", () => {
-  const valid = JSON.stringify({ roleKeys: ["developer"] });
+  const UPDATED_AT = "2026-06-01T00:00:00.000Z"; // 낙관락: 클라가 본 행 버전(body로 전송)
+  const valid = JSON.stringify({ roleKeys: ["developer"], updatedAt: UPDATED_AT });
   it("미인증 401", async () => {
     h.auth.mockResolvedValueOnce(null);
     expect((await setRoles(new Request("http://x", { method: "POST", body: valid }), ctx)).status).toBe(401);
   });
   it("zod 위반 400", async () => {
-    const res = await setRoles(new Request("http://x", { method: "POST", body: JSON.stringify({ roleKeys: "nope" }) }), ctx);
+    const res = await setRoles(new Request("http://x", { method: "POST", body: JSON.stringify({ roleKeys: "nope", updatedAt: UPDATED_AT }) }), ctx);
     expect(res.status).toBe(400);
     expect(h.assignRoles).not.toHaveBeenCalled();
   });
-  it("정상 200 + admin.users:update 키 포함 summary → ctx·id·roleKeys 위임(authorize)", async () => {
+  it("updatedAt 누락이면 400(낙관락 필수 — service 미호출)", async () => {
+    const res = await setRoles(new Request("http://x", { method: "POST", body: JSON.stringify({ roleKeys: ["developer"] }) }), ctx);
+    expect(res.status).toBe(400);
+    expect(h.assignRoles).not.toHaveBeenCalled();
+  });
+  it("정상 200 + admin.users:update 키 포함 summary → ctx·id·roleKeys·expectedUpdatedAt(Date) 위임(authorize)", async () => {
     const res = await setRoles(new Request("http://x", { method: "POST", body: valid }), ctx);
     expect(res.status).toBe(200);
-    expect(h.assignRoles).toHaveBeenCalledWith(expect.objectContaining({ userId: "admin1" }), "u1", ["developer"]);
+    expect(h.assignRoles).toHaveBeenCalledWith(expect.objectContaining({ userId: "admin1" }), "u1", ["developer"], new Date(UPDATED_AT));
   });
   it("다른 키만 있고 admin.users:update 없으면 403(키 특정성 검증)", async () => {
     h.getPermissionSummary.mockResolvedValueOnce({ keys: ["admin.users:view"], isOwner: false });
@@ -64,7 +70,7 @@ describe("POST .../[id]/roles", () => {
   });
   it("service가 EscalationError(D13ⓑ: 특권 역할)면 403", async () => {
     h.assignRoles.mockRejectedValueOnce(new EscalationError("특권 역할 부여는 OWNER만 가능합니다."));
-    expect((await setRoles(new Request("http://x", { method: "POST", body: JSON.stringify({ roleKeys: ["admin"] }) }), ctx)).status).toBe(403);
+    expect((await setRoles(new Request("http://x", { method: "POST", body: JSON.stringify({ roleKeys: ["admin"], updatedAt: UPDATED_AT }) }), ctx)).status).toBe(403);
   });
   it("service가 MinAvailabilityError(D13ⓔ: 마지막 관리자)면 409", async () => {
     h.assignRoles.mockRejectedValueOnce(new MinAvailabilityError("최소 1명의 사용자 관리자가 필요합니다."));

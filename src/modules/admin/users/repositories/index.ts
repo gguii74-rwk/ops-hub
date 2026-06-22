@@ -11,7 +11,7 @@ export interface UserListFilter { status?: UserStatus; employmentType?: string; 
 export interface UserRow {
   id: string; email: string; name: string; status: UserStatus;
   employmentType: string; jobFunction: string; systemRole: string; department: string | null;
-  roleKeys: string[]; createdAt: Date;
+  roleKeys: string[]; createdAt: Date; updatedAt: Date;
 }
 export interface OverrideRow { id: string; resource: string; action: string; effect: string; scope: string; reason: string | null; startsAt: Date | null; endsAt: Date | null; }
 export interface UserDetail extends UserRow { mustChangePassword: boolean; emailVerifiedAt: Date | null; updatedAt: Date; overrides: OverrideRow[]; }
@@ -50,7 +50,7 @@ export async function listUsers(f: UserListFilter): Promise<{ rows: UserRow[]; t
       where, orderBy: { createdAt: "desc" }, skip: (f.page - 1) * f.pageSize, take: f.pageSize,
       select: {
         id: true, email: true, name: true, status: true, employmentType: true, jobFunction: true,
-        systemRole: true, department: true, createdAt: true,
+        systemRole: true, department: true, createdAt: true, updatedAt: true,
         roleAssignments: { select: { role: { select: { key: true } } } },
       },
     }),
@@ -61,7 +61,7 @@ export async function listUsers(f: UserListFilter): Promise<{ rows: UserRow[]; t
     rows: rows.map((u) => ({
       id: u.id, email: u.email, name: u.name, status: u.status,
       employmentType: u.employmentType, jobFunction: u.jobFunction, systemRole: u.systemRole,
-      department: u.department, createdAt: u.createdAt, roleKeys: u.roleAssignments.map((ra) => ra.role.key),
+      department: u.department, createdAt: u.createdAt, updatedAt: u.updatedAt, roleKeys: u.roleAssignments.map((ra) => ra.role.key),
     })),
     total, pendingCount,
   };
@@ -306,8 +306,9 @@ export async function updateUserTx(
 // finding H: anti-escalation 가드는 stale 스냅샷이 아니라 **락 안 fresh currentRoleKeys**로 재검사한다
 // (UserAccessRole 쓰기는 User.updatedAt을 올리지 않아 CAS로 못 잡으므로 락 안 재로드가 필수).
 // recheck(서비스가 actor 캡처 클로저로 주입)를 fresh 역할로 호출 — 위반 시 throw로 applyRoles 전 롤백.
+// expectedUpdatedAt(클라가 본 버전): User 행 CAS + updatedAt bump으로 stale-tab 동시 역할변경 lost-update 차단.
 export async function setRoles(
-  id: string, roleKeys: string[], actorId: string,
+  id: string, roleKeys: string[], actorId: string, expectedUpdatedAt: Date,
   recheck?: (currentRoleKeys: string[]) => void,
 ): Promise<void> {
   await withAvailabilityLock(async (tx) => {
@@ -315,6 +316,10 @@ export async function setRoles(
       const cur = await tx.userAccessRole.findMany({ where: { userId: id }, select: { role: { select: { key: true } } } });
       recheck(cur.map((r) => r.role.key)); // EscalationError 시 applyRoles 전에 중단(트랜잭션 롤백)
     }
+    // CAS 검사 + User.updatedAt bump을 동시에 한다. @updatedAt이라도 User 행을 touch해 역할변경 시 버전을 전진시킨다
+    // (자식 테이블 UserAccessRole 쓰기는 updatedAt을 안 올리므로, 이게 없으면 동시 역할추가가 버전을 안 올려 stale 저장이 CAS를 통과한다).
+    const cas = await tx.user.updateMany({ where: { id, updatedAt: expectedUpdatedAt }, data: { updatedAt: new Date() } });
+    if (cas.count === 0) throw new UserConflictError("처리 중 정보가 변경되었습니다. 다시 확인해 주세요.");
     await applyRoles(tx, id, roleKeys);
     await writeAudit(tx, { actorId, entityType: "User", entityId: id, action: "set_roles", metadata: { roleKeys } });
     await assertMinAvailability(tx);
@@ -357,7 +362,7 @@ export async function deleteOverride(id: string, overrideId: string, actorId: st
 // finding 1: 특권 대상 판정(D14 동형)을 stale 스냅샷이 아니라 **락 안 fresh systemRole·roleKeys**로 재검사한다
 // (위임 admin이 특권이 된 직후 대상을 disable해 세션을 무효화하는 race 차단). recheck를 fresh state로 호출 — throw 시 변경 전 롤백.
 export async function setStatusTx(
-  id: string, status: "ACTIVE" | "DISABLED", actorId: string, now: Date,
+  id: string, status: "ACTIVE" | "DISABLED", actorId: string, now: Date, expectedUpdatedAt: Date,
   recheck?: (target: { systemRole: string; roleKeys: string[] }) => void,
 ): Promise<void> {
   await withAvailabilityLock(async (tx) => {
@@ -370,8 +375,9 @@ export async function setStatusTx(
     // F2: status toggle은 ACTIVE↔DISABLED 전이만 허용. PENDING/INVITED/REJECTED는 전용 플로우(approve/reject/reactivate)로 처리.
     if (u.status !== "ACTIVE" && u.status !== "DISABLED") throw new UserConflictError("승인 대기 중인 사용자는 승인/거절로 처리하세요.");
     if (u.status === status) throw new UserConflictError("이미 해당 상태입니다.");
+    // CAS의 updatedAt은 클라가 본 버전(expectedUpdatedAt) — 서버 재로드 u.updatedAt이 아니다(stale-tab lost-update 차단).
     const updated = await tx.user.updateMany({
-      where: { id, status: u.status, updatedAt: u.updatedAt },
+      where: { id, status: u.status, updatedAt: expectedUpdatedAt },
       data: { status, ...(status === "DISABLED" ? { sessionInvalidatedAt: now } : {}) },
     });
     if (updated.count === 0) throw new UserConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요.");
@@ -382,7 +388,7 @@ export async function setStatusTx(
 
 // REJECTED→ACTIVE 재활성(관리자만). 세션 무효화 불필요(REJECTED는 로그인 불가였음).
 export async function reactivateRejectedTx(
-  id: string, actorId: string, now: Date,
+  id: string, actorId: string, now: Date, expectedUpdatedAt: Date,
   recheck?: (target: { systemRole: string; roleKeys: string[] }) => void,
 ): Promise<void> {
   await withAvailabilityLock(async (tx) => {
@@ -396,8 +402,9 @@ export async function reactivateRejectedTx(
     // Finding C: 미검증(비번 미설정)으로 거절된 계정을 ACTIVE로 만들면 로그인 불가·검증 토큰 없음 wedged 계정이 된다.
     // approveTx와 동일 활성화 불변식 강제 — 검증된 계정만 재활성 허용.
     if (!u.emailVerifiedAt) throw new UserConflictError("이메일 검증(비밀번호 설정) 전 계정은 재활성할 수 없습니다.");
+    // CAS에 클라가 본 버전(expectedUpdatedAt)을 추가 — status-CAS 단독으로 못 막는 stale-tab lost-update 차단.
     const updated = await tx.user.updateMany({
-      where: { id, status: "REJECTED" },
+      where: { id, status: "REJECTED", updatedAt: expectedUpdatedAt },
       data: { status: "ACTIVE" },
     });
     if (updated.count === 0) throw new UserConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요.");

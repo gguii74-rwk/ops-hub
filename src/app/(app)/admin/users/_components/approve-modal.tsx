@@ -11,7 +11,8 @@ import { SYSTEM_ROLE_LABEL, SYSTEM_ROLE_OPTIONS } from "./labels";
 import type { EmploymentType, JobFunction, SystemRole } from "@/lib/auth/types";
 
 // NF2: name·department는 admin 확정값(승인이 프로필 권위 — 선점 덮어쓰기).
-interface Target { id: string; name: string; email: string; department: string | null; employmentType: EmploymentType; jobFunction: JobFunction; systemRole: string; roleKeys: string[]; }
+// updatedAt: 클라가 본 행 버전 — approve mutation body로 보내 stale-tab lost-update를 차단(409).
+interface Target { id: string; name: string; email: string; department: string | null; employmentType: EmploymentType; jobFunction: JobFunction; systemRole: string; roleKeys: string[]; updatedAt: string; }
 
 const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
 
@@ -31,7 +32,7 @@ export function ApproveModal({ target, onClose, onDone }: { target: Target; onCl
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           employmentType: attr.employmentType, jobFunction: attr.jobFunction, systemRole, roleKeys: attr.roleKeys,
-          name, department: department || null,
+          name, department: department || null, updatedAt: target.updatedAt,
         }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `승인 실패 (${res.status})`);

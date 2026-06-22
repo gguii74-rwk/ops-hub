@@ -77,7 +77,9 @@ export function getUserForEdit(_actor: ActorContext, id: string): Promise<UserDe
 // 승인으로 특권 systemRole·역할을 "추가"하는 것이 비-OWNER에게 차단된다(target.systemRole/roleKeys = 현재 상태).
 // NF2: setRoles finding-H 패턴과 동형으로 recheck 클로저를 approveTx에 주입한다.
 // UserAccessRole 쓰기는 User.updatedAt을 올리지 않아 CAS 단독으로 잡히지 않는 동시 역할부여 race를 트랜잭션 내 fresh reload로 닫는다.
-export async function approveUser(actor: ActorContext, id: string, input: ApproveInput): Promise<void> {
+// expectedUpdatedAt: 클라이언트가 본 행 버전(stale-tab lost-update 차단). 서버 재로드값(target.updatedAt)이 아니라
+// 클라 값을 CAS에 써야 모달을 열어둔 사이의 silent 덮어쓰기를 막는다(다른 세션이 바꾼 행이면 409).
+export async function approveUser(actor: ActorContext, id: string, input: ApproveInput, expectedUpdatedAt: Date): Promise<void> {
   const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
   assertCanSetSystemRole(actor, target.systemRole, input.systemRole);
@@ -89,7 +91,7 @@ export async function approveUser(actor: ActorContext, id: string, input: Approv
     // NF2: name·department는 선택 — undefined면 사용자 자가입력 유지, 제공되면 admin 확정값이 권위.
     ...(input.name !== undefined ? { name: input.name } : {}),
     ...(input.department !== undefined ? { department: input.department ?? null } : {}),
-  }, mail, target.updatedAt,
+  }, mail, expectedUpdatedAt,
     (currentRoleKeys) => assertCanAssignRoles(actor, currentRoleKeys, input.roleKeys), // 락 안 권위 재검사(fresh)
   );
   triggerLeaveMailDrain();
@@ -111,8 +113,9 @@ export async function createUserByAdmin(actor: ActorContext, input: AdminCreateI
   assertCanSetSystemRole(actor, "MEMBER", input.systemRole);
   assertCanAssignRoles(actor, [], input.roleKeys);
   const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
+  // email은 사용자 병합 키(canonical). 공개 signup/resend와 동일하게 소문자로 저장해 대소문자만 다른 중복 신원 분리를 막는다.
   return createActiveUserByAdminTx({
-    email: input.email, name: input.name, passwordHash,
+    email: input.email.toLowerCase(), name: input.name, passwordHash,
     employmentType: input.employmentType, jobFunction: input.jobFunction, department: input.department ?? null,
     systemRole: input.systemRole, roleKeys: input.roleKeys, actorId: actor.userId,
   });
@@ -121,17 +124,18 @@ export async function createUserByAdmin(actor: ActorContext, input: AdminCreateI
 // ── 편집(D13ⓐ·D12): 자가 금지 + systemRole 변경 가드 → updateUserTx(CAS). ──
 // 가드는 현재↔원하는 systemRole을 비교(finding C). target.systemRole(현재)을 넘겨 기존 OWNER/ADMIN을
 // 강등하는 것도 비-OWNER에게 차단한다. patch.systemRole이 없으면 null(변경 의도 없음)이지만 현재가 특권이면 거부.
-export async function updateUser(actor: ActorContext, id: string, patch: UpdateUserInput): Promise<void> {
+export async function updateUser(actor: ActorContext, id: string, patch: UpdateUserInput, expectedUpdatedAt: Date): Promise<void> {
   const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
   assertCanSetSystemRole(actor, target.systemRole, patch.systemRole ?? null);
+  // CAS는 클라가 본 버전(expectedUpdatedAt)으로 — target.updatedAt(서버 재로드)이 아니다(stale-tab 차단).
   await updateUserTx(id, {
     ...(patch.name !== undefined ? { name: patch.name } : {}),
     ...(patch.department !== undefined ? { department: patch.department ?? null } : {}),
     ...(patch.employmentType !== undefined ? { employmentType: patch.employmentType } : {}),
     ...(patch.jobFunction !== undefined ? { jobFunction: patch.jobFunction } : {}),
     ...(patch.systemRole !== undefined ? { systemRole: patch.systemRole } : {}),
-  }, actor.userId, target.updatedAt);
+  }, actor.userId, expectedUpdatedAt);
 }
 
 // ── 역할 부여(D13ⓐ ⓑ): 자가 금지 + 특권 역할 가드 → setRoles(가용성은 repo가 보장). ──
@@ -139,11 +143,13 @@ export async function updateUser(actor: ActorContext, id: string, patch: UpdateU
 // 넘긴다 — 그래야 위임 admin이 목록에서 pm/admin을 빼서 제거(추가가 아닌)하는 lockout도 차단된다.
 // finding H: stale 스냅샷(target.roleKeys)으로는 사전 거부만 하고, **권위 검사는 setRoles 락 안 fresh 역할로 재실행**한다
 // (동시 OWNER action이 부여한 특권을 stale로 못 보고 빼버리는 lockout/race 차단). recheck 클로저가 actor를 캡처해 락 안에서 호출된다.
-export async function assignRoles(actor: ActorContext, id: string, roleKeys: string[]): Promise<void> {
+// expectedUpdatedAt: 클라가 본 User 행 버전. setRoles가 CAS+updatedAt bump으로 stale-tab 동시 역할변경을 막는다
+// (자식 테이블 UserAccessRole 쓰기는 User.updatedAt을 안 올리므로 setRoles가 User 행을 touch해 버전을 전진시킨다).
+export async function assignRoles(actor: ActorContext, id: string, roleKeys: string[], expectedUpdatedAt: Date): Promise<void> {
   const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
   assertCanAssignRoles(actor, target.roleKeys, roleKeys); // 사전 검사(빠른 거부; stale 스냅샷)
-  await setRoles(id, roleKeys, actor.userId, (currentRoleKeys) =>
+  await setRoles(id, roleKeys, actor.userId, expectedUpdatedAt, (currentRoleKeys) =>
     assertCanAssignRoles(actor, currentRoleKeys, roleKeys), // 락 안 권위 재검사(fresh)
   );
 }
@@ -179,7 +185,7 @@ export async function removeOverride(actor: ActorContext, id: string, overrideId
 // ── status 토글(D13ⓐ ⓔ): 자가 금지 + 특권 대상 OWNER-only → REJECTED→ACTIVE는 reactivate, 그 외 ACTIVE/DISABLED는 setStatus. ──
 // finding 1: resetPassword와 동형으로 특권 대상(OWNER/ADMIN systemRole·특권 역할)의 상태 변경은 OWNER만(위임 admin이
 // 특권 사용자를 disable해 세션을 무효화·DoS하는 것 차단). 사전 검사(stale) + 락 안 fresh recheck로 race까지 닫는다.
-export async function setUserStatus(actor: ActorContext, id: string, status: "ACTIVE" | "DISABLED"): Promise<void> {
+export async function setUserStatus(actor: ActorContext, id: string, status: "ACTIVE" | "DISABLED", expectedUpdatedAt: Date): Promise<void> {
   const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
   if (!actor.isOwner && isPrivilegedTarget(target)) {
@@ -195,14 +201,15 @@ export async function setUserStatus(actor: ActorContext, id: string, status: "AC
     throw new UserConflictError("승인 대기 중인 사용자는 승인/거절로 처리하세요.");
   }
   const now = new Date();
+  // CAS는 클라가 본 버전(expectedUpdatedAt)으로 — stale-tab lost-update 차단.
   if (status === "ACTIVE" && target.status === "REJECTED") {
     if (!actor.isOwner && !actor.permissionKeys.has("admin.users:approve")) {
       throw new EscalationError("거절된 계정의 재활성은 승인(admin.users:approve) 권한이 필요합니다.");
     }
-    await reactivateRejectedTx(id, actor.userId, now, recheck);
+    await reactivateRejectedTx(id, actor.userId, now, expectedUpdatedAt, recheck);
     return;
   }
-  await setStatusTx(id, status, actor.userId, now, recheck);
+  await setStatusTx(id, status, actor.userId, now, expectedUpdatedAt, recheck);
 }
 
 // ── 비번 재설정(D14): 자가 금지 + 특권 대상은 OWNER-only → 임시비번 해시 → resetPasswordTx. 임시비번은 반환(관리자 전달용). ──

@@ -92,11 +92,13 @@ function makeReq(method = "GET", body?: unknown) {
 // body 검증이 먼저 실패하면 게이트 차단을 검증하지 못해 테스트 목적(D17)이 무의미해진다.
 const bodies = {
   adminCreate: { email: "x@x.com", name: "테스트", password: "Temp1234!abcd", employmentType: "REGULAR", jobFunction: "DEVELOPER", department: null, systemRole: "MEMBER", roleKeys: [] },
-  updateUser: { name: "수정" },
-  status: { status: "ACTIVE" },
-  approve: { employmentType: "REGULAR", jobFunction: "DEVELOPER", systemRole: "MEMBER", roleKeys: [] },
+  // updateUser/status/approve/roles는 낙관락 body 스키마라 updatedAt(ISO)을 포함해야 zod 통과 → 게이트(403)에 도달한다.
+  // updatedAt이 없으면 body 검증 400이 게이트 차단보다 먼저 나와 D17 테스트 목적이 깨진다.
+  updateUser: { name: "수정", updatedAt: "2026-06-01T00:00:00.000Z" },
+  status: { status: "ACTIVE", updatedAt: "2026-06-01T00:00:00.000Z" },
+  approve: { employmentType: "REGULAR", jobFunction: "DEVELOPER", systemRole: "MEMBER", roleKeys: [], updatedAt: "2026-06-01T00:00:00.000Z" },
   reject: { reason: "사유" },
-  roles: { roleKeys: [] },
+  roles: { roleKeys: [], updatedAt: "2026-06-01T00:00:00.000Z" },
   override: { resource: "admin.users", action: "view", effect: "ALLOW", scope: "all", reason: null, startsAt: null, endsAt: null },
   resetPw: {}, // reset-password는 body 없이 바로 authorize
   leaveCreate: { leaveType: "ANNUAL", startDate: "2026-07-01", endDate: "2026-07-01" },

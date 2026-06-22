@@ -63,24 +63,33 @@ describe("DELETE /api/admin/leave/requests/[id]", () => {
 });
 
 describe("PATCH /api/admin/leave/requests/[id]", () => {
+  const UPDATED_AT = "2026-06-01T00:00:00.000Z"; // 낙관락: 클라가 본 신청 행 버전(body로 전송)
+  // 미인증 401은 body 파싱 전 auth() 게이트라 updatedAt 무관(빈 body로 충분).
   it("미인증이면 401", async () => {
     authMock.mockResolvedValue(null);
-    expect((await PATCH(patchReq(), { params })).status).toBe(401);
+    expect((await PATCH(patchReq({ updatedAt: UPDATED_AT }), { params })).status).toBe(401);
   });
-  it("admin:view + request:update 둘 다 검사 후 updateByAdmin 호출", async () => {
+  it("updatedAt 누락이면 400(낙관락 필수 — 권한검사·서비스 미호출)", async () => {
+    authMock.mockResolvedValue({ user: { id: "u1" } });
+    const res = await PATCH(patchReq({ adminActionNote: "정정" }), { params });
+    expect(res.status).toBe(400);
+    expect(updateByAdminMock).not.toHaveBeenCalled();
+  });
+  it("admin:view + request:update 둘 다 검사 후 updateByAdmin(…, expectedUpdatedAt) 호출", async () => {
     authMock.mockResolvedValue({ user: { id: "u1" } });
     requirePermissionMock.mockResolvedValue(undefined);
     updateByAdminMock.mockResolvedValue({ id: "r1" });
-    const res = await PATCH(patchReq({ adminActionNote: "정정" }), { params });
+    const res = await PATCH(patchReq({ adminActionNote: "정정", updatedAt: UPDATED_AT }), { params });
     expect(requirePermissionMock).toHaveBeenCalledWith("u1", "leave.admin", "view");
     expect(requirePermissionMock).toHaveBeenCalledWith("u1", "leave.request", "update");
-    expect(updateByAdminMock).toHaveBeenCalled();
+    // service에 input(updatedAt 제외) + expectedUpdatedAt(Date)을 넘긴다.
+    expect(updateByAdminMock).toHaveBeenCalledWith("r1", expect.not.objectContaining({ updatedAt: expect.anything() }), "u1", new Date(UPDATED_AT));
     expect(res.status).toBe(200);
   });
   it("admin:view 없으면 403(request:update만으론 불가·규칙 #1) + 서비스 미호출", async () => {
     authMock.mockResolvedValue({ user: { id: "u1" } });
     requirePermissionMock.mockImplementation(denyAdminView);
-    const res = await PATCH(patchReq({ adminActionNote: "x" }), { params });
+    const res = await PATCH(patchReq({ adminActionNote: "x", updatedAt: UPDATED_AT }), { params });
     expect(res.status).toBe(403);
     expect(updateByAdminMock).not.toHaveBeenCalled();
   });

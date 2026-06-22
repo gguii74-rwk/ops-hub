@@ -168,51 +168,59 @@ describe("rejectTx", () => {
 });
 
 describe("setStatusTx (세션 무효화 동반)", () => {
+  const exp = new Date("2026-06-01T00:00:00Z"); // 클라가 본 버전(CAS where용)
   // F2 regression: PENDING 상태 사용자는 status toggle 대상이 아님 — updateMany 미호출
   it("F2: 현재 status가 PENDING이면 UserConflictError, updateMany 미호출(승인우회 차단)", async () => {
-    h.db.user.findUnique.mockResolvedValue({ status: "PENDING", updatedAt: new Date("2026-06-01T00:00:00Z"), systemRole: "MEMBER", roleAssignments: [] });
-    await expect(setStatusTx("u1", "ACTIVE", "admin1", new Date())).rejects.toBeInstanceOf(UserConflictError);
+    h.db.user.findUnique.mockResolvedValue({ status: "PENDING", updatedAt: exp, systemRole: "MEMBER", roleAssignments: [] });
+    await expect(setStatusTx("u1", "ACTIVE", "admin1", new Date(), exp)).rejects.toBeInstanceOf(UserConflictError);
     expect(h.db.user.updateMany).not.toHaveBeenCalled();
   });
   it("F2: 현재 status가 INVITED이면 UserConflictError, updateMany 미호출", async () => {
-    h.db.user.findUnique.mockResolvedValue({ status: "INVITED", updatedAt: new Date("2026-06-01T00:00:00Z"), systemRole: "MEMBER", roleAssignments: [] });
-    await expect(setStatusTx("u1", "ACTIVE", "admin1", new Date())).rejects.toBeInstanceOf(UserConflictError);
+    h.db.user.findUnique.mockResolvedValue({ status: "INVITED", updatedAt: exp, systemRole: "MEMBER", roleAssignments: [] });
+    await expect(setStatusTx("u1", "ACTIVE", "admin1", new Date(), exp)).rejects.toBeInstanceOf(UserConflictError);
     expect(h.db.user.updateMany).not.toHaveBeenCalled();
   });
   it("F2: 현재 status가 REJECTED이면 UserConflictError, updateMany 미호출", async () => {
-    h.db.user.findUnique.mockResolvedValue({ status: "REJECTED", updatedAt: new Date("2026-06-01T00:00:00Z"), systemRole: "MEMBER", roleAssignments: [] });
-    await expect(setStatusTx("u1", "ACTIVE", "admin1", new Date())).rejects.toBeInstanceOf(UserConflictError);
+    h.db.user.findUnique.mockResolvedValue({ status: "REJECTED", updatedAt: exp, systemRole: "MEMBER", roleAssignments: [] });
+    await expect(setStatusTx("u1", "ACTIVE", "admin1", new Date(), exp)).rejects.toBeInstanceOf(UserConflictError);
     expect(h.db.user.updateMany).not.toHaveBeenCalled();
   });
-  it("DISABLE: availability lock 안에서 sessionInvalidatedAt=now 갱신 + 커밋 전 assertMinAvailability", async () => {
-    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt: new Date("2026-06-01T00:00:00Z") });
+  it("DISABLE: availability lock 안에서 sessionInvalidatedAt=now 갱신 + 커밋 전 assertMinAvailability, CAS where는 클라 expectedUpdatedAt", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt: new Date("2099-01-01T00:00:00Z") });
     h.db.user.updateMany.mockResolvedValue({ count: 1 });
     const now = new Date("2026-06-10T00:00:00Z");
-    await setStatusTx("u1", "DISABLED", "admin1", now);
+    await setStatusTx("u1", "DISABLED", "admin1", now, exp);
     expect(withAvailabilityLockMock).toHaveBeenCalled();
     expect(h.db.user.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      // CAS where: status는 fresh read, updatedAt은 클라가 본 버전(서버 재로드값 아님 — stale-tab 차단).
+      where: { id: "u1", status: "ACTIVE", updatedAt: exp },
       data: expect.objectContaining({ status: "DISABLED", sessionInvalidatedAt: now }),
     }));
     expect(assertMinAvailabilityMock).toHaveBeenCalled();
   });
   it("ENABLE: DISABLED→ACTIVE, sessionInvalidatedAt 미갱신(세션 무효화는 disable에만)", async () => {
-    h.db.user.findUnique.mockResolvedValue({ status: "DISABLED", updatedAt: new Date("2026-06-01T00:00:00Z") });
+    h.db.user.findUnique.mockResolvedValue({ status: "DISABLED", updatedAt: exp });
     h.db.user.updateMany.mockResolvedValue({ count: 1 });
-    await setStatusTx("u1", "ACTIVE", "admin1", new Date());
+    await setStatusTx("u1", "ACTIVE", "admin1", new Date(), exp);
     const data = h.db.user.updateMany.mock.calls[0][0].data;
     expect(data.status).toBe("ACTIVE");
     expect(data.sessionInvalidatedAt).toBeUndefined();
   });
+  it("stale-tab 회귀: CAS where(updatedAt=클라 버전) 불일치로 updateMany count 0이면 UserConflictError(409)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt: new Date("2099-01-01T00:00:00Z") });
+    h.db.user.updateMany.mockResolvedValue({ count: 0 }); // 클라 버전이 stale → 0행
+    await expect(setStatusTx("u1", "DISABLED", "admin1", new Date(), exp)).rejects.toBeInstanceOf(UserConflictError);
+  });
   it("최소 가용성 위반(assertMinAvailability throw)이면 전파(롤백)", async () => {
-    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt: new Date("2026-06-01T00:00:00Z") });
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt: exp });
     h.db.user.updateMany.mockResolvedValue({ count: 1 });
     assertMinAvailabilityMock.mockRejectedValue(new Error("min-availability"));
-    await expect(setStatusTx("u1", "DISABLED", "admin1", new Date())).rejects.toThrow("min-availability");
+    await expect(setStatusTx("u1", "DISABLED", "admin1", new Date(), exp)).rejects.toThrow("min-availability");
   });
   it("finding 1: recheck를 락 안 fresh systemRole·roleKeys로 호출 — throw 시 변경 미수행", async () => {
-    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt: new Date("2026-06-01T00:00:00Z"), systemRole: "ADMIN", roleAssignments: [{ role: { key: "admin" } }] });
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt: exp, systemRole: "ADMIN", roleAssignments: [{ role: { key: "admin" } }] });
     const recheck = vi.fn((t: { systemRole: string }) => { if (t.systemRole === "ADMIN") throw new EscalationError("특권 대상"); });
-    await expect(setStatusTx("u1", "DISABLED", "admin1", new Date(), recheck)).rejects.toBeInstanceOf(EscalationError);
+    await expect(setStatusTx("u1", "DISABLED", "admin1", new Date(), exp, recheck)).rejects.toBeInstanceOf(EscalationError);
     expect(recheck).toHaveBeenCalledWith({ systemRole: "ADMIN", roleKeys: ["admin"] });
     expect(h.db.user.updateMany).not.toHaveBeenCalled();
   });
@@ -276,42 +284,61 @@ describe("changePasswordTx (D15 — 세션 무효화 기준은 passwordChangedAt
   });
 });
 
-describe("setRoles (idempotent + 가용성)", () => {
-  it("createMany(skipDuplicates) + 차집합 deleteMany, availability lock·assertMinAvailability 경유", async () => {
+describe("setRoles (idempotent + 가용성 + updatedAt CAS·bump)", () => {
+  const exp = new Date("2026-06-01T00:00:00Z"); // 클라가 본 버전(CAS where용)
+  it("createMany(skipDuplicates) + 차집합 deleteMany, availability lock·assertMinAvailability 경유 + CAS+updatedAt bump", async () => {
     h.db.accessRole.findMany.mockResolvedValue([{ id: "role-dev", key: "developer" }]);
     h.db.userAccessRole.findMany.mockResolvedValue([{ roleId: "role-old" }]);
+    h.db.user.updateMany.mockResolvedValue({ count: 1 }); // CAS+bump 성공
     h.db.userAccessRole.createMany.mockResolvedValue({ count: 1 });
     h.db.userAccessRole.deleteMany.mockResolvedValue({ count: 1 });
-    await setRoles("u1", ["developer"], "admin1");
+    await setRoles("u1", ["developer"], "admin1", exp);
     expect(withAvailabilityLockMock).toHaveBeenCalled();
+    // CAS 검사 + User.updatedAt bump을 동시에 — where=클라 버전, data=updatedAt 갱신(역할변경이 버전을 전진시키도록).
+    expect(h.db.user.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "u1", updatedAt: exp },
+      data: expect.objectContaining({ updatedAt: expect.any(Date) }),
+    }));
     expect(h.db.userAccessRole.createMany).toHaveBeenCalledWith(expect.objectContaining({ skipDuplicates: true }));
     expect(h.db.userAccessRole.deleteMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ userId: "u1", roleId: { in: ["role-old"] } }),
     }));
     expect(assertMinAvailabilityMock).toHaveBeenCalled();
   });
+  // 핵심 회귀(codex finding): stale updatedAt → CAS 0행 → UserConflictError, applyRoles·감사 미수행.
+  // 자식 테이블(UserAccessRole) 쓰기는 User.updatedAt을 안 올리므로, 이 CAS+bump이 동시 역할변경 lost-update를 막는 유일한 가드다.
+  it("stale-tab 회귀: tx.user.updateMany(CAS) count 0이면 UserConflictError, applyRoles·감사 미수행", async () => {
+    h.db.user.updateMany.mockResolvedValue({ count: 0 }); // 클라 버전이 stale → 0행
+    await expect(setRoles("u1", ["developer"], "admin1", exp)).rejects.toBeInstanceOf(UserConflictError);
+    expect(h.db.userAccessRole.createMany).not.toHaveBeenCalled();
+    expect(writeAuditMock).not.toHaveBeenCalled();
+  });
   it("알 수 없는 role key가 있으면 UserConflictError(존재 역할만 매핑)", async () => {
+    h.db.user.updateMany.mockResolvedValue({ count: 1 }); // CAS 통과 후 applyRoles에서 미존재 role
     h.db.accessRole.findMany.mockResolvedValue([]); // 'ghost' 미존재
-    await expect(setRoles("u1", ["ghost"], "admin1")).rejects.toBeInstanceOf(UserConflictError);
+    await expect(setRoles("u1", ["ghost"], "admin1", exp)).rejects.toBeInstanceOf(UserConflictError);
   });
   it("finding H: recheck를 락 안 fresh currentRoleKeys로 호출 — 정상이면 applyRoles 진행", async () => {
     // userAccessRole.findMany 1차=recheck용(role.key), 2차=applyRoles 차집합용(roleId).
     h.db.userAccessRole.findMany
       .mockResolvedValueOnce([{ role: { key: "regular-developer" } }])
       .mockResolvedValueOnce([]);
+    h.db.user.updateMany.mockResolvedValue({ count: 1 }); // CAS+bump
     h.db.accessRole.findMany.mockResolvedValue([{ id: "role-cc", key: "contractor-content" }]);
     h.db.userAccessRole.createMany.mockResolvedValue({ count: 1 });
     h.db.userAccessRole.deleteMany.mockResolvedValue({ count: 0 });
     const recheck = vi.fn();
-    await setRoles("u1", ["contractor-content"], "admin1", recheck);
+    await setRoles("u1", ["contractor-content"], "admin1", exp, recheck);
     expect(recheck).toHaveBeenCalledWith(["regular-developer"]); // stale 스냅샷이 아니라 락 안 fresh 역할
     expect(h.db.userAccessRole.createMany).toHaveBeenCalled();
   });
-  it("finding H: 락 안 fresh 역할에 특권이 끼면 recheck throw → applyRoles·감사 미수행(stale lockout 차단)", async () => {
+  it("finding H: 락 안 fresh 역할에 특권이 끼면 recheck throw → CAS·applyRoles·감사 미수행(stale lockout 차단)", async () => {
     // 동시 OWNER action으로 대상이 pm을 갖게 된 상태를 fresh로 관측 → 위임 admin의 next(pm 제외)는 pm 제거 = 특권 회수 → recheck EscalationError.
+    // recheck는 CAS+bump 전에 호출되므로 tx.user.updateMany도 미호출.
     h.db.userAccessRole.findMany.mockResolvedValueOnce([{ role: { key: "pm" } }, { role: { key: "regular-developer" } }]);
     const recheck = vi.fn((cur: string[]) => { if (cur.includes("pm")) throw new EscalationError("특권 회수"); });
-    await expect(setRoles("u1", ["regular-developer"], "admin1", recheck)).rejects.toBeInstanceOf(EscalationError);
+    await expect(setRoles("u1", ["regular-developer"], "admin1", exp, recheck)).rejects.toBeInstanceOf(EscalationError);
+    expect(h.db.user.updateMany).not.toHaveBeenCalled();
     expect(h.db.userAccessRole.createMany).not.toHaveBeenCalled();
     expect(writeAuditMock).not.toHaveBeenCalled();
   });
@@ -554,23 +581,30 @@ describe("refreshVerifyToken (재발송 — 토큰갱신 + 메일 재enqueue 원
 });
 
 describe("reactivateRejectedTx", () => {
-  it("REJECTED→ACTIVE(CAS) + sessionInvalidatedAt 미갱신", async () => {
-    h.db.user.findUnique.mockResolvedValue({ status: "REJECTED", updatedAt: new Date("2026-06-01T00:00:00Z"), emailVerifiedAt: new Date("2026-05-01T00:00:00Z"), systemRole: "MEMBER", roleAssignments: [] });
+  const exp = new Date("2026-06-01T00:00:00Z"); // 클라가 본 버전(CAS where용)
+  it("REJECTED→ACTIVE(CAS where=status+클라 updatedAt) + sessionInvalidatedAt 미갱신", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "REJECTED", updatedAt: new Date("2099-01-01T00:00:00Z"), emailVerifiedAt: new Date("2026-05-01T00:00:00Z"), systemRole: "MEMBER", roleAssignments: [] });
     h.db.user.updateMany.mockResolvedValue({ count: 1 });
-    await reactivateRejectedTx("u1", "admin1", new Date());
+    await reactivateRejectedTx("u1", "admin1", new Date(), exp);
     expect(h.db.user.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: "u1", status: "REJECTED" }, data: expect.objectContaining({ status: "ACTIVE" }),
+      // updatedAt은 클라가 본 버전(서버 재로드값 아님 — stale-tab 차단).
+      where: { id: "u1", status: "REJECTED", updatedAt: exp }, data: expect.objectContaining({ status: "ACTIVE" }),
     }));
   });
   it("REJECTED 아니면 UserConflictError", async () => {
-    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt: new Date(), emailVerifiedAt: new Date(), systemRole: "MEMBER", roleAssignments: [] });
-    await expect(reactivateRejectedTx("u1", "admin1", new Date())).rejects.toBeInstanceOf(UserConflictError);
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt: exp, emailVerifiedAt: new Date(), systemRole: "MEMBER", roleAssignments: [] });
+    await expect(reactivateRejectedTx("u1", "admin1", new Date(), exp)).rejects.toBeInstanceOf(UserConflictError);
+  });
+  it("stale-tab 회귀: CAS(updatedAt=클라 버전) 불일치로 updateMany count 0이면 UserConflictError(409)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "REJECTED", updatedAt: new Date("2099-01-01T00:00:00Z"), emailVerifiedAt: new Date("2026-05-01T00:00:00Z"), systemRole: "MEMBER", roleAssignments: [] });
+    h.db.user.updateMany.mockResolvedValue({ count: 0 });
+    await expect(reactivateRejectedTx("u1", "admin1", new Date(), exp)).rejects.toBeInstanceOf(UserConflictError);
   });
   it("Finding C: emailVerifiedAt=null(미검증 거절)이면 재활성 거부 — UserConflictError, updateMany 미호출", async () => {
     // 자가 가입 후 비번 미설정 상태에서 거절된 계정 — rejectTx가 verify 토큰을 소거했으므로
     // ACTIVE로 만들면 로그인도 불가하고 검증 토큰도 없는 wedged 계정이 된다(Finding C).
-    h.db.user.findUnique.mockResolvedValue({ status: "REJECTED", updatedAt: new Date("2026-06-01T00:00:00Z"), emailVerifiedAt: null, systemRole: "MEMBER", roleAssignments: [] });
-    await expect(reactivateRejectedTx("u1", "admin1", new Date())).rejects.toBeInstanceOf(UserConflictError);
+    h.db.user.findUnique.mockResolvedValue({ status: "REJECTED", updatedAt: exp, emailVerifiedAt: null, systemRole: "MEMBER", roleAssignments: [] });
+    await expect(reactivateRejectedTx("u1", "admin1", new Date(), exp)).rejects.toBeInstanceOf(UserConflictError);
     expect(h.db.user.updateMany).not.toHaveBeenCalled();
   });
 });

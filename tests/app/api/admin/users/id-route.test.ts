@@ -57,7 +57,8 @@ describe("GET /api/admin/users/[id]", () => {
 });
 
 describe("PATCH /api/admin/users/[id]", () => {
-  const valid = JSON.stringify({ name: "수정", systemRole: "MEMBER" });
+  const UPDATED_AT = "2026-06-01T00:00:00.000Z"; // 낙관락: 클라가 본 행 버전(body로 전송)
+  const valid = JSON.stringify({ name: "수정", systemRole: "MEMBER", updatedAt: UPDATED_AT });
   it("미인증 401", async () => {
     h.auth.mockResolvedValueOnce(null);
     expect((await PATCH(new Request("http://x", { method: "PATCH", body: valid }), ctx)).status).toBe(401);
@@ -71,19 +72,32 @@ describe("PATCH /api/admin/users/[id]", () => {
     expect(h.updateUser).not.toHaveBeenCalled();
   });
   it("빈 patch(알려진 필드 0개)는 400(finding E — status 등 unknown 키가 strip돼 빈 patch로 성공하는 것 방지, service 미호출)", async () => {
-    // status는 PATCH 스키마에 없는 키 → zod strip 후 patch가 빈 객체. 라우트가 키 0개를 400으로 거부해야 한다.
-    const res = await PATCH(new Request("http://x", { method: "PATCH", body: JSON.stringify({ status: "DISABLED" }) }), ctx);
+    // status는 PATCH 스키마에 없는 키 → zod strip 후 patch가 빈 객체. updatedAt(낙관락 메타)만 남아도 실제 patch 0개면 400.
+    const res = await PATCH(new Request("http://x", { method: "PATCH", body: JSON.stringify({ status: "DISABLED", updatedAt: UPDATED_AT }) }), ctx);
     expect(res.status).toBe(400);
     expect(h.updateUser).not.toHaveBeenCalled();
   });
-  it("정상 200 + admin.users:update 키 포함 summary → ctx·id·patch 위임(authorize)", async () => {
+  it("updatedAt 누락이면 400(낙관락 필수 — service 미호출)", async () => {
+    const res = await PATCH(new Request("http://x", { method: "PATCH", body: JSON.stringify({ name: "수정" }) }), ctx);
+    expect(res.status).toBe(400);
+    expect(h.updateUser).not.toHaveBeenCalled();
+  });
+  it("정상 200 + admin.users:update 키 포함 summary → ctx·id·patch(updatedAt 제외)·expectedUpdatedAt(Date) 위임(authorize)", async () => {
     const res = await PATCH(new Request("http://x", { method: "PATCH", body: valid }), ctx);
     expect(res.status).toBe(200);
-    expect(h.updateUser).toHaveBeenCalledWith(expect.objectContaining({ userId: "admin1" }), "u1", expect.objectContaining({ name: "수정", systemRole: "MEMBER" }));
+    // service에는 patch(updatedAt 제외) + expectedUpdatedAt(Date)을 넘긴다.
+    expect(h.updateUser).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "admin1" }), "u1",
+      expect.objectContaining({ name: "수정", systemRole: "MEMBER" }),
+      new Date(UPDATED_AT),
+    );
+    // patch에는 updatedAt이 섞여 들어가면 안 된다(낙관락 메타는 별도 인자).
+    const patchArg = (h.updateUser.mock.calls[0] as unknown[])[2] as Record<string, unknown>;
+    expect(patchArg.updatedAt).toBeUndefined();
   });
   it("service가 EscalationError(D12: 비-OWNER가 OWNER/ADMIN 부여)면 403", async () => {
     h.updateUser.mockRejectedValueOnce(new EscalationError("OWNER만 systemRole을 OWNER/ADMIN으로 설정할 수 있습니다."));
-    const res = await PATCH(new Request("http://x", { method: "PATCH", body: JSON.stringify({ systemRole: "OWNER" }) }), ctx);
+    const res = await PATCH(new Request("http://x", { method: "PATCH", body: JSON.stringify({ systemRole: "OWNER", updatedAt: UPDATED_AT }) }), ctx);
     expect(res.status).toBe(403);
   });
 });

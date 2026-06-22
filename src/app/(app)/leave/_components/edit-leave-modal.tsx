@@ -15,6 +15,7 @@ export interface EditTarget {
   startDate: string;
   endDate: string;
   reason: string | null;
+  updatedAt: string; // 낙관락(수정 PATCH body로 전달 — stale-tab lost-update 차단). 삭제 경로는 범위 외.
 }
 
 export function EditLeaveModal({
@@ -53,6 +54,7 @@ export function EditLeaveModal({
         body: JSON.stringify({
           ...toLeavePayload(state),
           adminActionNote: adminActionNote || undefined,
+          updatedAt: target.updatedAt,
         }),
       });
       if (!res.ok)

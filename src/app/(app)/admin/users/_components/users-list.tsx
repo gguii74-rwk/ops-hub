@@ -19,6 +19,7 @@ interface Row {
   id: string; email: string; name: string; status: UserStatusKey;
   employmentType: keyof typeof EMPLOYMENT_LABEL; jobFunction: keyof typeof JOB_LABEL;
   systemRole: string; department: string | null; roleKeys: string[];
+  updatedAt: string; // 낙관락(approve mutation body로 전달 — stale-tab lost-update 차단)
 }
 interface ListResponse { rows: Row[]; total: number; pendingCount: number; }
 

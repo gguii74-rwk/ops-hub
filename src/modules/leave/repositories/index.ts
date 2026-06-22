@@ -181,19 +181,20 @@ export async function cancelTx(requestId: string, cancellationReason: string | n
 export async function updateByAdminTx(requestId: string, patch: {
   adminId: string; leaveType: "ANNUAL" | "HALF" | "QUARTER"; leaveSubType: "MORNING" | "AFTERNOON" | null;
   quarterStartTime: string | null; startDate: Date; endDate: Date; newDays: number;
-  reason: string | null; adminActionNote: string | null;
+  reason: string | null; adminActionNote: string | null; expectedUpdatedAt: Date;
 }) {
   return prisma.$transaction(async (tx) => {
-    // 소프트삭제 제외 + updatedAt 낙관락용 스냅샷.
+    // 소프트삭제 제외. existing은 status·userId·startDate·days 재계산/연도 보정에 계속 쓴다(CAS 버전은 클라가 본 값).
     const existing = await tx.leaveRequest.findFirst({
-      where: { id: requestId, deletedAt: null }, select: { status: true, userId: true, startDate: true, days: true, updatedAt: true },
+      where: { id: requestId, deletedAt: null }, select: { status: true, userId: true, startDate: true, days: true },
     });
     if (!existing) throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
     await lockUserAndAssertNoOverlap(tx, existing.userId, patch.startDate, patch.endDate, requestId);
-    // 본문 전이는 CAS updateMany — 관찰한 status·updatedAt(=days 변경 포함)·미삭제일 때만. 0행이면 그 사이 approve/cancel/타 admin 수정/삭제됨
-    // → 충돌로 막아 usedDays 정합성 보호(read-then-update race + days-ABA 방지). updatedAt(@updatedAt)이 status 불변·days만 바뀐 수정도 잡는다.
+    // 본문 전이는 CAS updateMany — 관찰한 status·미삭제 + 클라가 본 updatedAt일 때만. 0행이면 그 사이 approve/cancel/타 admin 수정/삭제됨
+    // → 충돌로 막아 usedDays 정합성 보호(read-then-update race + days-ABA 방지). CAS의 updatedAt은 클라가 본 버전(patch.expectedUpdatedAt) —
+    // 서버 재로드값이 아니라 모달을 열어둔 사이의 stale-tab lost-update까지 막는다(@updatedAt이 status 불변·days만 바뀐 수정도 잡는다).
     const transition = await tx.leaveRequest.updateMany({
-      where: { id: requestId, deletedAt: null, status: existing.status, updatedAt: existing.updatedAt },
+      where: { id: requestId, deletedAt: null, status: existing.status, updatedAt: patch.expectedUpdatedAt },
       data: {
         leaveType: patch.leaveType,
         leaveSubType: patch.leaveType === "HALF" ? patch.leaveSubType : null,

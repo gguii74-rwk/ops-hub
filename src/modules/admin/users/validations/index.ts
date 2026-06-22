@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { expectedUpdatedAt } from "@/kernel/optimistic";
 
 // 비밀번호 정책(시드 정책 재사용): 12자 이상.
 const password = z.string().min(12, "비밀번호는 12자 이상이어야 합니다.");
@@ -65,6 +66,13 @@ export const overrideSchema = z.object({
   startsAt: isoDateTime,
   endsAt: isoDateTime,
 });
+
+// ── 낙관적 동시성 body 스키마(stale-tab lost-update 차단). ──
+// 도메인 스키마는 그대로 두고, 라우트가 파싱하는 body 스키마만 extend로 분리한다(updatedAt = 클라가 본 행 버전).
+// 라우트가 updatedAt을 추출해 parseExpectedUpdatedAt으로 Date 변환 후 service에 별도 인자로 넘긴다.
+export const updateUserBodySchema = updateUserSchema.extend({ updatedAt: expectedUpdatedAt });
+export const approveBodySchema = approveSchema.extend({ updatedAt: expectedUpdatedAt });
+export const rolesBodySchema = rolesSchema.extend({ updatedAt: expectedUpdatedAt });
 
 export type AdminCreateInput = z.infer<typeof adminCreateSchema>;
 export type ApproveInput = z.infer<typeof approveSchema>;

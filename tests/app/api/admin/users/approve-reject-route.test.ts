@@ -36,7 +36,8 @@ beforeEach(() => {
 });
 
 describe("POST .../[id]/approve", () => {
-  const valid = JSON.stringify({ employmentType: "REGULAR", jobFunction: "DEVELOPER", systemRole: "MEMBER", roleKeys: ["developer"] });
+  const UPDATED_AT = "2026-06-01T00:00:00.000Z"; // 낙관락: 클라가 본 행 버전(body로 전송)
+  const valid = JSON.stringify({ employmentType: "REGULAR", jobFunction: "DEVELOPER", systemRole: "MEMBER", roleKeys: ["developer"], updatedAt: UPDATED_AT });
   it("미인증 401", async () => {
     h.auth.mockResolvedValueOnce(null);
     expect((await approve(new Request("http://x", { method: "POST", body: valid }), ctx)).status).toBe(401);
@@ -46,10 +47,22 @@ describe("POST .../[id]/approve", () => {
     expect(res.status).toBe(400);
     expect(h.approveUser).not.toHaveBeenCalled();
   });
-  it("정상 200 + admin.users:approve 키 포함 summary → ctx·id·decision 위임(authorize)", async () => {
+  it("updatedAt 누락이면 400(낙관락 필수 — service 미호출)", async () => {
+    const res = await approve(new Request("http://x", { method: "POST", body: JSON.stringify({ employmentType: "REGULAR", jobFunction: "DEVELOPER", systemRole: "MEMBER", roleKeys: ["developer"] }) }), ctx);
+    expect(res.status).toBe(400);
+    expect(h.approveUser).not.toHaveBeenCalled();
+  });
+  it("정상 200 + admin.users:approve 키 포함 summary → ctx·id·decision(updatedAt 제외)·expectedUpdatedAt(Date) 위임(authorize)", async () => {
     const res = await approve(new Request("http://x", { method: "POST", body: valid }), ctx);
     expect(res.status).toBe(200);
-    expect(h.approveUser).toHaveBeenCalledWith(expect.objectContaining({ userId: "admin1" }), "u1", expect.objectContaining({ roleKeys: ["developer"], systemRole: "MEMBER" }));
+    expect(h.approveUser).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "admin1" }), "u1",
+      expect.objectContaining({ roleKeys: ["developer"], systemRole: "MEMBER" }),
+      new Date(UPDATED_AT),
+    );
+    // decision(input)에는 updatedAt이 섞이면 안 된다(낙관락 메타는 별도 인자).
+    const decisionArg = (h.approveUser.mock.calls[0] as unknown[])[2] as Record<string, unknown>;
+    expect(decisionArg.updatedAt).toBeUndefined();
   });
   it("다른 키만 있고 admin.users:approve 없으면 403(키 특정성 검증)", async () => {
     h.getPermissionSummary.mockResolvedValueOnce({ keys: ["admin.users:view"], isOwner: false });

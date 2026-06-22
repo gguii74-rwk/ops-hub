@@ -33,7 +33,8 @@ beforeEach(() => {
 });
 
 describe("POST /api/admin/users/[id]/status (finding E — 상태 토글 전용)", () => {
-  const disable = JSON.stringify({ status: "DISABLED" });
+  const UPDATED_AT = "2026-06-01T00:00:00.000Z"; // 낙관락: 클라가 본 행 버전(body로 전송)
+  const disable = JSON.stringify({ status: "DISABLED", updatedAt: UPDATED_AT });
   it("미인증 401", async () => {
     h.auth.mockResolvedValueOnce(null);
     expect((await setStatus(new Request("http://x", { method: "POST", body: disable }), ctx)).status).toBe(401);
@@ -42,14 +43,19 @@ describe("POST /api/admin/users/[id]/status (finding E — 상태 토글 전용)
     expect((await setStatus(new Request("http://x", { method: "POST", body: "{" }), ctx)).status).toBe(400);
   });
   it("status enum 위반 400(service 미호출)", async () => {
-    const res = await setStatus(new Request("http://x", { method: "POST", body: JSON.stringify({ status: "BOGUS" }) }), ctx);
+    const res = await setStatus(new Request("http://x", { method: "POST", body: JSON.stringify({ status: "BOGUS", updatedAt: UPDATED_AT }) }), ctx);
     expect(res.status).toBe(400);
     expect(h.setUserStatus).not.toHaveBeenCalled();
   });
-  it("ACTIVE→DISABLED 정상 200 + admin.users:update 키 포함 summary → ctx·id·status 위임(authorize, 세션무효화는 service 책임)", async () => {
+  it("updatedAt 누락이면 400(낙관락 필수 — service 미호출)", async () => {
+    const res = await setStatus(new Request("http://x", { method: "POST", body: JSON.stringify({ status: "DISABLED" }) }), ctx);
+    expect(res.status).toBe(400);
+    expect(h.setUserStatus).not.toHaveBeenCalled();
+  });
+  it("ACTIVE→DISABLED 정상 200 + admin.users:update 키 포함 summary → ctx·id·status·expectedUpdatedAt(Date) 위임(authorize, 세션무효화는 service 책임)", async () => {
     const res = await setStatus(new Request("http://x", { method: "POST", body: disable }), ctx);
     expect(res.status).toBe(200);
-    expect(h.setUserStatus).toHaveBeenCalledWith(expect.objectContaining({ userId: "admin1" }), "u1", "DISABLED");
+    expect(h.setUserStatus).toHaveBeenCalledWith(expect.objectContaining({ userId: "admin1" }), "u1", "DISABLED", new Date(UPDATED_AT));
   });
   it("다른 키만 있고 admin.users:update 없으면 403(키 특정성 검증)", async () => {
     h.getPermissionSummary.mockResolvedValueOnce({ keys: ["admin.users:view"], isOwner: false });
@@ -58,9 +64,9 @@ describe("POST /api/admin/users/[id]/status (finding E — 상태 토글 전용)
     expect(h.setUserStatus).not.toHaveBeenCalled();
   });
   it("DISABLED→ACTIVE 재활성도 같은 경로로 위임", async () => {
-    const res = await setStatus(new Request("http://x", { method: "POST", body: JSON.stringify({ status: "ACTIVE" }) }), ctx);
+    const res = await setStatus(new Request("http://x", { method: "POST", body: JSON.stringify({ status: "ACTIVE", updatedAt: UPDATED_AT }) }), ctx);
     expect(res.status).toBe(200);
-    expect(h.setUserStatus).toHaveBeenCalledWith(expect.objectContaining({ userId: "admin1" }), "u1", "ACTIVE");
+    expect(h.setUserStatus).toHaveBeenCalledWith(expect.objectContaining({ userId: "admin1" }), "u1", "ACTIVE", new Date(UPDATED_AT));
   });
   it("service가 MinAvailabilityError(마지막 관리자 비활성화)면 409", async () => {
     h.setUserStatus.mockRejectedValueOnce(new MinAvailabilityError("최소 1명의 사용자 관리자가 필요합니다."));

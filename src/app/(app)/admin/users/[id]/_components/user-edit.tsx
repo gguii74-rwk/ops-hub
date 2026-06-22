@@ -18,6 +18,7 @@ interface UserDetail {
   employmentType: string; jobFunction: string; systemRole: string;
   department: string | null; mustChangePassword: boolean;
   roleKeys: string[];
+  updatedAt: string; // 낙관락(mutation body로 전달 — stale-tab lost-update 차단)
   overrides: Array<{ id: string; resource: string; action: string; effect: string; scope: string; reason: string | null; startsAt: Date | null; endsAt: Date | null }>;
 }
 
@@ -51,15 +52,20 @@ export function UserEdit({ userId, canUpdate }: { userId: string; canUpdate: boo
   }
 
   const refetch = () => { void qc.invalidateQueries({ queryKey: ["admin-user", userId] }); };
+  // 409(Conflict): 모달을 열어둔 사이 다른 세션이 행을 바꿈. 최신값을 다시 로드하고 폼을 재초기화(initialized 가드 해제)해
+  // 사용자가 서버 최신 상태를 보고 의식적으로 다시 적용하게 한다. 에러 메시지는 기존대로 표시(onError 후에도 mutation.error 유지).
+  const reloadOnConflict = (res: Response) => {
+    if (res.status === 409) { setInitialized(false); refetch(); }
+  };
 
   const update = useMutation({
     mutationFn: async () => {
       const res = await fetch(`/api/admin/users/${userId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, department: department || null, employmentType: attr.employmentType, jobFunction: attr.jobFunction, systemRole }),
+        body: JSON.stringify({ name, department: department || null, employmentType: attr.employmentType, jobFunction: attr.jobFunction, systemRole, updatedAt: data?.updatedAt }),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `수정 실패 (${res.status})`);
+      if (!res.ok) { reloadOnConflict(res); throw new Error((await res.json().catch(() => ({}))).error ?? `수정 실패 (${res.status})`); }
     },
     onSuccess: refetch,
   });
@@ -69,9 +75,9 @@ export function UserEdit({ userId, canUpdate }: { userId: string; canUpdate: boo
       const res = await fetch(`/api/admin/users/${userId}/roles`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roleKeys: attr.roleKeys }),
+        body: JSON.stringify({ roleKeys: attr.roleKeys, updatedAt: data?.updatedAt }),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `역할 저장 실패 (${res.status})`);
+      if (!res.ok) { reloadOnConflict(res); throw new Error((await res.json().catch(() => ({}))).error ?? `역할 저장 실패 (${res.status})`); }
     },
     onSuccess: refetch,
   });
@@ -81,9 +87,9 @@ export function UserEdit({ userId, canUpdate }: { userId: string; canUpdate: boo
       const res = await fetch(`/api/admin/users/${userId}/status`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, updatedAt: data?.updatedAt }),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `상태 변경 실패 (${res.status})`);
+      if (!res.ok) { reloadOnConflict(res); throw new Error((await res.json().catch(() => ({}))).error ?? `상태 변경 실패 (${res.status})`); }
     },
     onSuccess: refetch,
   });

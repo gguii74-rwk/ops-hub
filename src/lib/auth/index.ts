@@ -26,7 +26,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!parsed.success) return null;
         const { email, password } = parsed.data;
 
-        const user = await prisma.user.findUnique({ where: { email } });
+        // email은 사용자 병합 키(canonical). signup/resend/admin 생성이 모두 소문자로 저장하므로 조회도 소문자 정규화한다.
+        const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
         // 허용목록(fail-closed): ACTIVE만 통과. INVITED(미활성)·DISABLED는 거부.
         if (!user || user.status !== "ACTIVE") return null;
 
