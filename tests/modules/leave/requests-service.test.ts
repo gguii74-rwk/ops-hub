@@ -122,42 +122,49 @@ describe("createLeaveRequestByAdmin", () => {
 });
 
 describe("updateByAdmin (effective-state 교차검증)", () => {
+  const EXP = new Date("2999-08-01T00:00:00Z"); // 낙관락: 클라가 본 신청 행 버전(updateByAdminTx CAS용)
   const existingAnnual = {
     id: "r1", userId: "u1", status: "PENDING", leaveType: "ANNUAL", leaveSubType: null, quarterStartTime: null,
     startDate: new Date("2999-08-14T00:00:00Z"), endDate: new Date("2999-08-14T00:00:00Z"), days: 1, reason: null,
   };
   it("ANNUAL→HALF인데 leaveSubType 미전달 → LeaveValidationError, updateByAdminTx 미호출", async () => {
     repo.getRequestById.mockResolvedValue({ ...existingAnnual } as any);
-    await expect(updateByAdmin("r1", { leaveType: "HALF" }, "admin1")).rejects.toBeInstanceOf(LeaveValidationError);
+    await expect(updateByAdmin("r1", { leaveType: "HALF" }, "admin1", EXP)).rejects.toBeInstanceOf(LeaveValidationError);
     expect(repo.updateByAdminTx).not.toHaveBeenCalled();
   });
   it("ANNUAL→QUARTER인데 quarterStartTime 미전달 → LeaveValidationError", async () => {
     repo.getRequestById.mockResolvedValue({ ...existingAnnual } as any);
-    await expect(updateByAdmin("r1", { leaveType: "QUARTER" }, "admin1")).rejects.toBeInstanceOf(LeaveValidationError);
+    await expect(updateByAdmin("r1", { leaveType: "QUARTER" }, "admin1", EXP)).rejects.toBeInstanceOf(LeaveValidationError);
     expect(repo.updateByAdminTx).not.toHaveBeenCalled();
   });
   it("QUARTER인데 비화이트리스트 시각 → LeaveValidationError", async () => {
     repo.getRequestById.mockResolvedValue({ ...existingAnnual } as any);
-    await expect(updateByAdmin("r1", { leaveType: "QUARTER", quarterStartTime: "08:00" }, "admin1")).rejects.toBeInstanceOf(LeaveValidationError);
+    await expect(updateByAdmin("r1", { leaveType: "QUARTER", quarterStartTime: "08:00" }, "admin1", EXP)).rejects.toBeInstanceOf(LeaveValidationError);
     expect(repo.updateByAdminTx).not.toHaveBeenCalled();
   });
-  it("HALF+leaveSubType 정상 → updateByAdminTx(adminId·effective값) 호출", async () => {
+  it("HALF+leaveSubType 정상 → updateByAdminTx(adminId·effective값·expectedUpdatedAt) 호출", async () => {
     repo.getRequestById.mockResolvedValue({ ...existingAnnual } as any);
     repo.findOverlap.mockResolvedValue(null);
     repo.updateByAdminTx.mockResolvedValue({ id: "r1" } as any);
-    await updateByAdmin("r1", { leaveType: "HALF", leaveSubType: "MORNING" }, "admin1");
+    await updateByAdmin("r1", { leaveType: "HALF", leaveSubType: "MORNING" }, "admin1", EXP);
     expect(repo.updateByAdminTx).toHaveBeenCalledWith("r1", expect.objectContaining({
-      adminId: "admin1", leaveType: "HALF", leaveSubType: "MORNING", quarterStartTime: null,
+      adminId: "admin1", leaveType: "HALF", leaveSubType: "MORNING", quarterStartTime: null, expectedUpdatedAt: EXP,
     }));
   });
   it("QUARTER+화이트리스트 시각 정상 → updateByAdminTx 호출", async () => {
     repo.getRequestById.mockResolvedValue({ ...existingAnnual } as any);
     repo.findOverlap.mockResolvedValue(null);
     repo.updateByAdminTx.mockResolvedValue({ id: "r1" } as any);
-    await updateByAdmin("r1", { leaveType: "QUARTER", quarterStartTime: "09:00" }, "admin1");
+    await updateByAdmin("r1", { leaveType: "QUARTER", quarterStartTime: "09:00" }, "admin1", EXP);
     expect(repo.updateByAdminTx).toHaveBeenCalledWith("r1", expect.objectContaining({
-      adminId: "admin1", leaveType: "QUARTER", quarterStartTime: "09:00", leaveSubType: null,
+      adminId: "admin1", leaveType: "QUARTER", quarterStartTime: "09:00", leaveSubType: null, expectedUpdatedAt: EXP,
     }));
+  });
+  it("stale-tab 회귀: updateByAdminTx가 CAS 충돌(LeaveConflictError)이면 그대로 전파(409)", async () => {
+    repo.getRequestById.mockResolvedValue({ ...existingAnnual } as any);
+    repo.findOverlap.mockResolvedValue(null);
+    repo.updateByAdminTx.mockRejectedValueOnce(new LeaveConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요."));
+    await expect(updateByAdmin("r1", { leaveType: "HALF", leaveSubType: "MORNING" }, "admin1", EXP)).rejects.toBeInstanceOf(LeaveConflictError);
   });
 });
 

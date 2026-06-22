@@ -11,7 +11,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
 
   try {
     const summary = await getPermissionSummary(session.user.id);
-    const out = await retryDelivery({ deliveryId, taskId: id }, buildMailCtx(session.user, summary.keys));
+    const out = await retryDelivery({ deliveryId, taskId: id }, buildMailCtx(session.user, summary));
     return NextResponse.json({ id: out.id, status: out.status });
   } catch (error) {
     return mapError(error);

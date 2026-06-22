@@ -7,6 +7,8 @@ export * from "@/kernel/access/catalog";
 
 export interface PermissionSummary {
   keys: string[];
+  isOwner: boolean; // 신규(finding 3) — actor 권위 단일 출처. must-change/비활성이면 false(fail-closed).
+  isAdmin: boolean; // 신규 — coarse 관리자(OWNER||ADMIN) 권위 단일 출처. must-change/비활성이면 false(fail-closed). 소비처가 session.systemRole에서 직접 도출하면 게이트 우회됨.
 }
 
 export class ForbiddenError extends Error {
@@ -24,7 +26,9 @@ function withinValidity(startsAt: Date | null, endsAt: Date | null, now: Date): 
 
 interface UserContext {
   isOwner: boolean;
+  isAdmin: boolean; // OWNER||ADMIN(coarse). must-change/비활성 게이트는 호출부가 먼저 early-return.
   roleIds: string[];
+  mustChangePassword: boolean; // 신규 — must-change 세션은 모든 권한 fail-closed(D17)
 }
 
 async function loadUserContext(userId: string, now: Date): Promise<UserContext | null> {
@@ -33,6 +37,7 @@ async function loadUserContext(userId: string, now: Date): Promise<UserContext |
     select: {
       systemRole: true,
       status: true,
+      mustChangePassword: true,
       roleAssignments: { select: { roleId: true, startsAt: true, endsAt: true } },
     },
   });
@@ -41,13 +46,20 @@ async function loadUserContext(userId: string, now: Date): Promise<UserContext |
   const roleIds = user.roleAssignments
     .filter((a) => withinValidity(a.startsAt, a.endsAt, now))
     .map((a) => a.roleId);
-  return { isOwner: user.systemRole === "OWNER", roleIds };
+  return {
+    isOwner: user.systemRole === "OWNER",
+    isAdmin: user.systemRole === "OWNER" || user.systemRole === "ADMIN",
+    roleIds,
+    mustChangePassword: user.mustChangePassword,
+  };
 }
 
 export async function hasPermission(userId: string, resource: string, action: Action): Promise<boolean> {
   const now = new Date();
   const ctx = await loadUserContext(userId, now);
   if (!ctx) return false;
+  // D17 하드 게이트: must-change 세션은 어떤 권한도 갖지 않는다(OWNER 포함). change-password/logout 경로는 권한 검사를 거치지 않음.
+  if (ctx.mustChangePassword) return false;
   if (ctx.isOwner) return true;
 
   const permission = await prisma.permission.findUnique({
@@ -86,14 +98,16 @@ export async function requirePermission(userId: string, resource: string, action
 export async function getPermissionSummary(userId: string): Promise<PermissionSummary> {
   const now = new Date();
   const ctx = await loadUserContext(userId, now);
-  if (!ctx) return { keys: [] };
+  if (!ctx) return { keys: [], isOwner: false, isAdmin: false };
+  // D17 하드 게이트: must-change면 빈 summary·isOwner/isAdmin=false(fail-closed). UI useCan(...)도 전부 false → 메뉴/버튼 숨김.
+  if (ctx.mustChangePassword) return { keys: [], isOwner: false, isAdmin: false };
 
   const permissions = await prisma.permission.findMany({
     select: { id: true, resource: true, action: true },
   });
 
   if (ctx.isOwner) {
-    return { keys: permissions.map((p) => permissionKey(p.resource, p.action)) };
+    return { keys: permissions.map((p) => permissionKey(p.resource, p.action)), isOwner: true, isAdmin: true };
   }
 
   const [overrides, roleRules] = await Promise.all([
@@ -121,5 +135,6 @@ export async function getPermissionSummary(userId: string): Promise<PermissionSu
       keys.push(permissionKey(p.resource, p.action));
     }
   }
-  return { keys };
+  // 여기 도달하면 ACTIVE·must-change=false인 비-OWNER. ADMIN systemRole이면 isAdmin=true(coarse).
+  return { keys, isOwner: false, isAdmin: ctx.isAdmin };
 }

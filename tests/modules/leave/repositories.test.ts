@@ -105,15 +105,16 @@ describe("cancelTx", () => {
 });
 
 describe("updateByAdminTx", () => {
+  // updatedAt = 클라가 본 버전. CAS where의 updatedAt은 patch.expectedUpdatedAt(서버 재로드 existing.updatedAt 아님 — stale-tab 차단).
   const updatedAt = new Date("2026-07-01T00:00:00Z");
   const patch = {
     adminId: "admin1",
     leaveType: "ANNUAL" as const, leaveSubType: null, quarterStartTime: null,
     startDate: new Date("2027-01-04T00:00:00Z"), endDate: new Date("2027-01-04T00:00:00Z"),
-    newDays: 1, reason: null, adminActionNote: null,
+    newDays: 1, reason: null, adminActionNote: null, expectedUpdatedAt: updatedAt,
   };
   // findFirst는 (1) 읽기[deletedAt:null] (2) lockUserAndAssertNoOverlap 두 번 쓰인다 — Once로 읽기, 이후 overlap은 null.
-  it("APPROVED 동일연도 수정: CAS where에 status+updatedAt 포함하고 usedDays diff 보정", async () => {
+  it("APPROVED 동일연도 수정: CAS where에 status+클라 updatedAt 포함하고 usedDays diff 보정", async () => {
     h.db.leaveRequest.findFirst
       .mockResolvedValueOnce({ status: "APPROVED", userId: "u1", startDate: new Date("2026-08-10T00:00:00Z"), days: 1, updatedAt })
       .mockResolvedValue(null);

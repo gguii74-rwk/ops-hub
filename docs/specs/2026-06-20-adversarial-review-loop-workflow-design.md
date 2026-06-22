@@ -8,8 +8,9 @@
 
 spec/plan 문서 생성 또는 구현 작업(예: `superpowers:subagent-driven-development`)이 끝났을 때,
 변경사항을 커밋하고 `/codex:adversarial-review`로 적대 검증을 돌린 뒤,
-리뷰 결과를 **보수적으로 수용/비수용 판단해 자동 수정**하고,
-**`critical`/`high` finding이 사라질 때까지 반복**하는 흐름을 도구화한다.
+리뷰 결과를 **보수적으로 수용/비수용 판단**하고,
+**모든 critical/high/medium finding을 FIXED/ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE/DUPLICATE/ESCALATE 중 하나로 판정해, 미판정(unadjudicated) blocking이 0이 될 때까지 반복**하는 흐름을 도구화한다.
+**blocking score가 2회 연속 줄지 않으면(정체/발산) 수정 루프를 멈추고 판정 루프로 전환한다. 목표는 "high 0"이 아니라 "판정 없이 남은 high 0"이다.**
 반복 중 컨텍스트 사용량이 임계(40%)를 넘으면 상태를 핸드오프로 저장하고 `/clear` 후 이어가도록 유도한다.
 
 목표는 "최대한 자동화하되, **원리적으로 불가능한 부분은 정직하게 수동으로 남기고 그 경계를 명확히 문서화**"하는 것이다.
@@ -52,7 +53,7 @@ spec/plan 문서 생성 또는 구현 작업(예: `superpowers:subagent-driven-d
 
 - 위치: `.claude/skills/review-loop/SKILL.md` (git 추적, 양 노트북 공유)
 - 호출: 사용자가 단계 완료 후 직접 호출(예: `/review-loop`), 또는 Stop 훅 넛지가 호출을 유도.
-- 인자(선택): `--phase spec|plan|impl`(기본 auto 추론), `--max <n>`(기본 5), `--base <ref>`(브랜치 리뷰 기준, 기본 `main`).
+- 인자(선택): `--phase spec|plan|impl`(기본 auto 추론), `--max <n>`(기본 5), `--base <ref>`(브랜치 리뷰 기준, 기본 `main`), `--auto-rounds <n>`(기본 3, 초반 자동 모드 라운드 수; 0=매회 즉시).
 
 #### 알고리즘
 
@@ -73,24 +74,27 @@ review-loop [--phase ...] [--max 5] [--base main]
       node "${CODEX_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review --wait --base <ref>
       - 변경 규모가 크면(파일 다수/디렉터리 단위) background로 띄우고 폴링.
       - 출력 = review-output.schema.json 구조(JSON): { verdict, summary, findings[], next_steps }.
-   c. 종료 판정:
-      critical/high severity finding 개수 == 0  →  성공 종료(요약 보고) → 4)로.
-   d. 분류(보수적):
-      각 critical/high finding을 둘 중 하나로:
-        · AUTO   : 수정 방향이 명확 — 버그, 누락 가드, 테스트 공백, 경쟁조건/원자성, 잘못된 권한 검사 등.
-        · ESCALATE: 사용자 의사결정 — 다음 중 하나라도 해당하면:
-            - 제품 범위/동작(UX·정책)을 바꿈
-            - 설계 spec의 의도에 반함(스펙 변경 필요)
-            - 유효한 설계 선택지가 둘 이상
-            - 보안·데이터 트레이드오프 판단이 필요
-            - finding confidence가 낮음(불확실)
-      medium/low severity → 기록만(요약에 포함), 이 루프에서 수정하지 않음.
-   e. ESCALATE 큐가 있으면 AskUserQuestion으로 사용자 판단 요청 → 결정 반영.
-      사용자가 "지금 멈추고 직접 본다"를 택하면 핸드오프 쓰고 종료.
-   f. AUTO 큐 처리: 각 항목을 TDD로 수정(실패 테스트 → 수정 → 게이트 통과).
-      가능하면 subagent-driven-development 패턴 활용.
-   g. 게이트 재실행 통과 확인.
-   h. iteration > max → 멈추고 미해결 finding 요약 + 사용자 판단 대기(핸드오프 작성).
+   c. 분류·판정(disposition) + ledger 대조:
+      각 critical/high/medium finding을 fingerprint(file+정규화 title+recommendation, severity 제외)로 ledger와 대조하고
+      disposition을 부여한다:
+        · FIXED            : 수정 방향이 명확(버그·누락 가드·테스트 공백·경쟁조건·권한 검사 등) → 수정 큐.
+        · ACCEPTED         : 실제 위험이나 현 단계에서 의도적 수용(이유+보완 명시).
+        · DEFERRED_TO_IMPL : spec/plan에서 못 닫음 → impl plan의 AC/테스트로 이전·연결.
+        · OUT_OF_SCOPE     : 이번 변경 범위 밖(follow-up 기록).
+        · DUPLICATE        : 기존 ledger 항목과 동일.
+        · ESCALATE         : 사용자 결정 필요 — (a) 제품 범위/동작 변경, (b) spec 의도 반함, (c) 설계 선택지 2+, (d) 보안·데이터 트레이드오프, (e) confidence 낮음.
+      low → DEFER_LOW(요약에만). 미판정 blocking score(critical=4·high=3·medium=1) 기록.
+   d. ESCALATE 처리(모드 분기): 자동 모드(iteration ≤ auto-rounds, 기본 3)에서는 즉시군(critical·보안/데이터·방향전제)만 AskUserQuestion, batch군은 ledger에 적재(안 물음). batch 전환 시점(auto-rounds 도달·score 정체·FIXED 소진)/정밀 모드(>auto-rounds)에서 모아둔 batch ESCALATE + round별 자동수정 내역을 일괄 제시 → FIXED/ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE로 닫거나 "중단"(핸드오프 쓰고 종료).
+   e. 종료 판정:
+      미판정 blocking == 0 AND FIXED 큐 == 0  →  성공 종료(요약 보고) → 4)로.
+      (미판정 blocking = critical/high/medium 중 disposition 없는 것 + FIXED 재확인 대기. low·판정완료 제외)
+      신규 blocking이 없고 ledger가 모두 닫혀 있으면 즉시 종료(빠른 경로).
+   f. FIXED 큐 처리(phase 분기):
+        · impl: TDD(실패 테스트 → 수정 → 게이트 통과). 가능하면 subagent-driven-development.
+        · spec/plan: 문서 수정 후 phase 관문 재확인 + 문서 내부 정합성(결정/가정/AC 상호모순) 자체 점검. DEFERRED_TO_IMPL은 impl plan AC/테스트에 기재.
+   g. 게이트 재실행 통과 확인(spec/plan은 관문 재확인으로 갈음).
+   h. 판정 루프 전환/한도: blocking score가 2회 연속 비감소(s_n ≥ s_{n-1} ≥ s_{n-2})면 수정 루프를 멈추고 판정 루프로 전환(남은 미판정을 ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE/ESCALATE로 닫음).
+      iteration > max(5)면 멈추되, 멈추기 전 남은 미판정을 가능한 한 판정으로 닫고 못 닫는 것만 ESCALATE로 사용자에게(미판정 방치 금지).
    i. 컨텍스트 점검: 사용률 ≥ 40%면 핸드오프(아래 4.3) 작성 + 사용자에게 /clear 안내.
       → 새 세션에서 review-loop 재호출 시 0) resume로 이어감.
       (Stop 훅이 이 시점을 별도 넛지로도 잡아줌 — 이중 안전망)
@@ -101,9 +105,10 @@ review-loop [--phase ...] [--max 5] [--base main]
 4) 종료 요약: 총 반복 횟수, 자동수정 내역, ESCALATE 처리 내역, 남은 medium/low, 최종 verdict.
 ```
 
-- **종료 심각도**: `critical`과 `high` 모두 0이어야 종료(high만 보면 critical을 흘릴 수 있음).
+- **종료 심각도**: 미판정 blocking == 0이어야 종료(모든 critical/high/medium이 FIXED 또는 ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE/DUPLICATE/ESCALATE로 판정됨). 목표는 "high 0"이 아니라 "판정 없이 남은 high 0". low·판정완료 항목만 남는다.
+- **판정 루프 전환**: blocking score(critical=4·high=3·medium=1)가 2회 연속 감소하지 않으면(정체/발산) 수정 루프를 멈추고 판정 루프로 전환한다(더 고치지 말고 ledger에 닫음). count가 아닌 score로 봐야 high→medium 같은 심각도 개선을 정체로 오판하지 않는다.
 - **리뷰 스코프**: 기본 `--base main` 브랜치 리뷰(커밋된 HEAD 기준). spec/plan 문서 단계도 동일하게 "커밋 후 리뷰".
-- **resume 계약**: 중단/`/clear` 시 `.remember/` 핸드오프에 `{ phase, iteration, base, outstanding: [findings] }`를 적어 새 세션이 이어받는다.
+- **resume 계약**: 중단/`/clear` 시 `.remember/` 핸드오프에 `{ phase, iteration, base, ledger: [{fingerprint, severity, disposition(FIXED|ACCEPTED|DEFERRED_TO_IMPL|OUT_OF_SCOPE|DUPLICATE|ESCALATE|DEFER_LOW), 근거}], score 이력 }`를 적어 새 세션이 이어받는다.
 
 ### 4.2 컨텍스트 임계 Stop 훅
 
@@ -128,7 +133,7 @@ review-loop [--phase ...] [--max 5] [--base main]
 ### 4.3 단계 경계 규율 + 런북
 
 - 단계 경계(spec→plan, plan→impl)에서는 **반드시 컨텍스트 초기화**:
-  - 직전 단계 종료 시 `review-loop`가 통과(critical/high 0)하면, 스킬이 `.remember/` 핸드오프를 쓰고
+  - 직전 단계 종료 시 `review-loop`가 통과(미판정 blocking 0; ledger의 ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE를 산출물 문서에 명시)하면, 스킬이 `.remember/` 핸드오프를 쓰고
     "다음 단계는 `/clear` 후 시작하세요" + 다음 단계 진입 커맨드를 안내.
 - 런북 문서(`docs/`): 한 phase의 end-to-end 순서를 적는다.
   ```
@@ -154,12 +159,12 @@ review-loop [--phase ...] [--max 5] [--base main]
                 file, line_start, line_end, confidence(0..1), recommendation }
   next_steps[]: string
   ```
-- 종료 판정 입력 = `findings` 중 `severity ∈ {critical, high}` 개수.
+- 종료 판정 입력 = 미판정 blocking finding 개수(critical/high/medium 중 disposition 없는 것 + FIXED 재확인 대기; low·판정완료 제외).
 
 ### 5.2 핸드오프(`.remember/remember.md`)
 
 - 기존 remember 포맷 활용. 루프 재개에 필요한 최소 상태를 명시 섹션으로 추가:
-  `phase / iteration / base / outstanding findings(파일·라인·severity·요약)`.
+  `phase / iteration / base / ledger(file·severity·disposition(FIXED|ACCEPTED|DEFERRED_TO_IMPL|OUT_OF_SCOPE|DUPLICATE|ESCALATE|DEFER_LOW)·fingerprint·근거) / blocking score 이력`.
 
 ### 5.3 Stop 훅 입출력
 
@@ -174,9 +179,10 @@ review-loop [--phase ...] [--max 5] [--base main]
       ├─ 게이트 통과 확인
       └─ 반복:
            커밋 → companion adversarial-review --wait --base main → JSON
-           ├─ crit/high == 0 → 종료 요약
-           └─ 분류 → (ESCALATE? AskUserQuestion) → AUTO TDD 수정 → 게이트
-                   → (≥40%? 핸드오프+/clear 안내) → 다음 반복(커밋 후 리뷰)
+           ├─ 분류·판정(disposition) + ledger/score 갱신 → (ESCALATE? AskUserQuestion)
+           ├─ 미판정 blocking == 0 & FIXED 큐 0 → 종료 요약
+           └─ FIXED 수정(impl=TDD / spec·plan=문서+정합성) → 게이트
+                   → (score 2회 비감소? 판정 루프 전환) → (≥40%? 핸드오프+/clear) → 다음 반복(커밋 후 리뷰)
   → 통과 시 finishing-a-development-branch
 세션 도중 ≥40% 도달 시 Stop 훅이 핸드오프+/clear를 별도로 넛지(이중 안전망)
 ```
@@ -187,7 +193,7 @@ review-loop [--phase ...] [--max 5] [--base main]
 - **리뷰 background 미완**: `--wait` 기본, 큰 변경만 background+폴링. 폴링 타임아웃 시 사용자에게 상태 보고.
 - **게이트 실패**: 수정 후 게이트가 깨지면 그 반복은 커밋하지 않고 원인부터 해결(systematic-debugging). 깨진 채 다음 리뷰로 넘어가지 않음.
 - **JSON 파싱 실패**: 출력이 스키마와 다르면 루프 중단·원문 보고(추측 금지).
-- **무한 반복 방지**: `--max`(기본 5) 초과 시 강제 종료 + 사용자 대기.
+- **무한 반복 방지**: blocking score 2회 연속 비감소면 판정 루프로 전환(수정 중단). `--max`(기본 5) 초과 시 멈추되 남은 미판정은 판정/ESCALATE로 닫고 사용자 대기.
 
 ## 8. 테스트 전략
 

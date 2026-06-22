@@ -16,6 +16,7 @@ const base: SessionUser = {
   systemRole: "MEMBER",
   employmentType: "REGULAR",
   jobFunction: "DEVELOPER",
+  mustChangePassword: false,
 };
 
 describe("federation claims", () => {
@@ -60,7 +61,7 @@ describe("verifySession (fail-closed against live DB, not the JWT snapshot)", ()
   it("returns null for a disabled user even when the session is still valid", async () => {
     const { verifySession } = await import("@/lib/auth/federation");
     mockAuth.mockResolvedValue({ user: { id: "u1", systemRole: "ADMIN" } });
-    mockFindUnique.mockResolvedValue({ id: "u1", email: "a@b.com", systemRole: "ADMIN", status: "DISABLED" });
+    mockFindUnique.mockResolvedValue({ id: "u1", email: "a@b.com", systemRole: "ADMIN", status: "DISABLED", mustChangePassword: false, passwordChangedAt: null, sessionInvalidatedAt: null });
     expect(await verifySession()).toBeNull();
   });
 
@@ -68,14 +69,50 @@ describe("verifySession (fail-closed against live DB, not the JWT snapshot)", ()
     const { verifySession } = await import("@/lib/auth/federation");
     // JWT snapshot still says ADMIN with a stale email; DB is the source of truth.
     mockAuth.mockResolvedValue({ user: { id: "u1", email: "stale@b.com", systemRole: "ADMIN" } });
-    mockFindUnique.mockResolvedValue({ id: "u1", email: "a@b.com", systemRole: "MEMBER", status: "ACTIVE" });
+    mockFindUnique.mockResolvedValue({ id: "u1", email: "a@b.com", systemRole: "MEMBER", status: "ACTIVE", mustChangePassword: false, passwordChangedAt: null, sessionInvalidatedAt: null });
     expect(await verifySession()).toEqual({ sub: "u1", email: "a@b.com", groups: ["kgs-user"] });
   });
 
   it("grants ops-admin for an active OWNER from the DB", async () => {
     const { verifySession } = await import("@/lib/auth/federation");
     mockAuth.mockResolvedValue({ user: { id: "u1" } });
-    mockFindUnique.mockResolvedValue({ id: "u1", email: "owner@b.com", systemRole: "OWNER", status: "ACTIVE" });
+    mockFindUnique.mockResolvedValue({ id: "u1", email: "owner@b.com", systemRole: "OWNER", status: "ACTIVE", mustChangePassword: false, passwordChangedAt: null, sessionInvalidatedAt: null });
     expect(await verifySession()).toEqual({ sub: "u1", email: "owner@b.com", groups: ["kgs-user", "ops-admin"] });
+  });
+
+  it("must-change 사용자는 null(federation 헤더/그룹 미발급)", async () => {
+    const { verifySession } = await import("@/lib/auth/federation");
+    mockAuth.mockResolvedValue({ user: { id: "u1" } });
+    mockFindUnique.mockResolvedValue({
+      id: "u1", email: "a@b.com", systemRole: "MEMBER", status: "ACTIVE",
+      mustChangePassword: true, passwordChangedAt: null, sessionInvalidatedAt: null,
+    });
+    expect(await verifySession()).toBeNull();
+  });
+
+  it("passwordChangedAt이 세션 발급 이후면 null(비번변경 세션무효)", async () => {
+    const { verifySession } = await import("@/lib/auth/federation");
+    // auth() 세션의 발급시각(iat)보다 DB passwordChangedAt이 뒤 → 무효.
+    mockAuth.mockResolvedValue({ user: { id: "u1" } });
+    mockFindUnique.mockResolvedValue({
+      id: "u1", email: "a@b.com", systemRole: "MEMBER", status: "ACTIVE",
+      mustChangePassword: false,
+      passwordChangedAt: new Date(Date.now() + 60_000), // 미래 → 어떤 발급시각보다도 뒤
+      sessionInvalidatedAt: null,
+    });
+    expect(await verifySession()).toBeNull();
+  });
+
+  it("F-FED: passwordChangedAt이 토큰 발급시각 이후·현재시각 이전이어도 null(Date.now() 아닌 session.iatMs 기준 — TOCTOU 차단)", async () => {
+    const { verifySession } = await import("@/lib/auth/federation");
+    const iatMs = Date.now() - 3_600_000; // 1시간 전 발급(ms)
+    mockAuth.mockResolvedValue({ user: { id: "u1" }, iatMs });
+    mockFindUnique.mockResolvedValue({
+      id: "u1", email: "a@b.com", systemRole: "MEMBER", status: "ACTIVE",
+      mustChangePassword: false,
+      passwordChangedAt: new Date(iatMs + 60_000), // 발급 이후, now 이전 → Date.now() 기준이면 통과(버그), 발급시각 기준이면 무효
+      sessionInvalidatedAt: null,
+    });
+    expect(await verifySession()).toBeNull();
   });
 });

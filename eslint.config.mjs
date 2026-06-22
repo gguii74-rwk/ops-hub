@@ -31,6 +31,8 @@ const eslintConfig = [
             { from: ["lib"], allow: ["lib"] },
             { from: ["kernel"], allow: ["kernel", "lib"] },
             { from: ["module"], allow: ["kernel", "lib", ["module", { module: "${from.module}" }]] },
+            // admin 모듈은 leave 공통 메일 드레인 트리거를 재사용한다(S8 — 공통 MailDelivery 워커).
+            { from: [["module", { module: "admin" }]], allow: [["module", { module: "leave" }]] },
             { from: ["app"], allow: ["app", "kernel", "lib", "module", "ui"] },
             { from: ["ui"], allow: ["ui", "lib"] },
             // 미들웨어(edge)는 lib만 — 단, lib/auth/index(node) import 금지는 element 단위로는

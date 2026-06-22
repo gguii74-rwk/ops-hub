@@ -153,10 +153,11 @@ export async function cancel(requestId: string, ctx: LeaveCtx, cancellationReaso
 }
 
 // 관리자 수정 — days 재계산 후 tx 보정.
+// expectedUpdatedAt: 클라가 본 신청 행 버전(stale-tab lost-update 차단). updateByAdminTx의 CAS where에 쓴다.
 export async function updateByAdmin(requestId: string, input: {
   leaveType?: LeaveType; leaveSubType?: LeaveSubType | null; quarterStartTime?: string | null;
   startDate?: string; endDate?: string; reason?: string | null; adminActionNote?: string | null;
-}, adminId: string) {
+}, adminId: string, expectedUpdatedAt: Date) {
   const existing = await getRequestById(requestId);
   if (!existing) throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
   const start = input.startDate ? parseLeaveDate(input.startDate) : existing.startDate;
@@ -189,6 +190,7 @@ export async function updateByAdmin(requestId: string, input: {
     startDate: start, endDate: end, newDays,
     reason: input.reason !== undefined ? input.reason : existing.reason,
     adminActionNote: input.adminActionNote ?? null,
+    expectedUpdatedAt,
   });
 }
 

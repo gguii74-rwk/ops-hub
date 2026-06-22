@@ -1,5 +1,7 @@
 # Task 04 — 런북 문서 + 인덱스
 
+> 현행 실행 SSOT는 `.claude/skills/review-loop/SKILL.md`(및 런북 `docs/workflow/review-loop-runbook.md`)입니다. 이 파일 본문은 최초 구현 당시 historical record로 유지합니다.
+
 목적: brainstorming → writing-plans-split → subagent-driven-development 사이에 review-loop와 `/clear` 지점을 어떻게 끼우는지 런북으로 적고, CLAUDE.md에 짧은 포인터를 둔다.
 
 ## Files

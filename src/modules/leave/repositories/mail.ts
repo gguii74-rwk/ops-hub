@@ -13,10 +13,9 @@ export type LeaveMailEvent = "REQUESTED" | "APPROVED" | "REJECTED" | "ADMIN_CREA
 // 발송 본문 묶음(Task 06이 도메인 tx에 넘기는 형태). insert/templates가 공유.
 export interface MailJob { recipients: string[]; subject: string; bodyHtml: string }
 
-// 후보 조건(claim/list 공유): leave 스코프 + 발송 가능 상태. workflow 행(leaveRequestId NULL)은 제외.
+// 후보 조건(claim/list 공유): 발송 가능 상태. leave/user 공통(eventType 있는 모든 outbox 행). 워크플로 행(eventType NULL)은 제외.
 function dueWhere(now: Date) {
   return {
-    leaveRequestId: { not: null },
     eventType: { not: null },
     OR: [
       { status: "PENDING" as const },
@@ -64,7 +63,7 @@ export async function cancelPendingDeliveries(tx: PrismaTx, leaveRequestId: stri
 export async function deadLetterStaleSending(now: Date): Promise<number> {
   const { count } = await prisma.mailDelivery.updateMany({
     where: {
-      leaveRequestId: { not: null }, eventType: { not: null },
+      eventType: { not: null },
       status: "SENDING", lockedUntil: { lt: now }, attempts: { gte: MAIL_MAX_ATTEMPTS },
     },
     data: { status: "FAILED", errorMessage: "최대 시도 초과(stale SENDING 회수 한도)", lockedUntil: null },
@@ -79,7 +78,7 @@ export async function listDueDeliveryIds(now: Date, limit: number): Promise<stri
   return rows.map((r) => r.id);
 }
 
-export interface ClaimedDelivery { id: string; leaveRequestId: string; eventType: LeaveMailEvent; recipients: string[]; subject: string; bodyHtml: string; }
+export interface ClaimedDelivery { id: string; leaveRequestId: string | null; eventType: string; recipients: string[]; subject: string; bodyHtml: string; }
 
 // atomic 조건부 claim: 후보 조건이 여전히 참일 때만 SENDING+lease+workerId+attempts++. 0행=선점 → null.
 export async function claimDelivery(id: string, workerId: string, now: Date): Promise<ClaimedDelivery | null> {
@@ -91,11 +90,12 @@ export async function claimDelivery(id: string, workerId: string, now: Date): Pr
   const d = await prisma.mailDelivery.findUnique({
     where: { id }, select: { id: true, leaveRequestId: true, eventType: true, recipients: true, subject: true, bodyHtml: true, workerId: true, status: true },
   });
-  if (!d || d.status !== "SENDING" || d.workerId !== workerId || !d.leaveRequestId) return null;
+  // leaveRequestId null 거부 가드 제거 — 사용자 메일(leaveRequestId=null)도 claim 허용. eventType not null은 dueWhere가 보장.
+  if (!d || d.status !== "SENDING" || d.workerId !== workerId || !d.eventType) return null;
   return {
     id: d.id,
     leaveRequestId: d.leaveRequestId,
-    eventType: d.eventType as LeaveMailEvent, // dueWhere가 eventType not null·leave 스코프를 보장 → 4종 중 하나
+    eventType: d.eventType,
     recipients: Array.isArray(d.recipients) ? (d.recipients as string[]) : [],
     subject: d.subject,
     bodyHtml: d.bodyHtml ?? "",

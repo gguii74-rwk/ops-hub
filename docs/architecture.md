@@ -130,3 +130,7 @@ PostgreSQL을 단일 DB로 사용합니다.
 ```
 
 DB는 PostgreSQL에 두고, `output`, `Template`, `keys`는 릴리즈와 분리합니다.
+
+### Reverse proxy / 클라이언트 IP 계약 (필수)
+
+공개 라우트(`/api/auth/signup`·`/api/auth/verify-email`·`/api/auth/resend-verification`)의 per-IP 레이트리밋은 `X-Forwarded-For`의 **첫 값**을 클라이언트 IP로 사용한다(`src/modules/admin/users/rate-limit.ts` `extractClientIp`, D1·D18). 이 값을 신뢰하려면 **신뢰 가능한 ingress(reverse proxy)가 클라이언트가 보낸 `X-Forwarded-For`를 제거하고 실제 클라이언트 IP로 덮어써야 한다** — 그렇지 않으면(append/passthrough) 공격자가 첫 값을 위조해 임의 per-IP 버킷을 골라 per-IP 통제를 우회할 수 있다(token-probing·RateBucket 증폭·cap 압박 재개방). 배포 시 프록시 설정에서 이 계약을 강제할 것(예: nginx `proxy_set_header X-Forwarded-For $remote_addr;` — append `$proxy_add_x_forwarded_for`가 아니라 덮어쓰기). 단 per-IP는 defense-in-depth 계층일 뿐 — hard 경계(`PENDING_UNVERIFIED_CAP` 트랜잭션 내 강제·per-email 한도·재발송 쿨다운·검증 토큰 256bit 엔트로피·`emailVerifyTokenHash` 인덱스)는 IP에 의존하지 않아 XFF가 위조돼도 유지된다.

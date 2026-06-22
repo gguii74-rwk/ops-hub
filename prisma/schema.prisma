@@ -19,9 +19,11 @@ enum SystemRole {
 }
 
 enum UserStatus {
-  INVITED
+  PENDING    // 신규 — 자가 신청 후 승인 대기
+  INVITED    // 예약(본 증분 미사용)
   ACTIVE
   DISABLED
+  REJECTED   // 신규 — 거절된 신청(이력 보존, 자가 재신청 차단)
 
   @@schema("kernel")
 }
@@ -172,7 +174,7 @@ enum CalendarDedupStatus {
 model User {
   id             String         @id @default(cuid())
   email          String         @unique
-  passwordHash   String
+  passwordHash   String?        // 변경: nullable — 자가가입은 set-password 전까지 null(C안). 관리자추가/시드는 즉시 설정
   name           String
   department     String?
   position       String?
@@ -181,6 +183,12 @@ model User {
   jobFunction    JobFunction
   systemRole     SystemRole     @default(MEMBER)
   status         UserStatus     @default(ACTIVE)
+  mustChangePassword   Boolean    @default(false)  // 신규 — 최초 로그인 강제변경(D7)
+  passwordChangedAt    DateTime?                    // 신규 — 비번변경 세션무효화 기준(D15)
+  sessionInvalidatedAt DateTime?                    // 신규 — 비활성화/재설정 세션무효화 기준(D14·상태전이)
+  emailVerifiedAt      DateTime?                    // 신규 — 이메일 소유 검증(D16)
+  emailVerifyTokenHash String?                      // 신규 — 검증 겸 set-password 토큰 해시(C안)
+  emailVerifyExpiresAt DateTime?                    // 신규 — 토큰 만료
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
@@ -190,6 +198,8 @@ model User {
 
   @@index([employmentType, jobFunction])
   @@index([systemRole])
+  @@index([status])
+  @@index([emailVerifyTokenHash])
   @@schema("kernel")
 }
 
@@ -328,6 +338,20 @@ model AuditLog {
 
   @@index([entityType, entityId])
   @@index([actorId, createdAt])
+  @@schema("kernel")
+}
+
+// D18 레이트리밋 — DB-backed durable, 다중 인스턴스 안전
+model RateBucket {
+  id              String   @id @default(cuid())
+  scope           String   // "signup:ip" | "signup:email" | "resend:email"
+  key             String   // IP 또는 email(소문자)
+  windowStartedAt DateTime
+  count           Int      @default(0)
+  updatedAt       DateTime @updatedAt
+
+  @@unique([scope, key])
+  @@index([scope, windowStartedAt])
   @@schema("kernel")
 }
 

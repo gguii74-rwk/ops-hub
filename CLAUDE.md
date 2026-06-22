@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 현재 상태 (중요)
 
-앱이 **스캐폴드되어 동작하는 상태**입니다. Phase 0~2(실사·기준선 / 앱 골격·공통 기반 / 설정 체계), **디자인 시스템 기반**, Phase 3(통합 캘린더 `src/modules/calendar`), Phase 4(워크플로 `src/modules/workflows`), Phase 5 Leave **백엔드(스키마·서비스·기본 신청 UI)**가 `main`에 머지된 상태입니다. **현재 활성 작업 = 연차 도메인**: "연차 영역 재설계"(대시보드·현황·전용 캘린더·관리자 모달·알림 메일) plan이 `feat/leave-area-redesign`에서 진행 중(`docs/plans/2026-06-20-leave-area-redesign.md`).
+앱이 **스캐폴드되어 동작하는 상태**입니다. Phase 0~2(실사·기준선 / 앱 골격·공통 기반 / 설정 체계), **디자인 시스템 기반**, Phase 3(통합 캘린더 `src/modules/calendar`), Phase 4(워크플로 `src/modules/workflows`), Phase 5 Leave **백엔드 + 연차 영역 재설계(UI·현황·전용 캘린더·관리자 모달·알림 메일)**까지 `main`에 머지된 상태입니다. **현재 활성 작업은 git 브랜치 + `docs/plans/`의 최신 plan으로 확인**하세요(작성 시점 예: 사용자 관리 `feat/user-management`, `docs/plans/2026-06-21-user-management.md`).
 
 이미 존재하는 것:
 
@@ -154,11 +154,15 @@ src/app/{(auth),dashboard,workflows,leave,admin,api}/
 
 이 저장소의 다단계 구현 계획은 글로벌 `superpowers:writing-plans` 대신 프로젝트 스킬 **`writing-plans-split`**(`.claude/skills/writing-plans-split/`)으로 작성한다 — 단일 대형 파일이 아니라 얇은 엔트리포인트 `docs/plans/<feature>.md` + 태스크별 파일(`<feature>/task-NN-<slug>.md`)로 분할한다. brainstorming의 종착점이 "writing-plans 호출"이어도 이 저장소에서는 이 스킬을 사용한다. 실행은 `superpowers:subagent-driven-development`로 한다.
 
+완료된 `task-NN` plan 파일은 historical record로 **동결**한다(본문 수정 금지=plan churn). 정책이 바뀌면 SSOT(SKILL·구현물)만 갱신하고 plan 상단에 포인터 1줄만 둔다.
+
 ## 개발 사이클 자동화 (적대검증 반복 루프)
 
-각 단계(spec/plan/impl) 완료 후 `review-loop` 스킬로 "커밋→codex 적대검증→보수적 자동수정→재반복(critical/high 0까지/최대 5회)"을 돌린다. 단계 경계(spec→plan, plan→impl)는 **반드시 새 세션**에서 시작한다(핸드오프 작성 후 `/clear`). 컨텍스트 40% 초과 시 Stop 훅(`scripts/context-threshold-hook.mjs`)이 핸드오프+`/clear`를 넛지한다. 자가 `/clear`·자동 단계전환은 불가하므로 실제 초기화는 사람이 한다. 상세: `docs/workflow/review-loop-runbook.md`.
+각 단계(spec/plan/impl) 완료 후 `review-loop` 스킬로 "커밋→codex 적대검증→보수적 판정(disposition)·자동수정→재반복(미판정 blocking 0까지/최대 5회)"을 돌린다. 목표는 "high 0"이 아니라 "판정 없이 남은 high 0" — 모든 critical/high/medium을 FIXED/ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE/DUPLICATE/ESCALATE로 닫는다. 단계 경계(spec→plan, plan→impl)는 **반드시 새 세션**에서 시작한다(핸드오프 작성 후 `/clear`). 컨텍스트 40% 초과 시 Stop 훅(`scripts/context-threshold-hook.mjs`)이 핸드오프+`/clear`를 넛지한다. 자가 `/clear`·자동 단계전환은 불가하므로 실제 초기화는 사람이 한다. 상세: `docs/workflow/review-loop-runbook.md`.
 
 **codex 적대검증은 `docs/specs/`의 결정(번호 `D<n>`)·사용자 기결정·pre-existing 코드를 모른다** — 의도된 설계를 버그로 재지목할 수 있다. finding을 고치기 전 해당 spec 결정과 대조하고, 오탐/이미-결정은 자동수정 말고 ESCALATE·기록으로 처리한다(수렴 안 하면 diminishing-returns 신호).
+
+**두 세션 동시 작업 git 위생:** 같은 워킹트리를 구현 세션 + 보조 세션이 공유할 수 있다(실제 `index.lock` 충돌 발생). 커밋 전 `.git/index.lock` 존재를 확인하고, `git add -A` 대신 **변경 파일을 명시적으로 stage**해 다른 세션의 미커밋 작업과 섞이지 않게 한다.
 
 ## dev 테스트 배포 (수동 — 배포 스크립트 없음)
 

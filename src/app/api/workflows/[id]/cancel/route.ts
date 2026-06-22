@@ -22,7 +22,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   try {
     const summary = await getPermissionSummary(session.user.id);
-    await cancelTask(id, buildTransitionCtx(session.user, summary.keys, note));
+    await cancelTask(id, buildTransitionCtx(session.user, summary, note));
     return NextResponse.json({ ok: true });
   } catch (error) {
     return mapError(error);

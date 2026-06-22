@@ -11,7 +11,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   try {
     await requirePermission(session.user.id, "leave.request", "view");
     const summary = await getPermissionSummary(session.user.id);
-    const r = await getRequest(id, buildLeaveCtx(session.user, summary.keys));
+    const r = await getRequest(id, buildLeaveCtx(session.user, summary));
     if (!r) return NextResponse.json({ error: "not found" }, { status: 404 });
     return NextResponse.json({ request: r }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ForbiddenError } from "@/kernel/access";
+import type { PermissionSummary } from "@/kernel/access";
 import { ConflictError } from "@/modules/workflows/types";
 import type { SessionUser } from "@/lib/auth/types";
 
@@ -10,13 +11,14 @@ export function mapError(error: unknown): NextResponse {
   throw error;
 }
 
-export function buildTransitionCtx(u: SessionUser, keys: string[], note?: string) {
-  return { userId: u.id, isOwner: u.systemRole === "OWNER", permissionKeys: new Set(keys), note };
+// isOwner/isAdmin은 **반드시 getPermissionSummary(권위)에서** 받는다. session.systemRole에서 직접 도출하면
+// must-change·비활성 사용자의 stale JWT가 owner/admin 경로를 우회한다(D17 게이트 무력화).
+export function buildTransitionCtx(u: SessionUser, summary: PermissionSummary, note?: string) {
+  return { userId: u.id, isOwner: summary.isOwner, permissionKeys: new Set(summary.keys), note };
 }
 
-export function buildMailCtx(u: SessionUser, keys: string[]) {
-  const isOwner = u.systemRole === "OWNER";
-  return { userId: u.id, isOwner, isAdmin: isOwner || u.systemRole === "ADMIN", permissionKeys: new Set(keys) };
+export function buildMailCtx(u: SessionUser, summary: PermissionSummary) {
+  return { userId: u.id, isOwner: summary.isOwner, isAdmin: summary.isAdmin, permissionKeys: new Set(summary.keys) };
 }
 
 export function parseOptionalDate(v: string | null): Date | null | "invalid" {

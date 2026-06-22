@@ -25,6 +25,7 @@ interface Row {
   days: string;
   status: LeaveStatus;
   reason: string | null;
+  updatedAt: string; // 낙관락(수정 mutation body로 전달 — stale-tab lost-update 차단)
   createdByAdminId: string | null;
   modifiedByAdminId: string | null;
   user: { name: string; department: string | null } | null;
@@ -159,6 +160,7 @@ export function AdminHistory({
                             startDate: r.startDate,
                             endDate: r.endDate,
                             reason: r.reason,
+                            updatedAt: r.updatedAt,
                           })
                         }
                       >

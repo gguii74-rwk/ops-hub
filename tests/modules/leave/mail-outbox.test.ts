@@ -98,12 +98,14 @@ describe("finalizeDelivery", () => {
 });
 
 describe("listDueDeliveryIds", () => {
-  it("leave 스코프 + 후보 조건으로 조회", async () => {
+  it("eventType not null 후보 조건으로 조회(leave/user 공통, workflow 행 제외)", async () => {
     h.db.mailDelivery.findMany.mockResolvedValue([{ id: "m1" }, { id: "m2" }]);
     const ids = await listDueDeliveryIds(new Date(), 50);
     expect(ids).toEqual(["m1", "m2"]);
     const arg = h.db.mailDelivery.findMany.mock.calls[0][0];
-    expect(arg.where.leaveRequestId).toEqual({ not: null });
+    // 일반화 후: leaveRequestId 스코프 제거(사용자 메일도 후보), eventType not null만 유지(workflow 행 제외).
+    expect(arg.where.leaveRequestId).toBeUndefined();
+    expect(arg.where.eventType).toEqual({ not: null });
     expect(MAIL_MAX_ATTEMPTS).toBe(3);
   });
   it("FAILED 후보는 backoff(lockedUntil) 경과분만 — 즉시 재claim 안 함", async () => {

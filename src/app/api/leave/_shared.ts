@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { LeaveRequestStatus } from "@prisma/client";
 import { ForbiddenError } from "@/kernel/access";
+import type { PermissionSummary } from "@/kernel/access";
 import { LeaveConflictError, LeaveValidationError } from "@/modules/leave/errors";
 import type { SessionUser } from "@/lib/auth/types";
 
@@ -11,8 +12,9 @@ export function mapError(error: unknown): NextResponse {
   throw error;
 }
 
-export function buildLeaveCtx(u: SessionUser, keys: string[]) {
-  return { userId: u.id, isOwner: u.systemRole === "OWNER", permissionKeys: new Set(keys) };
+// isOwner는 **getPermissionSummary(권위)에서** 받는다. session.systemRole 직접 도출은 must-change·비활성 stale JWT의 우회를 허용(D17 무력화).
+export function buildLeaveCtx(u: SessionUser, summary: PermissionSummary) {
+  return { userId: u.id, isOwner: summary.isOwner, permissionKeys: new Set(summary.keys) };
 }
 
 /** KST 현재 연도 기준 기본값. */

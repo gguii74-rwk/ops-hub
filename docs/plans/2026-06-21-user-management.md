@@ -1,0 +1,276 @@
+# 구현 계획 — 사용자 관리 ①계정 수명주기 + 관리자 사용자 관리
+
+> 작성일 2026-06-21 · 브랜치 `feat/user-management` · spec: `docs/specs/2026-06-21-user-management-account-admin-design.md`
+
+## 개요
+
+**Goal:** ops-hub에 회원가입(자가 신청·C안 set-password)·승인/거절·관리자 직접추가·사용자 목록/편집·역할/개인 override 부여·비밀번호 변경/재설정·세션 무효화·위임 admin anti-escalation을 추가한다.
+
+**Architecture:** 기존 `Route Handler → Service → Repository → Prisma` 계층을 그대로 따라 `src/modules/admin/users/{services,repositories,validations}/`에 도메인을 신설한다. 권한은 기존 `src/kernel/access`(`computeDecision` Deny우선·fail-closed)를 재사용하고, 위임 anti-escalation(D12/D13)은 라우트 권한키 검사와 **별개로 서비스 계층 가드**로 강제한다. 메일은 기존 공통 `MailDelivery` 아웃박스 + leave drain 워커를 `leaveRequestId`-optional로 일반화해 공유한다.
+
+**Tech Stack:** Next.js App Router(서버 컴포넌트 + Route Handler), Prisma(PostgreSQL, multiSchema `kernel`/`workflows`), NextAuth(JWT credentials), bcryptjs, zod, vitest.
+
+---
+
+## For agentic workers — execution contract (MUST)
+
+> REQUIRED SUB-SKILL: `superpowers:subagent-driven-development`. This plan is split into per-task files (`2026-06-21-user-management/task-NN-<slug>.md`). Task bodies (Files, TDD steps, AC) are **NOT** in this entrypoint. To execute, MUST: ① read this entrypoint's §Shared Contracts → ② load exactly one target task file → ③ run its steps in order. Do not start implementing from the entrypoint alone (it has no steps). Do not load all task files at once.
+
+---
+
+## Shared Contracts
+
+이 절은 2개 이상 task가 참조하는 계약이다. task 파일은 타입/시그니처를 재인라인하지 말고 "entrypoint §Shared Contracts"를 가리킨다.
+
+### S1. 스키마 / 마이그레이션 (task-01)
+
+`prisma/schema.prisma` (kernel 스키마):
+
+```prisma
+enum UserStatus {
+  PENDING    // 신규 — 자가 신청 후 승인 대기
+  INVITED
+  ACTIVE
+  DISABLED
+  REJECTED   // 신규 — 거절(이력 보존, 자가 재신청 차단)
+  @@schema("kernel")
+}
+
+model User {
+  // 기존 필드 유지. 변경/추가만 표기:
+  passwordHash         String?    // 변경: nullable (자가가입은 set-password 전까지 null)
+  mustChangePassword   Boolean    @default(false)  // 신규
+  passwordChangedAt    DateTime?                    // 신규 — 비번변경 세션무효화 기준(D15)
+  sessionInvalidatedAt DateTime?                    // 신규 — 비활성화/재설정 세션무효화 기준(D14·상태전이)
+  emailVerifiedAt      DateTime?                    // 신규 — 이메일 소유 검증(D16)
+  emailVerifyTokenHash String?                      // 신규 — 검증 겸 set-password 토큰 해시(C안)
+  emailVerifyExpiresAt DateTime?                     // 신규 — 토큰 만료
+  // @@index([status]) 추가 (목록 필터·가용성 카운트용)
+}
+
+// D18 레이트리밋 — DB-backed durable, 다중 인스턴스 안전
+model RateBucket {
+  id              String   @id @default(cuid())
+  scope           String   // "signup:ip" | "signup:email" | "resend:email"
+  key             String   // IP 또는 email(소문자)
+  windowStartedAt DateTime
+  count           Int      @default(0)
+  updatedAt       DateTime @updatedAt
+  @@unique([scope, key])
+  @@index([scope, windowStartedAt])
+  @@schema("kernel")
+}
+```
+
+마이그레이션: `prisma migrate dev` 이름 `user_management_account_admin`. **기존 `passwordHash` non-null → nullable 전환은 데이터 무손실**(기존 행 모두 값 보유).
+
+### S2. 권한 카탈로그 / 시드 (task-01)
+
+- `src/kernel/access/catalog.ts`: `RESOURCES`에 `admin.users` 존재 ✓, `ACTIONS`에 `view/create/update/approve` 존재 ✓ — **catalog 변경 없음**.
+- `prisma/seed-permissions.ts` `EXTRA_PERMISSIONS`에 추가: `["admin.users","create"]`, `["admin.users","approve"]`, `["admin.audit","view"]`(누락 시). (`admin.users:view`는 `VIEW_RESOURCES`, `:update`는 기존.)
+- `prisma/seed-roles.ts` `ROLE_ALLOW`에 신설:
+  ```ts
+  admin: [
+    "admin.users:view", "admin.users:create", "admin.users:update", "admin.users:approve",
+    "admin.settings:configure", "admin.audit:view",
+  ],
+  ```
+- `ACCESS_ROLE_KEYS`(catalog.ts)에 `"admin"` 추가. **시드 역할은 `seed.ts`에서 `ACCESS_ROLE_KEYS.map`으로 파생**되므로(배열 리터럴 아님), 역할 추가는 ① `ACCESS_ROLE_KEYS`에 `"admin"` + ② `seed.ts`의 `ROLE_NAMES`에 `admin: "사용자 관리자"`만 추가하면 된다(`isSystem:true`는 upsert create에 일괄 적용). 별도 역할 배열 리터럴 작성 금지.
+- 시드 패턴(기존): Permission `upsert(resource_action)`, AccessRole `upsert(key)`, RolePermission `deleteMany(roleId)` 후 `createMany(skipDuplicates)`, `effect:"ALLOW"`, `scope:"all"`. `ROLE_ALLOW.pm = ["*"]`(전체) 유지.
+
+### S3. 특권 식별 상수 (task-02가 정의, 여러 task 참조)
+
+`src/modules/admin/users/policy.ts`:
+
+```ts
+// 위임 admin이 자유롭게 부여/회수할 수 있는 **비특권** 역할 키 allowlist(seed 고정 — 4종 개발/외주 역할).
+// 이 목록에 없는 모든 키(pm·admin·미지/커스텀/임포트 역할)는 특권으로 본다(fail-closed, finding I).
+export const NON_PRIVILEGED_ROLE_KEYS = [
+  "regular-developer", "contractor-developer", "contractor-content", "contractor-civil-response",
+] as const;
+// 특권 systemRole (OWNER-only 부여)
+export const PRIVILEGED_SYSTEM_ROLES = ["OWNER", "ADMIN"] as const;
+// 위임 admin이 타인에게 override(ALLOW·DENY 무관)를 걸 수 없는 critical 리소스 prefix
+export const CRITICAL_RESOURCE_PREFIXES = ["admin."] as const;
+// "가용 user-management 관리자"로 인정하는 권한 키 (최소 1명 보존)
+export const USER_MGMT_PERMISSION = "admin.users:update";
+export const AUDIT_PERMISSION = "admin.audit:view";
+// 역할 키가 특권인지 — **fail-closed**(finding I). 비특권 allowlist(NON_PRIVILEGED_ROLE_KEYS)에 없으면 특권.
+// pm·admin뿐 아니라 다른 키로 admin 권한(admin.*)을 묶은 seeded/import/future 역할, 미지의 키까지 모두 특권으로 보호한다.
+// (이전 `PRIVILEGED_ROLE_KEYS=["pm","admin"]` 화이트리스트는 미지/커스텀 admin-bearing 역할을 비특권으로 흘리는 fail-open이었다.
+//  비특권 4종은 seed상 admin.* 권한이 전혀 없음이 보장되므로 — `prisma/seed-roles.ts` — 이 반전은 under-classify 위험이 없다.)
+export function isPrivilegedRoleKey(key: string): boolean;
+```
+
+### S4. 도메인 에러 (task-02가 정의, 여러 task 참조)
+
+`src/modules/admin/users/errors.ts`:
+
+```ts
+export class UserConflictError extends Error {}      // 409 (status-CAS 충돌, 중복 이메일)
+export class UserValidationError extends Error {}    // 400 (도메인 검증)
+export class EscalationError extends Error {}        // 403 (D12/D13 anti-escalation 위반)
+export class MinAvailabilityError extends Error {}   // 409 (D13ⓔ 최소 가용성 위반)
+export class RateLimitError extends Error {}         // 429 (D18)
+export class TokenError extends Error {}             // 400 (만료/위조 토큰)
+```
+
+라우트 매핑(`src/app/api/admin/users/_shared.ts`, signup 계열은 `src/app/api/auth/_shared.ts`):
+`ForbiddenError`/`EscalationError`→403, `UserConflictError`/`MinAvailabilityError`→409, `UserValidationError`/`TokenError`→400, `RateLimitError`→429.
+
+### S5. 가드 컨텍스트·시그니처 (task-02; task-03/04/05 호출)
+
+```ts
+// 행위자 컨텍스트 — 라우트에서 세션(userId) + getPermissionSummary 단일 read로 구성
+export interface ActorContext {
+  userId: string;              // session.user.id (불변 식별자)
+  isOwner: boolean;            // getPermissionSummary().isOwner (finding 3 — keys와 같은 권위 read; session.systemRole 아님)
+  permissionKeys: Set<string>; // getPermissionSummary().keys
+}
+
+// D12/D13 가드 (src/modules/admin/users/services/guards.ts) — 위반 시 EscalationError throw
+export function assertNotSelfMutation(actor: ActorContext, targetUserId: string): void;            // D13ⓐ
+// D13ⓑ — 현재→원하는 역할 집합을 **비교**한다. 추가뿐 아니라 **제거**되는 역할 중 특권(pm/admin)이 있어도 OWNER-only
+// (위임 admin이 목록에서 빼는 방식으로 기존 pm/admin을 떼어내 lockout하는 것 방지).
+export function assertCanAssignRoles(actor: ActorContext, currentRoleKeys: string[], nextRoleKeys: string[]): void;
+// D12 — **현재 또는 원하는** systemRole이 OWNER/ADMIN을 건드리면 OWNER-only. 기존 OWNER/ADMIN을 MEMBER로 강등하는 것도 OWNER-only.
+export function assertCanSetSystemRole(actor: ActorContext, currentRole: string, newRole: string | null): void;
+// D13ⓒⓓ — ALLOW는 **비-critical 권한만** actor 보유 한도 내 허용. **critical(`admin.*` = user-management·audit·settings 등) 권한은 ALLOW·DENY 모두 OWNER-only**
+// (위임 admin이 `admin.users:update` 등을 보유하더라도 ALLOW override로 동등 admin 권한을 타인에게 우회 부여하는 것 차단 — 보호된 역할/systemRole 부여 없이 경계 우회 방지).
+export function assertOverrideWithinActorGrant(actor: ActorContext, key: string, effect: "ALLOW"|"DENY"): void;
+
+// D13ⓔ 최소 가용성 — advisory lock으로 직렬화 + 커밋 전 재검사
+// availability-affecting mutation(role제거·override·disable·reset-password·systemRole강등)은 반드시 이 래퍼 안에서.
+export async function withAvailabilityLock<T>(fn: (tx: PrismaTx) => Promise<T>): Promise<T>;
+// 트랜잭션 내 커밋 전 호출. ① ACTIVE OWNER < 1 (D12 OWNER 보존) ② 가용 관리자 < 1 ③ 가용 감사조회자 < 1 이면 MinAvailabilityError throw.
+export async function assertMinAvailability(tx: PrismaTx): Promise<void>;
+// 가용 카운트 (assertMinAvailability가 사용; computeDecision 재사용해 권한 보유 판정). guards.ts 소속.
+export async function countAvailableByPermission(tx: PrismaTx, permissionKey: string): Promise<number>;
+```
+
+availability-affecting repository 함수(`setStatusTx`/`resetPasswordTx`/`setRoles`/`createOverride`/`updateUserTx`의 systemRole 강등)는 **내부에서 `withAvailabilityLock`로 감싸고 커밋 전 `assertMinAvailability(tx)`를 호출**한다(그래서 repository task-03이 guards task-02를 import → deps 02).
+
+**target-state 의존 anti-escalation 가드는 락 안에서 fresh 상태로 재검사한다(finding H — read-check-write 원자화).** 서비스가 mutation 전에 로드한 `target`은 stale일 수 있다: 가드 통과 후 mutation 사이에 동시 OWNER action이 대상의 역할/특권을 바꾸면, stale 스냅샷으로 검사한 불변식이 무력화된다(① 위임 admin이 OWNER가 방금 부여한 pm을 모르고 목록에서 빼 lockout, ② 대상이 특권이 된 직후 reset해 임시비번 탈취). `User.updatedAt` CAS만으로는 **역할 변경(`UserAccessRole` 쓰기는 `User.updatedAt`을 올리지 않음)** 을 못 잡으므로, 대상 상태에 의존하는 가드(`assertCanAssignRoles`의 currentRoleKeys, reset-password·상태변경의 특권 대상 판정)는 **`withAvailabilityLock` 트랜잭션 안에서 대상 상태를 재로드해 다시 검사**한다. 구현은 `setRoles`/`resetPasswordTx`/`setStatusTx`/`reactivateRejectedTx`가 받는 **recheck 콜백**(S6) — 서비스가 `actor`를 클로저로 캡처한 sync 검사를 넘기고, repo가 락 안에서 fresh state를 읽어 호출한다(위반 시 `EscalationError`). 가드는 모두 sync pure 함수라 그대로 콜백 안에서 호출 가능(task-02 시그니처 변경 없음). `withAvailabilityLock`이 전역 advisory lock으로 모든 가용성/역할/특권 변경 mutation을 직렬화하므로, 락 안 재검사 시점엔 동시 변경이 끼어들 수 없다. `updateUserTx`의 systemRole 변경은 `User` 행을 직접 바꿔 `updatedAt` CAS가 동시 변경을 잡으므로 별도 recheck 불필요(기존 CAS 유지).
+
+"가용(available)" 정의: `status === "ACTIVE" && mustChangePassword === false` 이고 해당 권한(USER_MGMT_PERMISSION / AUDIT_PERMISSION)을 `computeDecision`상 보유. advisory lock 키 = 고정 상수 `pg_advisory_xact_lock(4815162342)`(전역 직렬화).
+
+**OWNER 보존 불변식(finding 1·D12).** 권한 카운트(user-management·audit)와 **별개로** `assertMinAvailability`는 **최소 1명의 ACTIVE OWNER**(`systemRole==="OWNER" && status==="ACTIVE"`)도 보존한다(`tx.user.count`). 권한 카운트만으로는 부족하다: 위임 admin이 `admin.users:update`·`admin.audit:view`를 모두 충족하는 상태에서 마지막 OWNER를 강등(`updateUserTx` systemRole)·비활성(`setStatusTx` disable)하면 두 권한 카운트는 통과하지만 OWNER가 0이 되어 OWNER-only 복구 작업(특권 역할/systemRole 부여·critical override·특권 대상 reset)이 모두 막힌다(DB 직접 개입 외 복구 불가). OWNER 카운트는 mutation 후·커밋 전 상태를 보므로(updateMany 후 호출) 강등/비활성된 OWNER가 즉시 카운트에서 빠진다. must-change ACTIVE OWNER는 스스로 비번 변경으로 복귀 가능하므로 `status==="ACTIVE"`만으로 충분(non-must-change까지 요구하면 정당한 작업을 과차단).
+
+### S6. Repository 시그니처 (task-03; task-04/05/07 호출)
+
+`src/modules/admin/users/repositories/index.ts` — 모든 status/role/override/status-CAS는 leave `approveTx` 패턴(`findUnique`→`updateMany({where:{id,status,updatedAt}})`→`count===0`→`UserConflictError`).
+
+```ts
+export interface UserListFilter { status?: UserStatus; employmentType?: string; jobFunction?: string; q?: string; page: number; pageSize: number; }
+export async function listUsers(f: UserListFilter): Promise<{ rows: UserRow[]; total: number; pendingCount: number }>;
+// UserDetail은 **현재 `systemRole`·`roleKeys`**(+ `email`·`name`·`status`·`updatedAt`·overrides 등)를 포함한다.
+// systemRole·roleKeys는 anti-escalation 가드(S5)의 "현재 상태" 입력이다(finding C — 강등·제거도 OWNER-only 판정).
+export async function getUserDetail(id: string): Promise<UserDetail | null>;
+
+// 자가가입(C안): 비번 없이 PENDING. 만료된 미검증 PENDING 교체 허용.
+// **PENDING User + 검증메일 MailDelivery를 같은 트랜잭션에서 생성**(부분실패로 메일 없는 PENDING 방지 — finding #4).
+// 만료된 미검증 PENDING 교체 시에도 토큰·메일을 재발급/재enqueue(멱등 재시도). 중복(검증완료/활성)은 UserConflictError.
+export async function createPendingSignup(args: { email: string; name: string; employmentType: string; jobFunction: string; department: string | null; tokenHash: string; tokenExpiresAt: Date; mail: UserMailJob; pendingCap: number; }): Promise<{ id: string }>;
+// pendingCap은 라우트(task-06)가 `PENDING_UNVERIFIED_CAP`를 **인자로 주입** — task-03이 task-06의 rate-limit.ts에 의존하지 않게(deps 역전 방지).
+// **cap 검사+생성/교체는 race-safe**: `withAvailabilityLock`과 별개의 advisory lock(예: `pg_advisory_xact_lock(hashtext('signup-cap'))`)으로 직렬화하거나 serializable+retry. 트랜잭션 내 미검증 PENDING count ≥ pendingCap이면 `RateLimitError`.
+// **만료된 미검증 PENDING(`emailVerifyExpiresAt < now`)은 cap count에서 제외**(stale 행이 cap을 영구 점유하는 것 방지 — 어차피 D16상 교체 허용 대상).
+// set-password 토큰 소비: passwordHash + emailVerifiedAt 기록, 토큰 소거. (PENDING 유지)
+export async function setPasswordViaToken(tokenHash: string, passwordHash: string, now: Date): Promise<{ id: string } | null>;
+// 재발송: 토큰 갱신 + 검증메일 재enqueue(같은 트랜잭션). 미검증 PENDING만 대상.
+export async function refreshVerifyToken(email: string, tokenHash: string, tokenExpiresAt: Date, mail: UserMailJob): Promise<{ id: string } | null>;
+
+// 관리자 직접추가: 임시비번 → ACTIVE + mustChangePassword, emailVerifiedAt=now, 역할 부여.
+export async function createActiveUserByAdminTx(args: { email: string; name: string; passwordHash: string; employmentType: string; jobFunction: string; department: string | null; systemRole: string; roleKeys: string[]; actorId: string; }): Promise<{ id: string }>;
+
+// 승인/거절: status-CAS + 역할확정 + 감사 + 메일 enqueue(트랜잭션 내).
+export async function approveTx(id: string, actorId: string, decision: { employmentType: string; jobFunction: string; systemRole: string; roleKeys: string[] }, mail: UserMailJob, expectedUpdatedAt: Date): Promise<void>;
+export async function rejectTx(id: string, actorId: string, reason: string, mail: UserMailJob, expectedUpdatedAt: Date): Promise<void>;
+
+export async function updateUserTx(id: string, patch: { name?: string; department?: string | null; employmentType?: string; jobFunction?: string; systemRole?: string }, actorId: string, expectedUpdatedAt: Date): Promise<void>;
+// recheck(finding H): 락 안에서 fresh currentRoleKeys로 anti-escalation 재검사(throw 시 mutation 중단·롤백). 서비스가 actor 캡처 클로저로 주입.
+export async function setRoles(id: string, roleKeys: string[], actorId: string, recheck?: (currentRoleKeys: string[]) => void): Promise<void>; // createMany skipDuplicates + deleteMany(차집합)
+export async function createOverride(id: string, o: OverrideInput, actorId: string): Promise<{ id: string }>;
+export async function deleteOverride(id: string, overrideId: string, actorId: string): Promise<void>;
+
+// 세션 무효화 동반(D14·상태전이): sessionInvalidatedAt = now
+// recheck(finding 1): 락 안에서 fresh {systemRole,roleKeys}로 특권 대상 판정 재검사(throw 시 중단·롤백). 서비스가 actor 캡처 클로저로 주입.
+export async function setStatusTx(id: string, status: "ACTIVE" | "DISABLED", actorId: string, now: Date, recheck?: (target: { systemRole: string; roleKeys: string[] }) => void): Promise<void>;
+export async function reactivateRejectedTx(id: string, actorId: string, now: Date, recheck?: (target: { systemRole: string; roleKeys: string[] }) => void): Promise<void>; // REJECTED→ACTIVE
+// reset-password(D14): 임시비번 → mustChangePassword=true + sessionInvalidatedAt=now
+// recheck(finding H): 락 안에서 fresh {systemRole,roleKeys}로 특권 대상 판정 재검사(throw 시 중단·롤백). 서비스가 actor 캡처 클로저로 주입.
+export async function resetPasswordTx(id: string, passwordHash: string, actorId: string, now: Date, recheck?: (target: { systemRole: string; roleKeys: string[] }) => void): Promise<void>;
+// 강제변경/자가변경(D15): passwordHash + passwordChangedAt=now, mustChangePassword=false
+// finding 4: expectedCurrentHash CAS — 라우트가 검증한 현재 해시를 where에 넣어, 그 사이 admin reset/타 변경이 끼면 count 0 → UserConflictError(덮어쓰기 방지).
+export async function changePasswordTx(id: string, passwordHash: string, now: Date, expectedCurrentHash: string): Promise<void>;
+// (가용성 카운트 함수는 S5 guards 소속 — 여기서 정의하지 않음)
+```
+
+### S7. Service / Validation 시그니처 (task-04; 라우트가 호출)
+
+`src/modules/admin/users/services/index.ts` — 가드(S5) + repository(S6) + 메일(S8) + 감사 조합. 라우트는 이 계층만 호출.
+주요: `approveUser(actor, id, input)`, `rejectUser(actor, id, reason)`, `createUserByAdmin(actor, input)`, `updateUser(actor, id, patch)`, `assignRoles(actor, id, roleKeys)`, `upsertOverride(actor, id, input)`, `removeOverride(actor, id, overrideId)`, `setUserStatus(actor, id, status)`, `resetPassword(actor, id)`, `listUsersForView(actor, filter)`, `getUserForEdit(actor, id)`.
+
+zod 스키마(leave validations 패턴, 비번 정책 `z.string().min(12)`)는 **deps 분리상 파일을 나눈다**(task-06·07은 task-04에 의존하지 않으므로 공개/비번 스키마를 각자 소유):
+- **task-04** `validations/index.ts` (admin 전용): `adminCreateSchema`, `approveSchema`(employmentType/jobFunction/systemRole/roleKeys[]), `rejectSchema`(reason), `updateUserSchema`, `rolesSchema`(roleKeys[]), `overrideSchema`(resource:action 키·effect·scope·reason·startsAt/endsAt).
+- **task-06** `validations/signup.ts` (공개): `signupSchema`(email/name/employmentType/jobFunction/department — **비번 없음**), `setPasswordSchema`(token·password 12+), `resendSchema`(email).
+- **task-07** `validations/change-password.ts`: `changePasswordSchema`(currentPassword?·newPassword 12+).
+
+### S8. 메일 (task-03; task-04 사용) — 공통 MailDelivery 일반화
+
+```ts
+export interface UserMailJob { recipients: string[]; subject: string; bodyHtml: string }
+export type UserMailEvent = "APPROVED" | "REJECTED" | "VERIFY_EMAIL";
+```
+
+- 사용자 메일은 `MailDelivery`에 `leaveRequestId=null`로 enqueue(Postgres unique는 NULL 복수 허용 → 충돌 없음). `eventType`에 `UserMailEvent` 사용, `recipients=[email]`.
+- **leave drain 워커 일반화**(surgical, task-03 확정): `dueWhere`(listDueDeliveryIds+claimDelivery 공유)의 `leaveRequestId:{not:null}` 조건을 `eventType:{not:null}`로 변경(eventType null인 workflow 행은 계속 제외), `claimDelivery`의 `leaveRequestId` null 거부 가드 제거, `ClaimedDelivery.eventType`을 `string`으로 확장, `deadLetterStaleSending`도 동형 일반화. 발송 전 LeaveRequest 재확인·status 일치는 **`leaveRequestId`가 있을 때만**. leave의 4-event 동작 완전 보존.
+- `setPasswordViaToken`/`refreshVerifyToken`은 `updateMany`(원자적 토큰+만료 매칭) 후 `findFirst`로 id 회수(task-03 구현). task-06은 반환 `{id}|null` 계약만 의존. **`refreshVerifyToken`은 토큰 갱신과 검증메일 enqueue를 같은 트랜잭션에서**(finding #4 — `mail: UserMailJob` 인자, 부분실패 방지). `setPasswordViaToken`은 메일 발송이 없으므로 mail 인자 없음.
+- 승인/거절 메일은 `approveTx`/`rejectTx` 트랜잭션 내 1회 `mailDelivery.create`(CAS가 중복 승인 차단 → 멱등키 불필요). **검증메일은 `createPendingSignup`/`refreshVerifyToken`가 User 생성·토큰갱신과 같은 트랜잭션에서 enqueue**(finding #4 — signup/resend 라우트는 메일 본문만 만들어 `mail` 인자로 넘기고 별도 enqueue 트랜잭션을 두지 않는다; 매번 새 토큰).
+- 발송 후 `triggerLeaveMailDrain()` 재사용(fire-and-forget) 또는 동명의 공통 트리거.
+
+### S9. 세션 무효화 + mustChangePassword 중앙 게이트 (task-07)
+
+- **auth 콜백**(`src/lib/auth/config.ts`): `jwt` 콜백이 로그인 시 토큰에 발급기준시각을 둔다(`token.iat`). `session` 콜백이 **DB의 현재 `status`/`passwordChangedAt`/`sessionInvalidatedAt`/`mustChangePassword` + 권위 속성(`systemRole`/`name`/`email`/`employmentType`/`jobFunction`)을 조회**한다. **`session.user`는 JWT가 아니라 DB 현재값으로 fresh 재구성**한다 — 특히 `systemRole`을 **절대 stale JWT에서 가져오지 않는다**(강등된 OWNER가 anti-escalation을 우회하는 것 방지; ActorContext.isOwner의 권위원이다). 세션 무효(① `status !== "ACTIVE"` 또는 ② `passwordChangedAt`/`sessionInvalidatedAt`가 `token.iat` 이후)면 **`session.user`를 명시적으로 제거(undefined/null)** 한다 — 들어온 prefilled user를 그대로 반환 금지. 무효 판정은 **순수 헬퍼 `isSessionValid(tokenIat: number, snap: {status, passwordChangedAt, sessionInvalidatedAt}): boolean`**(`src/lib/auth/session-validity.ts`, task-07 export)로 분리해 session 콜백이 호출하고 task-09가 단위테스트한다. `SessionUser`에 `mustChangePassword: boolean` 추가(types.ts).
+- **중앙 게이트**(`src/kernel/access` 또는 `src/lib/auth`에 공유 헬퍼): `getPermissionSummary(userId)`가 `mustChangePassword === true`면 **`{keys:[], isOwner:false}` 반환**(fail-closed). `requirePermission`도 must-change면 거부. allowlist = `change-password`·`logout` 경로만 예외. UI 미들웨어 리다이렉트는 UX일 뿐. **`PermissionSummary`는 `isOwner: boolean`을 포함**(finding 3) — actor 권위(ActorContext.isOwner)의 단일 출처로, keys와 같은 `loadUserContext` read에서 산출하고 must-change/비활성이면 `false`. `buildActorCtx`(task-05)는 isOwner를 `session.user.systemRole`이 아니라 이 `summary.isOwner`에서 가져온다(권한 결정과 actor 권위를 동일 DB read에 묶어 TOCTOU 제거).
+- **access-layer를 거치지 않는 인증 경로도 차단**: `requirePermission`/`getPermissionSummary`를 호출하지 않는 인증 API(예: 기존 `/api/auth/verify`의 `verifySession`/federation 헤더·그룹 발급)도 **동일 must-change/세션무효 차단을 공유 세션 해석 계층에서 적용** — must-change·비활성 사용자는 federation 헤더/그룹도 받지 못한다. 세션 해석(`isSessionValid`+must-change)을 모든 인증 진입점이 공유하는 단일 헬퍼로 강제(개별 핸들러 인가 방식 비의존).
+- **라우트 열거 meta-test**(task-09): `src/app/api/**/route.ts` 파일을 **코드로 열거**해 **명시적 public allowlist**(login·signup·verify-email·resend-verification·nextauth 등)에 대조 — 그 외 모든 라우트가 must-change/비활성 세션에서 차단됨을 증명. **수기 테이블 의존 금지**(신규 라우트 누락 시 게이트 누수 방지).
+
+### S10. 공유 상수 (task-06 D18, task-01/06 토큰)
+
+`src/modules/admin/users/rate-limit.ts` (task-06 신규 — D18 상수·강제 유틸을 함께 둔다; task-09 테스트도 여기서 import):
+
+```ts
+export const VERIFY_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7일 (D16 만료)
+export const SIGNUP_IP_LIMIT = 10;          // per-IP 윈도우당 가입 시도
+export const SIGNUP_EMAIL_LIMIT = 3;        // per-email 윈도우당 가입 시도
+export const RESEND_COOLDOWN_MS = 60 * 1000;// 재발송 쿨다운
+export const RATE_WINDOW_MS = 60 * 60 * 1000;// 레이트 윈도우 1시간
+export const PENDING_UNVERIFIED_CAP = 200;  // 미처리 미검증 PENDING 전역 상한(bounded creation)
+```
+
+D18 강제는 **원자적·사전(pre-write)·race-safe**: read-then-write(`findUnique`→`upsert`) 금지 — 동시 첫-윈도우/막만료 요청이 모두 통과해 카운터를 1로 덮어쓰는 race가 생긴다. **권장: 단일 atomic upsert**로 post-update count를 받는다 —
+`INSERT INTO "RateBucket"(...) VALUES(...) ON CONFLICT (scope,key) DO UPDATE SET count = CASE WHEN "RateBucket"."windowStartedAt" > <now-window> THEN "RateBucket".count + 1 ELSE 1 END, "windowStartedAt" = CASE WHEN "RateBucket"."windowStartedAt" > <now-window> THEN "RateBucket"."windowStartedAt" ELSE <now> END RETURNING count`
+— 윈도우 내면 증가, 만료/신규면 1로 리셋을 **한 문장**에서 원자적으로 처리하고 반환 count로 판정. (advisory lock 대안을 쓸 경우엔 **lock 획득 후 conditional increment를 재실행**하고 그래도 미존재/만료일 때만 reset — lock 전 판정으로 무조건 reset 금지.) `count > limit`이면 **User/MailDelivery 행 생성 전에** `RateLimitError`. **`PENDING_UNVERIFIED_CAP` 검사와 User 생성은 같은 트랜잭션/락 안에서** 수행한다(standalone `count` 후 별도 생성 금지).
+
+### S11. 추가 계약 (적대검증 반영)
+
+- **status 토글 전용 라우트**(finding E): 상태 변경은 `PATCH /api/admin/users/[id]`(프로필·systemRole만, `updateUserSchema`)와 **분리**해 **`POST /api/admin/users/[id]/status`**(body `{ status: "ACTIVE" | "DISABLED" }`, 권한 `admin.users:update`)로 `setUserStatus`를 호출한다(D14 세션무효화 `sessionInvalidatedAt`). REJECTED→ACTIVE 재활성도 이 경로(또는 동형 전용 분기). **`PATCH /[id]`는 빈 patch(알려진 필드 0개)를 400으로 거부**한다 — zod가 unknown 키를 strip해 `{status}`가 빈 patch로 성공 반환하면서 실제 상태가 안 바뀌는 버그 방지. task-08 UI는 status를 이 전용 라우트로 POST하고, task-09 열거 meta-test의 라우트 목록에 신규 경로를 반영한다.
+- **이메일 링크 canonical base URL**(finding F): 검증/set-password 메일 링크는 `new URL(req.url).origin`(요청 Host)이 아니라 **설정된 canonical base URL**(env `AUTH_URL` 우선; 미설정 시 배포 설정값)에서 생성한다. 신뢰할 수 없는 `Host`/`X-Forwarded-Host`는 **토큰 생성 전에 거부**(host 스푸핑으로 비밀 토큰이 공격자 origin 링크에 실려 피해자 메일함에 전달되는 것 방지). signup·resend 양쪽 동일.
+
+---
+
+## Task 테이블
+
+| # | title | status | file | deps | outcome |
+|---|-------|--------|------|------|---------|
+| 01 | 스키마·마이그레이션·권한 카탈로그/시드 | [ ] | [task-01](2026-06-21-user-management/task-01-schema-foundation.md) | — | |
+| 02 | anti-escalation 가드 + 최소가용성(D12/D13) | [ ] | [task-02](2026-06-21-user-management/task-02-escalation-guards.md) | 01 | |
+| 03 | admin/users repository (CAS·CRUD·세션무효화·메일) | [ ] | [task-03](2026-06-21-user-management/task-03-users-repository.md) | 01,02 | |
+| 04 | admin/users service + validations | [ ] | [task-04](2026-06-21-user-management/task-04-users-service.md) | 02,03 | |
+| 05 | admin API 라우트 | [ ] | [task-05](2026-06-21-user-management/task-05-admin-api.md) | 04 | |
+| 06 | 자가가입·verify/set-password·D18 레이트리밋 | [ ] | [task-06](2026-06-21-user-management/task-06-signup-verify.md) | 01,03 | |
+| 07 | 비번변경·세션무효화·중앙게이트(D15/D17)·auth 콜백 | [ ] | [task-07](2026-06-21-user-management/task-07-password-session.md) | 01,03 | |
+| 08 | UI (가입·강제변경·목록·승인모달·편집·override·nav) | [ ] | [task-08](2026-06-21-user-management/task-08-ui.md) | 05,06,07 | |
+| 09 | 통합 게이트/열거(D17)·남용(D18)·anti-escalation(D13) 테스트 | [ ] | [task-09](2026-06-21-user-management/task-09-gate-tests.md) | 05,06,07 | |
+
+실행은 `superpowers:subagent-driven-development`. dependency 순서로 진행하되 06·07은 03 이후 병렬 가능.

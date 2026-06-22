@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { QUARTER_START_TIMES } from "@/modules/leave/labels";
+import { expectedUpdatedAt } from "@/kernel/optimistic";
 
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD 형식이어야 합니다.");
 
@@ -47,6 +48,10 @@ export const updateLeaveSchema = z.object({
   reason: z.string().max(1000).nullish(),
   adminActionNote: z.string().max(500).nullish(),
 });
+
+// 낙관적 동시성 body 스키마(stale-tab lost-update 차단) — updateByAdmin 라우트가 쓴다(도메인 스키마 보존).
+// updatedAt = 클라가 본 신청 행 버전. 라우트가 추출해 service에 expectedUpdatedAt: Date로 넘긴다.
+export const updateLeaveBodySchema = updateLeaveSchema.extend({ updatedAt: expectedUpdatedAt });
 
 // 관리자 삭제: 사유 필수(되돌릴 수 없는 작업·감사 메타). DELETE 라우트가 safeParse→400으로 강제 —
 // UI 사유필수는 UX일 뿐 API도 같은 검사(접근제어 규칙 #1). trim 후 빈 문자열도 거부.
