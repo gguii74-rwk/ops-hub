@@ -84,6 +84,9 @@ describe("reorderNavSchema", () => {
     expect(reorderNavSchema.safeParse({ parentId: null, orderedIds: ["a", "b"] }).success).toBe(true);
     expect(reorderNavSchema.safeParse({ parentId: null, orderedIds: [] }).success).toBe(false);
   });
+  it("중복 ID 거부(P2 — sortOrder 손상 차단)", () => {
+    expect(reorderNavSchema.safeParse({ parentId: null, orderedIds: ["a", "a"] }).success).toBe(false);
+  });
 });
 ```
 
@@ -158,11 +161,17 @@ export const updateNavSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
-// 재정렬: 형제 묶음 전체의 새 순서.
-export const reorderNavSchema = z.object({
-  parentId: z.string().min(1).nullable(),
-  orderedIds: z.array(z.string().min(1)).min(1),
-});
+// 재정렬: 형제 묶음 전체의 새 순서. 중복 ID 거부(중복이 통과하면 한 행을 두 번 갱신하고
+// 다른 형제를 누락해 sortOrder가 손상된다 — P2). repo도 집합 일치를 재검증(방어 심층).
+export const reorderNavSchema = z
+  .object({
+    parentId: z.string().min(1).nullable(),
+    orderedIds: z.array(z.string().min(1)).min(1),
+  })
+  .refine((v) => new Set(v.orderedIds).size === v.orderedIds.length, {
+    message: "중복된 메뉴 ID가 있습니다.",
+    path: ["orderedIds"],
+  });
 
 // 이동(reparent): 대상 부모(null=대메뉴 승격). id는 라우트 param.
 export const reparentNavSchema = z.object({

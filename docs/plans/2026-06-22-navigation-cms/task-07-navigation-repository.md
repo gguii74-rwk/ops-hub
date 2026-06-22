@@ -25,6 +25,8 @@ task-01(FK RESTRICT 전제), task-02(카탈로그), task-06(타입·에러).
 - **깊이 2단(D6):** 자식 아래 자식 금지. `assertParentTopLevel`은 부모의 `parentId == null`을 강제. child-create는 `lockNavTree` 안에서 검증(task-08 reparent와 동일 락으로 직렬화 — 동시 reparent가 부모를 자식으로 만드는 레이스 차단).
 - **cascade 삭제·reparent는 본 태스크에 두지 말 것** — task-08(F-6/F-7 전용 동시성 코어). 본 태스크는 헬퍼만 제공.
 - `rolesGrantingPermission`은 **역할 ALLOW만**(D10) — override·OWNER 제외. scope별 중복 행은 dedup.
+- **audit는 변경 repo 함수의 트랜잭션 내부에서 기록(P1 — `writeAudit(tx, ...)`)** — 서비스에서 post-commit으로 따로 기록하지 말 것. 변경 커밋 후 audit가 실패하면 라우트가 실패를 반환하는데 행은 이미 존재 → 재시도가 랜덤 key로 중복 생성한다. in-tx면 audit 실패 시 변경도 롤백 → 재시도 안전. (leave `deleteByAdminTx` 패턴 동형.)
+- **reorder 중복 ID 거부(P2):** zod(task-06)에 더해 repo도 무중복+집합 정확 일치를 재검증. 중복이 통과하면 한 행을 두 번 갱신·다른 형제 누락으로 sortOrder가 손상된다.
 
 ## Step 1 — 실패 테스트
 
@@ -47,6 +49,8 @@ const h = vi.hoisted(() => {
   return { db, prisma };
 });
 vi.mock("@/lib/prisma", () => ({ prisma: h.prisma }));
+const writeAuditMock = vi.hoisted(() => vi.fn());
+vi.mock("@/kernel/audit", () => ({ writeAudit: (...a: unknown[]) => writeAuditMock(...a) }));
 
 import {
   createItem, updateItem, reorderSiblings, rolesGrantingPermission, generateNavKey, getNodeForDelete,
@@ -54,7 +58,7 @@ import {
 } from "@/modules/admin/navigation/repositories";
 import { NavigationConflictError, NavigationValidationError } from "@/modules/admin/navigation/errors";
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); });
 
 describe("generateNavKey (D17)", () => {
   it("nav_ 접두 opaque key, 호출마다 상이(라벨 무관)", () => {
@@ -66,23 +70,27 @@ describe("generateNavKey (D17)", () => {
 });
 
 describe("createItem", () => {
-  it("대메뉴(parentId null): 락 미사용, 형제 말미 sortOrder, 서버 생성 key", async () => {
+  it("대메뉴(parentId null): 락 미사용, 형제 말미 sortOrder, 서버 생성 key, audit in-tx", async () => {
     h.db.navigationItem.findFirst.mockResolvedValue({ sortOrder: 20 });
     h.db.navigationItem.create.mockResolvedValue({ id: "n1" });
-    await createItem({ label: "메뉴", href: "/x", parentId: null, requiredPermissionId: null });
+    await createItem({ label: "메뉴", href: "/x", parentId: null, requiredPermissionId: null }, "admin1");
     expect(h.db.$queryRaw).not.toHaveBeenCalled(); // 대메뉴는 트리락 불필요
     const data = h.db.navigationItem.create.mock.calls[0][0].data;
     expect(data.sortOrder).toBe(30);
     expect(data.parentId).toBe(null);
     expect(data.key).toMatch(/^nav_/);
     expect(data.key).not.toBe("메뉴"); // 라벨 파생 아님
+    // audit는 같은 트랜잭션(tx) 인자로 기록(P1).
+    expect(writeAuditMock).toHaveBeenCalledWith(h.db, expect.objectContaining({
+      actorId: "admin1", entityType: "NavigationItem", entityId: "n1", action: "create",
+    }));
   });
 
   it("중메뉴(parentId 있음): 트리락 + 부모 top-level 검증 후 생성", async () => {
     h.db.navigationItem.findUnique.mockResolvedValue({ parentId: null }); // 부모가 top-level
     h.db.navigationItem.findFirst.mockResolvedValue(null);                 // 형제 없음
     h.db.navigationItem.create.mockResolvedValue({ id: "c1" });
-    await createItem({ label: "자식", href: "/x/y", parentId: "p1", requiredPermissionId: null });
+    await createItem({ label: "자식", href: "/x/y", parentId: "p1", requiredPermissionId: null }, "admin1");
     expect(h.db.$queryRaw).toHaveBeenCalled(); // lockNavTree
     const data = h.db.navigationItem.create.mock.calls[0][0].data;
     expect(data.parentId).toBe("p1");
@@ -92,38 +100,47 @@ describe("createItem", () => {
   it("부모가 이미 자식이면(깊이 위반) NavigationValidationError", async () => {
     h.db.navigationItem.findUnique.mockResolvedValue({ parentId: "g1" }); // 부모가 중메뉴
     await expect(
-      createItem({ label: "자식", href: "/x", parentId: "p1", requiredPermissionId: null }),
+      createItem({ label: "자식", href: "/x", parentId: "p1", requiredPermissionId: null }, "admin1"),
     ).rejects.toBeInstanceOf(NavigationValidationError);
     expect(h.db.navigationItem.create).not.toHaveBeenCalled();
+    expect(writeAuditMock).not.toHaveBeenCalled();
   });
 });
 
-describe("updateItem (CAS 낙관락)", () => {
+describe("updateItem (CAS 낙관락 + audit in-tx)", () => {
   const at = new Date("2026-06-22T00:00:00Z");
-  it("count 1이면 통과, CAS where에 updatedAt 포함", async () => {
+  it("count 1이면 통과, CAS where에 updatedAt 포함, audit 기록", async () => {
     h.db.navigationItem.updateMany.mockResolvedValue({ count: 1 });
-    await updateItem("n1", { label: "새이름" }, at);
+    await updateItem("n1", { label: "새이름" }, at, "admin1");
     expect(h.db.navigationItem.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: "n1", updatedAt: at },
     }));
+    expect(writeAuditMock).toHaveBeenCalledWith(h.db, expect.objectContaining({ action: "update", entityId: "n1" }));
   });
-  it("count 0이면 NavigationConflictError", async () => {
+  it("count 0이면 NavigationConflictError(audit 미기록)", async () => {
     h.db.navigationItem.updateMany.mockResolvedValue({ count: 0 });
-    await expect(updateItem("n1", { label: "x" }, at)).rejects.toBeInstanceOf(NavigationConflictError);
+    await expect(updateItem("n1", { label: "x" }, at, "admin1")).rejects.toBeInstanceOf(NavigationConflictError);
+    expect(writeAuditMock).not.toHaveBeenCalled();
   });
 });
 
-describe("reorderSiblings (트랜잭션 + 집합 일치)", () => {
-  it("형제 집합 일치 시 인덱스별 sortOrder 재부여", async () => {
+describe("reorderSiblings (트랜잭션 + 집합 일치 + audit)", () => {
+  it("형제 집합 일치 시 인덱스별 sortOrder 재부여 + audit", async () => {
     h.db.navigationItem.findMany.mockResolvedValue([{ id: "a" }, { id: "b" }]);
     h.db.navigationItem.update.mockResolvedValue({});
-    await reorderSiblings({ parentId: null, orderedIds: ["b", "a"] });
+    await reorderSiblings({ parentId: null, orderedIds: ["b", "a"] }, "admin1");
     expect(h.db.navigationItem.update).toHaveBeenNthCalledWith(1, { where: { id: "b" }, data: { sortOrder: 10 } });
     expect(h.db.navigationItem.update).toHaveBeenNthCalledWith(2, { where: { id: "a" }, data: { sortOrder: 20 } });
+    expect(writeAuditMock).toHaveBeenCalledWith(h.db, expect.objectContaining({ action: "reorder" }));
   });
   it("형제 구성이 바뀌면 NavigationConflictError(부분 갱신 없음)", async () => {
     h.db.navigationItem.findMany.mockResolvedValue([{ id: "a" }, { id: "b" }]);
-    await expect(reorderSiblings({ parentId: null, orderedIds: ["a"] })).rejects.toBeInstanceOf(NavigationConflictError);
+    await expect(reorderSiblings({ parentId: null, orderedIds: ["a"] }, "admin1")).rejects.toBeInstanceOf(NavigationConflictError);
+    expect(h.db.navigationItem.update).not.toHaveBeenCalled();
+  });
+  it("중복 ID(P2)면 NavigationConflictError(부분 갱신 없음)", async () => {
+    h.db.navigationItem.findMany.mockResolvedValue([{ id: "a" }, { id: "b" }]);
+    await expect(reorderSiblings({ parentId: null, orderedIds: ["a", "a"] }, "admin1")).rejects.toBeInstanceOf(NavigationConflictError);
     expect(h.db.navigationItem.update).not.toHaveBeenCalled();
   });
 });
@@ -176,6 +193,7 @@ import "server-only";
 import { randomBytes } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { writeAudit } from "@/kernel/audit";
 import { NavigationConflictError, NavigationValidationError } from "../errors";
 import type { CreateNavInput, UpdateNavInput, ReorderNavInput } from "../validations";
 
@@ -244,7 +262,8 @@ export async function getNodeForDelete(
 }
 
 // 생성 — 서버 opaque key + 형제 말미 sortOrder. parentId 있으면 락+깊이검증(D6).
-export async function createItem(input: CreateNavInput): Promise<{ id: string }> {
+// audit는 같은 트랜잭션 내(P1) — 실패 시 create도 롤백 → 재시도 안전(랜덤 key 중복 생성 방지).
+export async function createItem(input: CreateNavInput, actorId: string): Promise<{ id: string }> {
   return prisma.$transaction(async (tx) => {
     if (input.parentId) {
       await lockNavTree(tx);
@@ -256,7 +275,7 @@ export async function createItem(input: CreateNavInput): Promise<{ id: string }>
       select: { sortOrder: true },
     });
     const sortOrder = (last?.sortOrder ?? 0) + 10;
-    return tx.navigationItem.create({
+    const created = await tx.navigationItem.create({
       data: {
         key: generateNavKey(),
         label: input.label,
@@ -268,39 +287,56 @@ export async function createItem(input: CreateNavInput): Promise<{ id: string }>
       },
       select: { id: true },
     });
+    await writeAudit(tx, {
+      actorId, entityType: "NavigationItem", entityId: created.id, action: "create",
+      metadata: { label: input.label, parentId: input.parentId },
+    });
+    return created;
   });
 }
 
 // 수정 — CAS 낙관락(클라가 본 updatedAt). parentId는 건드리지 않음(이동은 reparent 전용).
-export async function updateItem(id: string, patch: UpdateNavInput, expectedUpdatedAt: Date): Promise<void> {
-  const updated = await prisma.navigationItem.updateMany({
-    where: { id, updatedAt: expectedUpdatedAt },
-    data: {
-      ...(patch.label !== undefined ? { label: patch.label } : {}),
-      ...(patch.href !== undefined ? { href: patch.href } : {}),
-      ...(patch.requiredPermissionId !== undefined ? { requiredPermissionId: patch.requiredPermissionId } : {}),
-      ...(patch.isActive !== undefined ? { isActive: patch.isActive } : {}),
-    },
+// updateMany + audit를 한 트랜잭션으로(P1) — audit 실패 시 변경 롤백.
+export async function updateItem(
+  id: string, patch: UpdateNavInput, expectedUpdatedAt: Date, actorId: string,
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    const updated = await tx.navigationItem.updateMany({
+      where: { id, updatedAt: expectedUpdatedAt },
+      data: {
+        ...(patch.label !== undefined ? { label: patch.label } : {}),
+        ...(patch.href !== undefined ? { href: patch.href } : {}),
+        ...(patch.requiredPermissionId !== undefined ? { requiredPermissionId: patch.requiredPermissionId } : {}),
+        ...(patch.isActive !== undefined ? { isActive: patch.isActive } : {}),
+      },
+    });
+    if (updated.count === 0) throw new NavigationConflictError();
+    await writeAudit(tx, { actorId, entityType: "NavigationItem", entityId: id, action: "update", metadata: { patch } });
   });
-  if (updated.count === 0) throw new NavigationConflictError();
 }
 
-// 재정렬 — 형제 집합 일치 검증 후 인덱스별 sortOrder 재부여(트랜잭션).
-export async function reorderSiblings(input: ReorderNavInput): Promise<void> {
+// 재정렬 — 무중복 + 형제 집합 정확 일치 검증 후 인덱스별 sortOrder 재부여(트랜잭션). audit in-tx(P1).
+// 중복 ID는 한 행을 두 번 갱신하고 다른 형제를 누락해 sortOrder를 손상시킨다(P2) → 거부.
+export async function reorderSiblings(input: ReorderNavInput, actorId: string): Promise<void> {
   await prisma.$transaction(async (tx) => {
     const current = await tx.navigationItem.findMany({
       where: { parentId: input.parentId ?? null },
       select: { id: true },
     });
     const currentIds = new Set(current.map((c) => c.id));
+    const noDupes = new Set(input.orderedIds).size === input.orderedIds.length;
     const sameSet =
-      currentIds.size === input.orderedIds.length && input.orderedIds.every((id) => currentIds.has(id));
+      noDupes && currentIds.size === input.orderedIds.length && input.orderedIds.every((id) => currentIds.has(id));
     if (!sameSet) {
       throw new NavigationConflictError("형제 메뉴 구성이 변경되었습니다. 새로고침 후 다시 시도하세요.");
     }
     for (let i = 0; i < input.orderedIds.length; i++) {
       await tx.navigationItem.update({ where: { id: input.orderedIds[i] }, data: { sortOrder: (i + 1) * 10 } });
     }
+    await writeAudit(tx, {
+      actorId, entityType: "NavigationItem", entityId: input.parentId, action: "reorder",
+      metadata: { parentId: input.parentId, orderedIds: input.orderedIds },
+    });
   });
 }
 
@@ -332,3 +368,5 @@ export async function rolesGrantingPermission(permissionId: string): Promise<Arr
 - `npm run typecheck` → 0 errors.
 - `npm run lint` → 0 errors(boundaries: module→kernel/lib OK).
 - `generateNavKey`가 라벨과 무관함을 테스트가 고정(D17).
+- 변경 함수(`createItem`/`updateItem`/`reorderSiblings`)가 `actorId`를 받아 **같은 트랜잭션에서** `writeAudit(tx,...)` 호출(P1). 충돌·검증 실패 시 audit 미기록을 테스트가 고정.
+- `reorderSiblings`가 중복 ID를 `NavigationConflictError`로 거부(P2).
