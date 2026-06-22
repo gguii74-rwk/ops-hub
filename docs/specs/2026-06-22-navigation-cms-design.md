@@ -43,7 +43,7 @@
 | # | 결정 |
 | --- | --- |
 | **D1** | 본 스펙 = **메뉴 CMS(증분 ③)만**. 역할↔권한 매트릭스 편집(증분 ②)·새 `Permission` 생성은 제외. |
-| **D2** | **컬럼 추가 없음 + FK 동작 마이그레이션 1건.** `NavigationItem`의 기존 필드(`parentId`/`sortOrder`/`requiredPermissionId`/`isActive`)를 재사용(새 컬럼·모델 없음). 깊이 2단 제약은 앱 레벨 검증으로 강제. **단 fail-closed를 위해 `requiredPermissionId` FK를 `ON DELETE SET NULL` → `ON DELETE RESTRICT`로 바꾸는 마이그레이션 1건을 포함**(D8/F-3). |
+| **D2** | **컬럼 추가 없음 + FK 동작 마이그레이션(2개 FK, 1건).** `NavigationItem`의 기존 필드(`parentId`/`sortOrder`/`requiredPermissionId`/`isActive`)를 재사용(새 컬럼·모델 없음). 깊이 2단 제약은 앱 레벨 검증으로 강제. **단 fail-closed를 위해 두 FK를 `ON DELETE SET NULL` → `ON DELETE RESTRICT`로 바꾼다**: ① `requiredPermissionId`(권한 삭제 시 메뉴 공개 전락 방지 — D8/F-3), ② self-ref `parentId`(부모 삭제 시 자식 top-level 고아화 방지, cascade 레이스 봉합 — D11/F-4). Prisma relation에 `onDelete: Restrict` 명시, 마이그레이션 1건. |
 | **D3** | **메뉴 SSOT = DB.** `seed.ts`의 `navigationItem`은 **create-if-absent**(`key` 없을 때만 생성, 있으면 라벨·순서·권한·활성 **건드리지 않음**). `catalog.ts`의 `NAV`는 "초기 부트스트랩 시드 데이터"로 의미 재정의(주석). **권한 카탈로그·역할 매트릭스는 코드 진실원 유지**(메뉴만 이관). fail-closed 권한해석은 create 경로에 유지(미해석 시 중단). |
 | **D4** | **부모 노출 = 관용(컨테이너형).** 노드는 `(자체 권한 통과) OR (보이는 자식 ≥ 1)`이면 노출. "빈 부모 숨김"은 이 규칙에 포섭(보이는 자식 0 + 자체 권한 실패 → 숨김). 자식 권한이 부모 권한과 어긋나도 자식이 사라지지 않음. |
 | **D5** | **부모 렌더:** `자체 권한 통과 && href != null`이면 **링크(이동+펼침)**, 그 외 노출되는 부모는 **그룹 토글(펼침만)**. 현재 경로가 자식 `href`면 부모 자동 펼침. |
@@ -52,16 +52,17 @@
 | **D8** | **`requiredPermission` = nullable(공개).** UI 기본값은 "권한 필수", 공개는 **명시적으로 선택**해야 하며 라벨은 **"공개 — 로그인한 모든 사용자"**. (오타가 메뉴를 공개로 흘리는 함정 방지.) **fail-open seam 봉합(F-3 — 이번 증분에서 FIX):** `NavigationItem.requiredPermissionId` FK가 `ON DELETE SET NULL`이면 Permission row 삭제 시 참조 메뉴가 **조용히 공개(null)로 전락**하는 auth fail-open이다. 안 적힌 불변식에 의존하지 않고 **DB가 강제**하도록, FK를 **`ON DELETE RESTRICT`로 마이그레이션**(D2)한다 → 참조하는 `NavigationItem`이 있는 한 Permission 삭제가 **거부**된다(fail-closed). 회귀테스트(§11)로 "참조된 권한 삭제 거부"를 고정. |
 | **D9** | 관리 라우트 **`/admin/navigation`**. 읽기 게이트 `admin.navigation:view`, 모든 변경 `requirePermission(admin.navigation, "configure")`. |
 | **D10** | **역할 미리보기:** 권한 선택 시 "이 권한을 ALLOW하는 역할" 실시간 표시. **역할 기준만**(개인 `UserPermissionOverride`·OWNER-항상허용 제외) — 추정치임을 명시. |
-| **D11** | **삭제:** 자식 없는 노드는 확인 후 즉시 삭제. **자식 있는 부모**는 "이 메뉴와 하위 N개를 함께 삭제합니다" **확인 다이얼로그 → cascade 삭제**. cascade는 **트랜잭션 안에서 부모의 현재 자식 집합을 재조회**해 부모+그 자식 전부를 함께 삭제한다(부모만 지워 `ON DELETE SET NULL`로 자식이 top-level 고아가 되는 일 방지). 동시성(F-2): 확인 시점 자식 수 `N`을 요청에 실어 보내고, 트랜잭션 안 라이브 자식 수와 **불일치하면 중단 → "다른 사용자가 하위 메뉴를 변경함, 새로고침" 안내**(확인 후 추가된 자식의 무단 삭제·고아화 방지). "자식부터 지우라"는 막다른 길은 금지. 비파괴 대안으로 **비활성(`isActive=false`) 토글**이 항상 별도 제공. |
-| **D12** | **동시편집:** 단일 편집은 `updatedAt` **낙관적 락**(`updateMany({where:{id, updatedAt}})` + `count===0` 충돌). 순서변경은 **트랜잭션** 일괄 재정렬 + 충돌 감지. **삭제(특히 cascade)는 부모 `updatedAt`만으로 불충분**(자식 추가는 부모 row를 안 건드림) → D11처럼 **자식 집합/수를 트랜잭션 안에서 재확인**해 불일치 시 중단. |
+| **D11** | **삭제:** 자식 없는 노드는 확인 후 즉시 삭제. **자식 있는 부모**는 "이 메뉴와 하위 N개를 함께 삭제합니다" **확인 다이얼로그 → cascade 삭제**. cascade 트랜잭션은 ① 확인 시점에 잡은 **자식 ID 집합만** 삭제하고(`parentId`로 즉석 삭제하지 않음 → 미확인 자식 무단삭제 방지), ② 이어서 부모를 삭제한다. **`parentId` FK = `ON DELETE RESTRICT`(D2)이므로**, count 체크 이후 다른 관리자가 자식을 새로 만들거나 reparent해 부모가 여전히 참조되면 **부모 삭제가 DB에서 거부 → 트랜잭션 전체 롤백**(fail-closed, top-level 고아 0). 갭을 더 줄이려면 부모 row 선행 잠금(`SELECT … FOR UPDATE`) 또는 SERIALIZABLE 격리. UI엔 확인 자식 수 `N` 표기, 충돌 시 "다른 사용자가 하위 메뉴를 변경함, 새로고침" 안내. 비파괴 대안으로 **비활성(`isActive=false`) 토글**이 항상 별도 제공. |
+| **D12** | **동시편집:** 단일 편집은 `updatedAt` **낙관적 락**(`updateMany({where:{id, updatedAt}})` + `count===0` 충돌). 순서변경은 **트랜잭션** 일괄 재정렬 + 충돌 감지. **삭제(특히 cascade)는 부모 `updatedAt`만으로 불충분**(자식 추가는 부모 row를 안 건드림) → 앱 레벨 자식수 체크에 더해 **DB가 강제**: `parentId` FK `ON DELETE RESTRICT`(D2)로 늦게 들어온 자식이 부모 삭제를 거부·롤백시킨다(D11/F-4). |
 | **D13** | **반영:** `loadNavigation`은 `(app)` 레이아웃(동적, 세션 의존)에서 매 요청 실행 → 변경은 **다음 페이지 이동에서 반영(재로그인 불필요)**. 변경 후 `router.refresh()`/`revalidatePath`로 즉시 갱신. 관리 화면에 **결과 사이드바 미리보기** 패널. |
 | **D14** | **권한 카탈로그 보강:** `RESOURCES`에 `"admin.navigation"` 추가(→ `admin.navigation:view`), `EXTRA_PERMISSIONS`에 `["admin.navigation","configure"]`. **`admin` 역할 매트릭스**에 두 키 부여(OWNER 자동). 부트스트랩 `NAV`에 **`관리 > 메뉴 관리`** 자식 추가(닭-달걀 방지). |
 | **D15** | **한계 명시:** 새 `Permission`이 필요한 새 보호영역 메뉴는 **개발자 동반**(권한은 코드 진실원). 관리 UI는 기존 권한 키 + 공개만 제시하며, 이 제약을 UI·문서에 명시. |
 | **D16** | **모듈:** `src/modules/admin/navigation/{services,repositories,validations}`(`admin/users` 패턴 미러). zod 검증, 변경은 `AuditLog` 기록(기존 패턴 경량 적용). |
+| **D17** | **`key` 생성 계약(F-5):** `NavigationItem.key`(unique)는 부트스트랩 보존·중복방지의 **정체성 키**. 관리자 생성 메뉴는 **서버에서 불변 opaque key 자동 생성**(cuid 등)하며 **사용자 입력·편집 불가**(가변 라벨에서 파생 금지 → 한글/중복 라벨 충돌·생성 실패 방지). 부트스트랩 메뉴는 기존 사람-읽기 key(`dashboard`/`calendar`/…) 유지. 라벨 수정은 key에 영향 없음. |
 
 ## 4. 데이터 모델 (D2 — 컬럼 추가 없음 + FK 동작 1건)
 
-`NavigationItem`의 기존 필드를 그대로 사용한다(새 컬럼·모델 없음). 단 fail-closed를 위해 **`requiredPermissionId` FK를 `ON DELETE SET NULL` → `ON DELETE RESTRICT`로 바꾸는 마이그레이션 1건**을 포함한다(D8/F-3) — Prisma relation에 `onDelete: Restrict` 명시.
+`NavigationItem`의 기존 필드를 그대로 사용한다(새 컬럼·모델 없음). 단 fail-closed를 위해 **두 FK를 `ON DELETE SET NULL` → `ON DELETE RESTRICT`로 바꾸는 마이그레이션 1건**을 포함한다 — `requiredPermissionId`(권한 삭제 시 메뉴 공개 전락 방지 — D8/F-3) + self-ref `parentId`(부모 삭제 시 자식 고아화·cascade 레이스 방지 — D11/F-4). Prisma relation에 각각 `onDelete: Restrict` 명시.
 
 ```
 NavigationItem
@@ -133,7 +134,7 @@ visible(parent)       = ownAllowed(parent) || visibleChildren.length > 0   // D4
 
 - **트리 표시**: 대메뉴 → 중메뉴 들여쓰기. 각 행: 라벨, `href`(또는 "그룹"), 필요권한 칩(또는 "공개"), 활성 토글.
 - **순서 변경**: 형제 간 드래그(또는 ↑/↓). 저장 시 형제 묶음 `sortOrder` 트랜잭션 재정렬(D12).
-- **추가/수정 모달**: `label`(필수), `href`(D7 검증·소프트 경고), **부모 select**(대메뉴 목록, 2단 제약), **필요권한 select**(권한 카탈로그 + "공개 — 로그인한 모든 사용자"(D8)), 활성.
+- **추가/수정 모달**: `label`(필수), `href`(D7 검증·소프트 경고), **부모 select**(대메뉴 목록, 2단 제약), **필요권한 select**(권한 카탈로그 + "공개 — 로그인한 모든 사용자"(D8)), 활성. **`key`는 입력 항목이 아님** — 서버가 생성 시 불변 opaque key 자동 부여(D17).
   - 권한 select 옆 **역할 미리보기**(D10): "이 권한이 보이는 역할: PM·관리자·정규개발"(역할 기준 추정).
 - **삭제**(D11): 자식 없으면 즉시. 자식 있으면 "하위 N개 함께 삭제" 확인(cascade) 또는 비활성 안내.
 - **미리보기 패널**(D13): 현재 편집 상태 기준 결과 사이드바 미리보기.
@@ -143,7 +144,7 @@ visible(parent)       = ownAllowed(parent) || visibleChildren.length > 0   // D4
 
 모듈 `src/modules/admin/navigation/`:
 
-- `validations/`(zod): `key`(유니크·형식), `label`(필수), `href`(D7), `parentId`(2단·순환 — D6), `requiredPermissionId`(카탈로그 존재 또는 null), `sortOrder`.
+- `validations/`(zod): `label`(필수), `href`(D7), `parentId`(2단·순환 — D6), `requiredPermissionId`(카탈로그 존재 또는 null), `sortOrder`. **`key`는 클라이언트 입력 아님 — create 시 서버 생성·유니크 보장, edit에서 불변(D17).**
 - `services/`: 모든 변경 진입에서 `requirePermission(userId, "admin.navigation", "configure")`. 생성/수정/삭제/재정렬. 수정·삭제는 `updatedAt` 낙관적 락(D12), 재정렬은 트랜잭션. 변경 후 `AuditLog` 기록.
 - `repositories/`: Prisma 접근. 트리 조회(부모+children), 형제 재정렬, CAS 업데이트.
 - API/Server Action: 관리 화면이 호출. 응답 후 `router.refresh()`로 사이드바 갱신(D13).
@@ -176,16 +177,18 @@ visible(parent)       = ownAllowed(parent) || visibleChildren.length > 0   // D4
 - `AppNav` 렌더: 부모 링크 vs 그룹 토글(D5), 자동 펼침.
 - seed 부트스트랩: `key` 존재 시 skip(편집 보존), 미존재 시 create + 권한 fail-closed.
 - 서비스 검증: 2단·순환 차단(D6), 권한 카탈로그 존재, 공개 허용(D8).
+- **`key` 생성(D17)**: create 시 서버 생성 opaque key 유니크, **중복·한글 라벨에도 충돌/실패 없음**, edit 후 key 불변(보존).
 - **`href` 검증(D7)**: 거부 `//host`·`//evilexample`·`http://x`·`/\x`·`/a b`(외부/오픈리다이렉트/형식위반), 통과 `/valid/path`·`/admin/navigation`. 알려진 라우트 외 = 소프트 경고(저장은 통과).
 - 게이트: `admin.navigation` 없는 사용자 변경 차단(D9).
 - **권한 FK fail-closed(D8/F-3)**: `NavigationItem`이 참조하는 `Permission` 삭제 시 `ON DELETE RESTRICT`로 **거부**됨(메뉴가 공개로 전락하지 않음). 미참조 권한 삭제는 허용.
-- 낙관적 락(D12): 단일 편집 stale `updatedAt` 충돌. **cascade 삭제(F-2)**: 확인 자식 수 ≠ 트랜잭션 내 라이브 자식 수면 중단(무단 삭제·고아 0), 정상 시 부모+자식 전부 삭제(top-level 고아 0).
+- 낙관적 락(D12): 단일 편집 stale `updatedAt` 충돌.
+- **cascade 삭제 동시성(D11/F-4)**: 정상 시 부모+captured 자식 삭제(고아 0). count 체크 **이후** 자식 insert/reparent 발생 시 `parentId` FK RESTRICT로 **부모 삭제 거부 → 롤백**(무단 삭제·top-level 고아 0). captured ID만 삭제됨을 검증.
 - 역할 미리보기(D10): ALLOW 역할만 반환, override/OWNER 제외.
 - 회귀: 기존 `loadNavigation` 소비처(layout)·권한 엔진 영향 없음.
 
 ## 12. 영향·마이그레이션
 
 - 코드 변경: `kernel/navigation`(트리·관용), `app-nav.tsx`(아코디언), `kernel/access/catalog.ts`(권한·NAV), `prisma/seed.ts`(create-if-absent), 신규 `modules/admin/navigation/*`, 신규 `app/(app)/admin/navigation/*`.
-- **DB 마이그레이션 1건**(D2/D8): `NavigationItem.requiredPermissionId` FK `ON DELETE SET NULL → RESTRICT`(컬럼 변경 없음, 제약 동작만). 권한 카탈로그 변경은 `db:seed`로 반영(새 permission 등록 + admin 역할 grant).
+- **DB 마이그레이션 1건(2개 FK 동작 변경)**(D2/D8/D11): `NavigationItem`의 `requiredPermissionId`·self-ref `parentId` FK를 각각 `ON DELETE SET NULL → RESTRICT`(컬럼 변경 없음, 제약 동작만). 권한 카탈로그 변경은 `db:seed`로 반영(새 permission 등록 + admin 역할 grant).
 - 운영 dev 배포 시: `db:seed`가 `admin.navigation` 권한·역할 grant 등록 + (메뉴는 부트스트랩이라 기존 메뉴 보존, `메뉴 관리` 자식만 신규 create).
 - 다른 작업과의 경계: 사이드바 2단 전환은 일부 영역이 쓰던 "화면 안 탭" 패턴과 무관(탭은 페이지 내 하위 네비게이션, 본 스펙은 사이드바 메뉴). 탭→사이드바 이관은 본 스펙 제외.
