@@ -6,7 +6,8 @@ import { ChangePasswordForm } from "./_components/change-password-form";
 
 export default async function AccountPasswordPage() {
   const session = await auth();
-  if (!session?.user) redirect("/login");
+  // fail-closed: id 없는 깨진 세션도 미인증으로 처리(레이아웃과 동일 기준).
+  if (!session?.user?.id) redirect("/login");
   const mustChange = session.user.mustChangePassword;
 
   async function logout() {

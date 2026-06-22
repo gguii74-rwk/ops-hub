@@ -12,7 +12,9 @@ export default async function LoginPage({
   searchParams: Promise<{ error?: string }>;
 }) {
   const session = await auth();
-  if (session?.user) redirect("/dashboard");
+  // id 있는 정상 세션만 대시보드로 보낸다. id 없는 깨진 세션을 redirect하면 (app) 레이아웃이 다시 /login으로
+  // 돌려보내 무한 루프가 되므로, 여기서도 session.user.id 기준으로 판단한다(fail-closed).
+  if (session?.user?.id) redirect("/dashboard");
 
   const { error } = await searchParams;
 
