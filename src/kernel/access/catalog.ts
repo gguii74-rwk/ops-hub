@@ -3,7 +3,7 @@ export const RESOURCES = [
   "calendar.work", "calendar.leave", "calendar.personal", "calendar.team", "calendar.admin",
   "workflows.weekly", "workflows.billing", "workflows.notification",
   "leave.request", "leave.approval", "leave.allocation", "leave.status", "leave.admin",
-  "admin.users", "admin.settings", "admin.audit",
+  "admin.users", "admin.settings", "admin.audit", "admin.navigation",
   "integrations.google", "integrations.smtp", "integrations.templates",
 ] as const;
 
@@ -28,12 +28,20 @@ export interface NavEntry {
   label: string;
   href: string;
   permission: string; // "resource:action"
+  children?: readonly NavEntry[]; // 2단 부트스트랩 자식(이후 DB가 진실원 — D3)
 }
 
+// 초기 부트스트랩 시드 데이터. seed.ts가 create-if-absent로 1회 적재하며(task-03),
+// 이후 메뉴의 진실원은 DB다(관리 UI에서 편집 — D3). 코드에서 여기를 바꿔도 기존 DB엔 반영되지 않는다(의도).
 export const NAV: readonly NavEntry[] = [
   { key: "dashboard", label: "대시보드", href: "/dashboard", permission: "dashboard:view" },
   { key: "calendar", label: "캘린더", href: "/calendar", permission: "calendar.work:view" },
   { key: "workflows", label: "업무", href: "/workflows", permission: "workflows.weekly:view" },
   { key: "leave", label: "연차", href: "/leave", permission: "leave.request:view" },
-  { key: "admin", label: "관리", href: "/admin", permission: "admin.users:view" },
+  {
+    key: "admin", label: "관리", href: "/admin", permission: "admin.users:view",
+    children: [
+      { key: "admin-navigation", label: "메뉴 관리", href: "/admin/navigation", permission: "admin.navigation:view" },
+    ],
+  },
 ] as const;
