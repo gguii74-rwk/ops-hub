@@ -19,8 +19,8 @@ describe("isSessionValid — 세션 무효 판정(순수)", () => {
   it("무효화 시각이 모두 발급시각 이전이면 유효(이 세션이 더 최신)", () => {
     expect(isSessionValid(ISSUED, { status: "ACTIVE", passwordChangedAt: new Date("2026-06-09T00:00:00Z"), sessionInvalidatedAt: new Date("2026-06-09T00:00:00Z") })).toBe(true);
   });
-  it("무효화 시각이 발급시각과 정확히 같으면 유효(strict `>`)", () => {
-    expect(isSessionValid(ISSUED, { status: "ACTIVE", passwordChangedAt: new Date("2026-06-10T00:00:00Z"), sessionInvalidatedAt: null })).toBe(true);
+  it("무효화 시각이 발급시각과 정확히 같으면 무효(revocation 우선 `>=` — 동일 ms 동시 reset/disable는 revoke)", () => {
+    expect(isSessionValid(ISSUED, { status: "ACTIVE", passwordChangedAt: new Date("2026-06-10T00:00:00Z"), sessionInvalidatedAt: null })).toBe(false);
   });
 
   // 통합리뷰 finding(같은-초 lockout): ms 정밀 발급시각이라 같은 초 내 비번변경+재로그인을 정확히 구분한다.
