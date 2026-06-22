@@ -33,6 +33,13 @@
   --color-chart-cyan: #24D0FE;
   --color-point-lime: #EAFF00;
 
+  /* 사이드바 네비게이션 per-섹션 톤 (app-nav.tsx가 소비, 라이트·다크 공통 hue). */
+  --color-nav-dashboard: #2563EB;
+  --color-nav-calendar: #0891B2;
+  --color-nav-workflows: #F97316;
+  --color-nav-leave: #059669;
+  --color-nav-admin: #C026D3;
+
   --radius-sm: 0.25rem;
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
