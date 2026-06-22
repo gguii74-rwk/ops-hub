@@ -67,6 +67,7 @@ describe("createItem", () => {
     await expect(
       createItem({ label: "자식", href: "/x", parentId: "p1", requiredPermissionId: null }, "admin1"),
     ).rejects.toBeInstanceOf(NavigationValidationError);
+    expect(h.db.$queryRaw).toHaveBeenCalled(); // P5: lockNavTree acquired BEFORE depth validation throws
     expect(h.db.navigationItem.create).not.toHaveBeenCalled();
     expect(writeAuditMock).not.toHaveBeenCalled();
   });
@@ -105,11 +106,13 @@ describe("reorderSiblings (락 + 집합 일치 + (id,parentId,updatedAt) CAS + a
     h.db.navigationItem.findMany.mockResolvedValue([{ id: "a" }, { id: "b" }]);
     h.db.navigationItem.updateMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 });
     await expect(reorderSiblings({ parentId: null, orderedItems: items("b", "a") }, "admin1")).rejects.toBeInstanceOf(NavigationConflictError);
+    expect(h.db.navigationItem.updateMany).toHaveBeenCalledTimes(2); // Stops at second sibling's conflict
   });
   it("P3: reparent-away(parentId 불일치)도 같은 CAS로 count 0 → Conflict", async () => {
     h.db.navigationItem.findMany.mockResolvedValue([{ id: "a" }, { id: "b" }]);
     h.db.navigationItem.updateMany.mockResolvedValueOnce({ count: 0 });
     await expect(reorderSiblings({ parentId: null, orderedItems: items("b", "a") }, "admin1")).rejects.toBeInstanceOf(NavigationConflictError);
+    expect(h.db.navigationItem.updateMany).toHaveBeenCalledTimes(1); // Loop stops at first conflict
   });
   it("형제 구성이 바뀌면 NavigationConflictError(CAS 전 차단)", async () => {
     h.db.navigationItem.findMany.mockResolvedValue([{ id: "a" }, { id: "b" }]);
