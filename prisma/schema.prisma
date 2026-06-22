@@ -289,11 +289,11 @@ model NavigationItem {
   label                String
   href                 String?
   parentId             String?
-  parent               NavigationItem?  @relation("NavigationTree", fields: [parentId], references: [id])
+  parent               NavigationItem?  @relation("NavigationTree", fields: [parentId], references: [id], onDelete: Restrict)
   children             NavigationItem[] @relation("NavigationTree")
   sortOrder            Int              @default(0)
   requiredPermissionId String?
-  requiredPermission   Permission?      @relation(fields: [requiredPermissionId], references: [id])
+  requiredPermission   Permission?      @relation(fields: [requiredPermissionId], references: [id], onDelete: Restrict)
   isActive             Boolean          @default(true)
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
