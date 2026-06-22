@@ -27,9 +27,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <PermissionProvider keys={summary.keys}>
       <Providers>
-      <div className="grid min-h-screen grid-cols-[200px_1fr]">
-        <aside className="flex flex-col gap-4 border-r border-border bg-card p-4">
-          <strong className="font-display text-lg font-semibold tracking-tight">ops-hub</strong>
+      <div className="grid min-h-screen grid-cols-[220px_1fr] bg-page">
+        <aside className="flex flex-col gap-4 border-r border-border bg-card/95 p-4 shadow-sm shadow-slate-950/5">
+          <div className="space-y-2">
+            <strong className="font-display text-lg font-semibold tracking-tight">ops-hub</strong>
+            <div className="h-1 w-12 rounded-full bg-brand" aria-hidden />
+          </div>
           <AppNav items={nav} />
           <div className="mt-auto flex items-center justify-between">
             <form action={logout}>
@@ -40,8 +43,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <ThemeSwitcher />
           </div>
         </aside>
-        <main className="p-6">
-          <p className="mb-4 text-sm text-muted-foreground">
+        <main className="min-w-0 p-6">
+          <p className="mb-4 border-b border-border pb-3 text-sm text-muted-foreground">
             {session.user.name} · {session.user.systemRole}
           </p>
           {children}

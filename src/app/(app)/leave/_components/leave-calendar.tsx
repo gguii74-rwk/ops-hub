@@ -28,7 +28,7 @@ function colorFor(e: Ev): string {
   if (e.status === "PENDING") return "bg-amber-100 text-amber-900";
   if (e.status === "REJECTED" || e.status === "CANCELLED") return "bg-muted text-muted-foreground";
   if (e.leaveType === "HALF") return "bg-emerald-100 text-emerald-900";
-  if (e.leaveType === "QUARTER") return "bg-violet-100 text-violet-900";
+  if (e.leaveType === "QUARTER") return "bg-cyan-100 text-cyan-900";
   return "bg-sky-100 text-sky-900"; // ANNUAL APPROVED
 }
 
@@ -143,7 +143,7 @@ export function LeaveCalendar({ canManage }: { canManage: boolean }) {
           반차
         </span>
         <span>
-          <span className="mr-1 inline-block h-3 w-3 rounded bg-violet-100 align-middle" />
+          <span className="mr-1 inline-block h-3 w-3 rounded bg-cyan-100 align-middle" />
           반반차
         </span>
         <span>
