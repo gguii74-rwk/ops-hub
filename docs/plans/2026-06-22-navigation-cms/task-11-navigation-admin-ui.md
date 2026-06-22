@@ -23,6 +23,7 @@ task-06(`isKnownInternalRoute`), task-10(API).
 
 - **공개는 명시 선택(D8):** 권한 select 기본은 "권한 선택"(미선택=저장 불가). 공개는 `"공개 — 로그인한 모든 사용자"` 옵션을 **명시 선택**해야 한다. 오타로 공개 흘리기 방지.
 - **`key`는 UI에 입력 항목으로 두지 말 것(D17)** — 서버 생성. 폼에 key 필드 없음.
+- **수정 시 부모 변경은 `/reparent` 전용 경로(P8):** 부모 select는 추가·수정 모두 노출(스펙 §7)하되, **수정 모드에서 부모 변경은 "저장"(PATCH, parentId 생략)이 아니라 별도 "이동" 버튼이 `/reparent`를 호출**한다(낙관락 `updatedAt` 동반, 409 처리). 한 번의 저장에 필드편집+이동을 섞으면 두 요청 사이 `updatedAt`이 어긋나 409가 난다 — 그래서 이동을 분리. 부모 select는 **자기 자신을 옵션에서 제외**(순환 방지, 서버도 거부).
 - **변경 요청에 `updatedAt` 동반(SC-7)** — 수정·삭제·이동은 그 행의 `updatedAt`(ISO)을 body에 넣는다. 빠지면 라우트 400/409.
 - **삭제는 2단계 확인 + 자식 수를 가시 텍스트로(D11/P4):** 첫 클릭은 확인 진입만(즉시 삭제 금지 — edit-leave-modal 패턴). 확인 단계는 `deleteConfirmLabel(node)`("하위 N개 함께 삭제")를 **`title`(툴팁)이 아니라 화면에 보이는 텍스트**로 렌더하고, 최종 삭제 버튼은 그 확인 영역(`role="alertdialog"`) 안에 둔다. 툴팁에만 두면 터치·키보드·더블클릭에서 경고를 못 보고 서브트리를 삭제(데이터 손실).
 - **한계 안내(D15):** "새 보호영역(새 권한)은 개발자 요청" 문구를 화면에 둔다.
@@ -36,7 +37,7 @@ task-06(`isKnownInternalRoute`), task-10(API).
 ```ts
 import { describe, it, expect } from "vitest";
 import {
-  toCreatePayload, toUpdatePayload, hrefWarning, deleteConfirmLabel, PUBLIC_OPTION,
+  toCreatePayload, toUpdatePayload, toReparentPayload, hrefWarning, deleteConfirmLabel, PUBLIC_OPTION,
   type NavFormState,
 } from "@/app/(app)/admin/navigation/_components/navigation-editor";
 
@@ -60,6 +61,13 @@ describe("toUpdatePayload", () => {
     const p = toUpdatePayload({ ...base, label: "x", permissionSelect: "perm9" }, "2026-06-22T00:00:00.000Z");
     expect(p).toEqual({ label: "x", href: null, requiredPermissionId: "perm9", updatedAt: "2026-06-22T00:00:00.000Z" });
     expect(p).not.toHaveProperty("parentId");
+  });
+});
+
+describe("toReparentPayload(P8 — 이동)", () => {
+  it("빈 부모 → null(대메뉴 승격), 값 있으면 그대로 + updatedAt", () => {
+    expect(toReparentPayload({ ...base, parentId: "" }, "2026-06-22T00:00:00.000Z")).toEqual({ newParentId: null, updatedAt: "2026-06-22T00:00:00.000Z" });
+    expect(toReparentPayload({ ...base, parentId: "p1" }, "2026-06-22T00:00:00.000Z")).toEqual({ newParentId: "p1", updatedAt: "2026-06-22T00:00:00.000Z" });
   });
 });
 
@@ -149,6 +157,10 @@ export function toUpdatePayload(s: NavFormState, updatedAt: string) {
     updatedAt,
   };
 }
+// 이동(reparent — P8): 수정 시 부모 변경은 /reparent 전용 경로로(PATCH는 parentId 생략). 빈 부모="" → null(대메뉴 승격).
+export function toReparentPayload(s: NavFormState, updatedAt: string) {
+  return { newParentId: s.parentId || null, updatedAt };
+}
 export function hrefWarning(href: string): string | null {
   const h = href.trim();
   if (!h) return null;
@@ -181,17 +193,20 @@ export function NavigationEditor({
   const [form, setForm] = useState<NavFormState | null>(null); // 추가/수정 폼(null=닫힘)
   const [editingId, setEditingId] = useState<string | null>(null); // null=신규
   const [editingUpdatedAt, setEditingUpdatedAt] = useState<string | null>(null);
+  const [editingOriginalParentId, setEditingOriginalParentId] = useState<string | null>(null); // 수정 진입 시 원래 부모(이동 변경 감지 — P8)
   const parents = tree; // 최상위만 부모 후보(2단)
   const set = <K extends keyof NavFormState>(k: K, v: NavFormState[K]) => setForm((s) => (s ? { ...s, [k]: v } : s));
 
   const openNew = () => {
     setEditingId(null);
     setEditingUpdatedAt(null);
+    setEditingOriginalParentId(null);
     setForm({ label: "", href: "", parentId: "", permissionSelect: "" });
   };
   const openEdit = (n: NavRowDto) => {
     setEditingId(n.id);
     setEditingUpdatedAt(n.updatedAt);
+    setEditingOriginalParentId(n.parentId);
     setForm({
       label: n.label,
       href: n.href ?? "",
@@ -236,7 +251,7 @@ export function NavigationEditor({
   });
 
   const reorder = useMutation({
-    mutationFn: async (input: { parentId: string | null; orderedIds: string[] }) => {
+    mutationFn: async (input: { parentId: string | null; orderedItems: Array<{ id: string; updatedAt: string }> }) => {
       const res = await fetch("/api/admin/navigation/reorder", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -247,13 +262,27 @@ export function NavigationEditor({
     onSuccess: () => router.refresh(),
   });
 
-  // 형제 묶음 내 i↔i+dir 교환 후 reorder.
+  // 이동(reparent — P8): 수정 시 부모 변경을 /reparent로 적용(낙관락 updatedAt 동반, 409 시 메시지). 성공 시 폼 닫고 갱신.
+  const reparent = useMutation({
+    mutationFn: async () => {
+      if (!form || !editingId) return;
+      const res = await fetch(`/api/admin/navigation/${editingId}/reparent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(toReparentPayload(form, editingUpdatedAt!)),
+      });
+      await jsonOrThrow(res, "이동 실패");
+    },
+    onSuccess: () => { close(); router.refresh(); },
+  });
+
+  // 형제 묶음 내 i↔i+dir 교환 후 reorder. 각 형제의 관측 updatedAt 동반(P6 — 동시 재정렬 lost-update 차단).
   const move = (siblings: NavRowDto[], parentId: string | null, index: number, dir: -1 | 1) => {
     const j = index + dir;
     if (j < 0 || j >= siblings.length) return;
-    const ids = siblings.map((s) => s.id);
-    [ids[index], ids[j]] = [ids[j], ids[index]];
-    reorder.mutate({ parentId, orderedIds: ids });
+    const ordered = [...siblings];
+    [ordered[index], ordered[j]] = [ordered[j], ordered[index]];
+    reorder.mutate({ parentId, orderedItems: ordered.map((s) => ({ id: s.id, updatedAt: s.updatedAt })) });
   };
 
   const canSave = !!form && form.label.trim().length > 0 && form.permissionSelect !== "" && !save.isPending;
@@ -280,15 +309,29 @@ export function NavigationEditor({
                 <Input id="nav-href" value={form.href} placeholder="/example" onChange={(e) => set("href", e.target.value)} />
                 {warn && <p className="text-xs text-amber-600">{warn}</p>}
               </div>
-              {!editingId && (
-                <div className="grid gap-1.5">
-                  <Label>부모 메뉴</Label>
+              <div className="grid gap-1.5">
+                <Label>부모 메뉴</Label>
+                <div className="flex gap-2">
                   <select className={selectCls} value={form.parentId} onChange={(e) => set("parentId", e.target.value)}>
                     <option value="">— 대메뉴(최상위) —</option>
-                    {parents.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                    {parents.filter((p) => p.id !== editingId).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
                   </select>
+                  {editingId && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={(form.parentId || null) === editingOriginalParentId || reparent.isPending}
+                      onClick={() => reparent.mutate()}
+                    >
+                      {reparent.isPending ? "이동 중…" : "이동"}
+                    </Button>
+                  )}
                 </div>
-              )}
+                {editingId && (
+                  <p className="text-xs text-muted-foreground">부모 변경은 “이동”으로 즉시 적용됩니다(라벨·경로·권한은 “저장”).</p>
+                )}
+                {reparent.isError && <p className="text-xs text-destructive">{(reparent.error as Error).message}</p>}
+              </div>
               <div className="grid gap-1.5">
                 <Label>필요 권한</Label>
                 <select className={selectCls} value={form.permissionSelect} onChange={(e) => set("permissionSelect", e.target.value)}>
@@ -509,3 +552,4 @@ export default async function AdminNavigationPage() {
 - `npm run build` → 성공.
 - (수동·dev) `/admin/navigation` 진입: 트리 표시, 추가/수정/삭제·↑/↓ 순서변경·필요권한 select(공개 명시)·역할 미리보기·미리보기 패널·한계 안내 동작. 권한 없는 사용자는 `/dashboard`로 redirect, 사이드바에 `관리 > 메뉴 관리` 노출(권한자만).
 - (수동·dev) **삭제 확인(P4):** "삭제" 클릭 시 자식 있는 부모는 "하위 메뉴 N개를 함께 삭제합니다" 문구가 **화면에 보이는 확인 영역**으로 표시되고, 그 안의 "삭제"를 눌러야 실제 삭제됨(툴팁 아님). 첫 클릭만으로는 삭제되지 않음.
+- (수동·dev) **이동(P8):** 메뉴 수정 시 부모 select에서 다른 부모/대메뉴를 고르고 "이동"을 누르면 `/reparent`가 호출돼 트리에서 위치가 바뀜(자식 보유 메뉴를 중메뉴로 이동 시 서버가 거부). 부모를 안 바꾸면 "이동" 버튼 비활성.

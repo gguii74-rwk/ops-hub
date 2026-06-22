@@ -114,7 +114,9 @@ export interface UpdateNavInput {
 }
 export interface ReorderInput {
   parentId: string | null;     // 재정렬 스코프(형제 묶음)
-  orderedIds: string[];        // 새 순서의 형제 id 전체
+  // 새 순서의 형제 전체 — 각 형제의 관측 updatedAt 동반(P6: 동시 재정렬 lost-update 차단).
+  // 락 안에서 (id,parentId,updatedAt) CAS(count===1)로, 다른 관리자가 먼저 바꿔 updatedAt이 바뀌면 Conflict.
+  orderedItems: Array<{ id: string; updatedAt: Date }>;
 }
 export interface ReparentInput {
   id: string;
@@ -128,7 +130,7 @@ export interface ReparentInput {
 
 ### SC-8. 동시성 계약 — F-6·F-7 (스펙 §13 DEFERRED high → 본 계획 task-08 AC)
 
-reparent·cascade 삭제·**reorder**(P3) 트랜잭션은 모두 `NAV_REPARENT_LOCK_NS` advisory xact lock으로 직렬화한 뒤 트랜잭션 내부에서 권위 재검증한다(leave `lockUserAndAssertNoOverlap` 패턴 동형). DB FK `parentId RESTRICT`(SC-1)가 최종 가드. 트리 구조를 바꾸는 모든 변경(생성-with-parent·reparent·cascade·reorder)이 같은 락을 공유해야 한다 — 하나라도 빠지면 그 경로가 다른 경로의 검증을 우회한다.
+생성·reparent·cascade 삭제·reorder 트랜잭션은 모두 `NAV_REPARENT_LOCK_NS` advisory xact lock으로 직렬화한 뒤 트랜잭션 내부에서 권위 재검증한다(leave `lockUserAndAssertNoOverlap` 패턴 동형). DB FK `parentId RESTRICT`(SC-1)가 최종 가드. 트리 구조를 바꾸는 **모든** 변경(create[top-level 포함 — P5]·reparent·cascade·reorder[P3])이 같은 락을 공유해야 한다 — 하나라도 빠지면 그 경로가 다른 경로의 검증을 우회한다. 락은 인터리빙만 막고 lost-update는 막지 못하므로, 행 버전(`updatedAt`)을 CAS로 함께 검사한다: 단일 편집·reparent·삭제는 클라가 본 `updatedAt`(SC-7), reorder는 형제별 `updatedAt`(P6).
 
 ```ts
 // navigation 도메인 advisory lock 네임스페이스 — 타 사용처(leave 0x6c76)와 충돌 금지.

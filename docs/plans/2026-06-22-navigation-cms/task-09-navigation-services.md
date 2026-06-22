@@ -100,8 +100,10 @@ describe("navigation services — 게이트·actorId 전달", () => {
   });
 
   it("reorder: 게이트 → reorderSiblings(input, actorId)", async () => {
-    await reorderNavigationItems("admin1", { parentId: null, orderedIds: ["a", "b"] });
-    expect(repo.reorderSiblings).toHaveBeenCalledWith({ parentId: null, orderedIds: ["a", "b"] }, "admin1");
+    const at = new Date("2026-06-22T00:00:00Z");
+    const input = { parentId: null, orderedItems: [{ id: "a", updatedAt: at }, { id: "b", updatedAt: at }] };
+    await reorderNavigationItems("admin1", input);
+    expect(repo.reorderSiblings).toHaveBeenCalledWith(input, "admin1");
   });
 
   it("previewRoles: 읽기 — 서비스 게이트 없이 위임(라우트가 view 게이트)", async () => {

@@ -24,6 +24,7 @@ task-02(NAV 트리 형태).
 - **upsert의 `update:{...}` 덮어쓰기를 되살리지 말 것.** create-if-absent의 핵심은 key 존재 시 **어떤 필드도 갱신하지 않는 것**(관리자 편집이 재배포에 보존 — D3). update 분기 자체가 없어야 한다.
 - **fail-closed 유지:** 권한 미해석이면 create 전에 throw(null로 두면 공개 누출 — D3/E3). 기존 seed가 지키던 불변식.
 - **부모 존재 + 자식 미존재**도 정상 경로다 — 기존 환경에 `메뉴 관리` 자식만 새로 생긴다(부모 `관리`는 보존). 부모가 존재해도 children 재귀는 돈다.
+- **P7(depth-3 방지):** children을 가질 entry의 기존 행이 그 사이 reparent돼 `parentId != null`이면, 그 아래 자식을 만들면 depth-3가 된다 → **fail-closed로 throw**(부분 부팅으로 트리 손상 방지). 기존 행은 `{id, parentId}`를 select해 검증한다.
 - seed.ts는 `@` alias 대신 상대경로 import(기존 관행) — `./seed-navigation`.
 
 ## Step 1 — 실패 테스트: create-if-absent 트리
@@ -41,7 +42,7 @@ function makeClient(existingKeys: Set<string>) {
   const client: NavWriteClient = {
     navigationItem: {
       findUnique: vi.fn(async ({ where }) =>
-        existingKeys.has(where.key) ? { id: `exist-${where.key}` } : null,
+        existingKeys.has(where.key) ? { id: `exist-${where.key}`, parentId: null } : null,
       ),
       create: vi.fn(async ({ data }) => {
         created.push(data as Record<string, unknown>);
@@ -96,6 +97,19 @@ describe("seedNavigation (create-if-absent 트리)", () => {
     await expect(seedNavigation(client, tree, resolveNone)).rejects.toThrow(/admin-navigation/);
     expect(created).toHaveLength(0);
   });
+
+  it("P7: 자식을 가질 기존 부모가 top-level이 아니면 throw(depth-3 방지, 자식 생성 안 함)", async () => {
+    const created: Array<Record<string, unknown>> = [];
+    const client: NavWriteClient = {
+      navigationItem: {
+        // 기존 'admin'이 reparent되어 parentId != null
+        findUnique: vi.fn(async () => ({ id: "exist-admin", parentId: "someParent" })),
+        create: vi.fn(async ({ data }) => { created.push(data as Record<string, unknown>); return { id: "x" }; }),
+      },
+    };
+    await expect(seedNavigation(client, tree, resolveAll)).rejects.toThrow(/top-level/);
+    expect(created).toHaveLength(0);
+  });
 });
 ```
 
@@ -113,7 +127,7 @@ import type { NavEntry } from "../src/kernel/access/catalog";
 // seedNavigation이 호출하는 클라이언트 표면(구조적 최소). 실 PrismaClient·테스트 mock 둘 다 충족.
 export interface NavWriteClient {
   navigationItem: {
-    findUnique(args: { where: { key: string }; select: { id: true } }): Promise<{ id: string } | null>;
+    findUnique(args: { where: { key: string }; select: { id: true; parentId: true } }): Promise<{ id: string; parentId: string | null } | null>;
     create(args: {
       data: {
         key: string; label: string; href: string; sortOrder: number;
@@ -136,9 +150,16 @@ export async function seedNavigation(
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
     let id: string;
-    const existing = await client.navigationItem.findUnique({ where: { key: entry.key }, select: { id: true } });
+    const existing = await client.navigationItem.findUnique({ where: { key: entry.key }, select: { id: true, parentId: true } });
     if (existing) {
       id = existing.id; // 편집 보존: 어떤 필드도 갱신하지 않는다.
+      // P7: 자식을 가질 부트스트랩 부모가 그 사이 reparent돼 top-level이 아니게 됐으면, 그 아래 자식 생성은
+      // depth-3 위반이다(읽기·관리 경로는 2단만 처리). fail-closed로 중단(부분 부팅으로 트리 손상 방지).
+      if (entry.children?.length && existing.parentId !== null) {
+        throw new Error(
+          `부트스트랩 부모 '${entry.key}'가 더 이상 top-level이 아님(parentId=${existing.parentId}) — 자식 생성 시 depth-2 위반. 중단.`,
+        );
+      }
     } else {
       const permissionId = await resolvePermissionId(entry.permission);
       if (!permissionId) {
@@ -201,7 +222,7 @@ import { seedNavigation } from "./seed-navigation";
 
 ## Acceptance Criteria
 
-- `npm test -- seed-navigation` → 4 케이스 PASS.
+- `npm test -- seed-navigation` → 5 케이스 PASS(P7 top-level 위반 throw 포함).
 - `npm run typecheck` → 0 errors.
 - `npm run lint` → 0 errors(미사용 심볼 없음).
 - `git diff prisma/seed.ts` → step 5만 교체 + import 1 + 로그 1, 그 외 무변경. update 분기 부활 없음.

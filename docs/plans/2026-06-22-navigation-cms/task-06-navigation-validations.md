@@ -80,12 +80,16 @@ describe("updateNavSchema", () => {
 });
 
 describe("reorderNavSchema", () => {
-  it("parentId(null 허용)+orderedIds(최소 1)", () => {
-    expect(reorderNavSchema.safeParse({ parentId: null, orderedIds: ["a", "b"] }).success).toBe(true);
-    expect(reorderNavSchema.safeParse({ parentId: null, orderedIds: [] }).success).toBe(false);
+  const AT = "2026-06-22T00:00:00.000Z";
+  it("parentId(null 허용)+orderedItems(최소 1, id+updatedAt)", () => {
+    expect(reorderNavSchema.safeParse({ parentId: null, orderedItems: [{ id: "a", updatedAt: AT }, { id: "b", updatedAt: AT }] }).success).toBe(true);
+    expect(reorderNavSchema.safeParse({ parentId: null, orderedItems: [] }).success).toBe(false);
+  });
+  it("updatedAt 없는 항목 거부(P6 — 버전 토큰 필수)", () => {
+    expect(reorderNavSchema.safeParse({ parentId: null, orderedItems: [{ id: "a" }] }).success).toBe(false);
   });
   it("중복 ID 거부(P2 — sortOrder 손상 차단)", () => {
-    expect(reorderNavSchema.safeParse({ parentId: null, orderedIds: ["a", "a"] }).success).toBe(false);
+    expect(reorderNavSchema.safeParse({ parentId: null, orderedItems: [{ id: "a", updatedAt: AT }, { id: "a", updatedAt: AT }] }).success).toBe(false);
   });
 });
 ```
@@ -161,16 +165,17 @@ export const updateNavSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
-// 재정렬: 형제 묶음 전체의 새 순서. 중복 ID 거부(중복이 통과하면 한 행을 두 번 갱신하고
-// 다른 형제를 누락해 sortOrder가 손상된다 — P2). repo도 집합 일치를 재검증(방어 심층).
+// 재정렬: 형제 묶음 전체의 새 순서 + 각 형제의 관측 updatedAt(P6 lost-update 차단).
+// 중복 ID 거부(P2 — 중복이 통과하면 한 행을 두 번 갱신·다른 형제 누락으로 sortOrder 손상).
+// updatedAt은 ISO로 받고 라우트가 Date로 변환(다른 변경 경로와 동일 — SC-7).
 export const reorderNavSchema = z
   .object({
     parentId: z.string().min(1).nullable(),
-    orderedIds: z.array(z.string().min(1)).min(1),
+    orderedItems: z.array(z.object({ id: z.string().min(1), updatedAt: expectedUpdatedAt })).min(1),
   })
-  .refine((v) => new Set(v.orderedIds).size === v.orderedIds.length, {
+  .refine((v) => new Set(v.orderedItems.map((i) => i.id)).size === v.orderedItems.length, {
     message: "중복된 메뉴 ID가 있습니다.",
-    path: ["orderedIds"],
+    path: ["orderedItems"],
   });
 
 // 이동(reparent): 대상 부모(null=대메뉴 승격). id는 라우트 param.
@@ -185,8 +190,13 @@ export const deleteNavBodySchema = z.object({ updatedAt: expectedUpdatedAt });
 
 export type CreateNavInput = z.infer<typeof createNavSchema>;
 export type UpdateNavInput = z.infer<typeof updateNavSchema>;
-export type ReorderNavInput = z.infer<typeof reorderNavSchema>;
 export type ReparentNavInput = z.infer<typeof reparentNavSchema>;
+// reorder 서비스/repo 레벨 타입 — 라우트가 orderedItems.updatedAt(ISO)을 Date로 변환해 넘긴다
+// (z.infer는 updatedAt이 string이라 별도 정의 — SC-6).
+export interface ReorderNavInput {
+  parentId: string | null;
+  orderedItems: Array<{ id: string; updatedAt: Date }>;
+}
 ```
 
 실행: `npm test -- navigation/validations` → **PASS**.
