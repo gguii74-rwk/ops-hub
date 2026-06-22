@@ -32,7 +32,7 @@
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { createNavSchema, updateNavSchema, reorderNavSchema } from "@/modules/admin/navigation/validations";
+import { createNavSchema, updateNavSchema, reorderNavSchema, deleteNavBodySchema } from "@/modules/admin/navigation/validations";
 import { HREF_PATTERN, isKnownInternalRoute } from "@/modules/admin/navigation/href";
 
 const hrefOk = (h: string) => HREF_PATTERN.test(h);
@@ -90,6 +90,17 @@ describe("reorderNavSchema", () => {
   });
   it("중복 ID 거부(P2 — sortOrder 손상 차단)", () => {
     expect(reorderNavSchema.safeParse({ parentId: null, orderedItems: [{ id: "a", updatedAt: AT }, { id: "a", updatedAt: AT }] }).success).toBe(false);
+  });
+});
+
+describe("deleteNavBodySchema(P9 — 확인 자식 집합 동반)", () => {
+  const AT = "2026-06-22T00:00:00.000Z";
+  it("updatedAt + confirmedChildIds(빈 배열=leaf·ID 배열 모두 허용)", () => {
+    expect(deleteNavBodySchema.safeParse({ updatedAt: AT, confirmedChildIds: [] }).success).toBe(true);
+    expect(deleteNavBodySchema.safeParse({ updatedAt: AT, confirmedChildIds: ["c1", "c2"] }).success).toBe(true);
+  });
+  it("confirmedChildIds 누락 거부(fail-closed — TOCTOU 가드 우회 차단)", () => {
+    expect(deleteNavBodySchema.safeParse({ updatedAt: AT }).success).toBe(false);
   });
 });
 ```
@@ -186,7 +197,12 @@ export const reparentNavSchema = z.object({
 // 낙관락 body(SC-7) — 수정·이동·삭제는 updatedAt 동반.
 export const updateNavBodySchema = updateNavSchema.extend({ updatedAt: expectedUpdatedAt });
 export const reparentNavBodySchema = reparentNavSchema.extend({ updatedAt: expectedUpdatedAt });
-export const deleteNavBodySchema = z.object({ updatedAt: expectedUpdatedAt });
+// 삭제: updatedAt + 확인 시점 직속 자식 ID 집합(P9). 서비스가 현재 DB 자식 집합과 대조, 불일치 시 409
+// (확인 화면 렌더 후 추가/이동된 자식이 확인 없이 cascade 삭제되는 TOCTOU 차단). leaf는 []. 누락 거부=fail-closed.
+export const deleteNavBodySchema = z.object({
+  updatedAt: expectedUpdatedAt,
+  confirmedChildIds: z.array(z.string().min(1)),
+});
 
 export type CreateNavInput = z.infer<typeof createNavSchema>;
 export type UpdateNavInput = z.infer<typeof updateNavSchema>;

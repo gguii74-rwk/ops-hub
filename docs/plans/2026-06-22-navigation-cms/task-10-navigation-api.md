@@ -163,15 +163,22 @@ describe("PATCH /api/admin/navigation/[id]", () => {
 });
 
 describe("DELETE /api/admin/navigation/[id]", () => {
-  it("정상 200 + updatedAt 적용", async () => {
-    const body = JSON.stringify({ updatedAt: AT });
+  it("정상 200 + updatedAt·confirmedChildIds 서비스 위임", async () => {
+    const body = JSON.stringify({ updatedAt: AT, confirmedChildIds: ["c1"] });
     const res = await DELETE(new Request("http://x", { method: "DELETE", body }), params("p1"));
     expect(res.status).toBe(200);
-    expect(h.deleteNavigationItem).toHaveBeenCalledWith("admin1", "p1", new Date(AT));
+    expect(h.deleteNavigationItem).toHaveBeenCalledWith("admin1", "p1", new Date(AT), ["c1"]);
   });
   it("updatedAt 누락 400", async () => {
-    const res = await DELETE(new Request("http://x", { method: "DELETE", body: "{}" }), params("p1"));
+    const body = JSON.stringify({ confirmedChildIds: [] });
+    const res = await DELETE(new Request("http://x", { method: "DELETE", body }), params("p1"));
     expect(res.status).toBe(400);
+  });
+  it("confirmedChildIds 누락 400(P9 — fail-closed, 서비스 미호출)", async () => {
+    const body = JSON.stringify({ updatedAt: AT });
+    const res = await DELETE(new Request("http://x", { method: "DELETE", body }), params("p1"));
+    expect(res.status).toBe(400);
+    expect(h.deleteNavigationItem).not.toHaveBeenCalled();
   });
 });
 ```
@@ -284,7 +291,8 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
   const parsed = deleteNavBodySchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "invalid input" }, { status: 400 });
   try {
-    await deleteNavigationItem(session.user.id, id, parseExpectedUpdatedAt(parsed.data.updatedAt));
+    // confirmedChildIds(P9): 클라가 확인 화면에서 본 자식 집합 — 서비스가 현재 DB 집합과 대조(cascade TOCTOU 차단).
+    await deleteNavigationItem(session.user.id, id, parseExpectedUpdatedAt(parsed.data.updatedAt), parsed.data.confirmedChildIds);
     return NextResponse.json({ ok: true });
   } catch (e) {
     return mapError(e);

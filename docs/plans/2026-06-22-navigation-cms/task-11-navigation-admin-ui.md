@@ -25,7 +25,7 @@ task-06(`isKnownInternalRoute`), task-10(API).
 - **`key`는 UI에 입력 항목으로 두지 말 것(D17)** — 서버 생성. 폼에 key 필드 없음.
 - **수정 시 부모 변경은 `/reparent` 전용 경로(P8):** 부모 select는 추가·수정 모두 노출(스펙 §7)하되, **수정 모드에서 부모 변경은 "저장"(PATCH, parentId 생략)이 아니라 별도 "이동" 버튼이 `/reparent`를 호출**한다(낙관락 `updatedAt` 동반, 409 처리). 한 번의 저장에 필드편집+이동을 섞으면 두 요청 사이 `updatedAt`이 어긋나 409가 난다 — 그래서 이동을 분리. 부모 select는 **자기 자신을 옵션에서 제외**(순환 방지, 서버도 거부).
 - **변경 요청에 `updatedAt` 동반(SC-7)** — 수정·삭제·이동은 그 행의 `updatedAt`(ISO)을 body에 넣는다. 빠지면 라우트 400/409.
-- **삭제는 2단계 확인 + 자식 수를 가시 텍스트로(D11/P4):** 첫 클릭은 확인 진입만(즉시 삭제 금지 — edit-leave-modal 패턴). 확인 단계는 `deleteConfirmLabel(node)`("하위 N개 함께 삭제")를 **`title`(툴팁)이 아니라 화면에 보이는 텍스트**로 렌더하고, 최종 삭제 버튼은 그 확인 영역(`role="alertdialog"`) 안에 둔다. 툴팁에만 두면 터치·키보드·더블클릭에서 경고를 못 보고 서브트리를 삭제(데이터 손실).
+- **삭제는 2단계 확인 + 자식 수를 가시 텍스트로(D11/P4):** 첫 클릭은 확인 진입만(즉시 삭제 금지 — edit-leave-modal 패턴). 확인 단계는 `deleteConfirmLabel(node)`("하위 N개 함께 삭제")를 **`title`(툴팁)이 아니라 화면에 보이는 텍스트**로 렌더하고, 최종 삭제 버튼은 그 확인 영역(`role="alertdialog"`) 안에 둔다. 툴팁에만 두면 터치·키보드·더블클릭에서 경고를 못 보고 서브트리를 삭제(데이터 손실). 또한 삭제 요청은 **확인 화면에 보인 자식 ID 집합(`confirmedChildIds`)을 `toDeletePayload`로 동반**한다(P9) — 서버가 현재 DB 자식 집합과 대조해, 렌더 후 다른 관리자가 추가/이동한 자식이 확인 없이 cascade 삭제되는 TOCTOU를 막는다(불일치 시 409 → 새로고침).
 - **한계 안내(D15):** "새 보호영역(새 권한)은 개발자 요청" 문구를 화면에 둔다.
 - **순수 헬퍼만 테스트.** JSX/fetch는 이 저장소 관행상 단위테스트 안 함(헬퍼로 로직 추출).
 - `Button`은 `asChild` 미지원 — 링크 버튼은 쓰지 않는다(여기선 버튼/폼만).
@@ -37,7 +37,7 @@ task-06(`isKnownInternalRoute`), task-10(API).
 ```ts
 import { describe, it, expect } from "vitest";
 import {
-  toCreatePayload, toUpdatePayload, toReparentPayload, hrefWarning, deleteConfirmLabel, PUBLIC_OPTION,
+  toCreatePayload, toUpdatePayload, toReparentPayload, toDeletePayload, hrefWarning, deleteConfirmLabel, PUBLIC_OPTION,
   type NavFormState,
 } from "@/app/(app)/admin/navigation/_components/navigation-editor";
 
@@ -68,6 +68,15 @@ describe("toReparentPayload(P8 — 이동)", () => {
   it("빈 부모 → null(대메뉴 승격), 값 있으면 그대로 + updatedAt", () => {
     expect(toReparentPayload({ ...base, parentId: "" }, "2026-06-22T00:00:00.000Z")).toEqual({ newParentId: null, updatedAt: "2026-06-22T00:00:00.000Z" });
     expect(toReparentPayload({ ...base, parentId: "p1" }, "2026-06-22T00:00:00.000Z")).toEqual({ newParentId: "p1", updatedAt: "2026-06-22T00:00:00.000Z" });
+  });
+});
+
+describe("toDeletePayload(P9 — 확인 자식 집합)", () => {
+  it("화면에 보인 직속 자식 ID + updatedAt 동반(leaf는 빈 배열)", () => {
+    expect(toDeletePayload({ updatedAt: "2026-06-22T00:00:00.000Z", children: [{ id: "c1" }, { id: "c2" }] }))
+      .toEqual({ updatedAt: "2026-06-22T00:00:00.000Z", confirmedChildIds: ["c1", "c2"] });
+    expect(toDeletePayload({ updatedAt: "2026-06-22T00:00:00.000Z", children: [] }))
+      .toEqual({ updatedAt: "2026-06-22T00:00:00.000Z", confirmedChildIds: [] });
   });
 });
 
@@ -161,6 +170,11 @@ export function toUpdatePayload(s: NavFormState, updatedAt: string) {
 export function toReparentPayload(s: NavFormState, updatedAt: string) {
   return { newParentId: s.parentId || null, updatedAt };
 }
+// 삭제(P9 — cascade TOCTOU): 확인 화면에 보인 직속 자식 ID 집합을 함께 보낸다. 서버가 현재 DB 자식 집합과
+// 대조해 불일치(렌더 후 추가/이동된 자식) 시 409 — 확인 안 된 자식의 cascade 오삭제 차단. updatedAt은 낙관락 키.
+export function toDeletePayload(node: { updatedAt: string; children: Array<{ id: string }> }) {
+  return { updatedAt: node.updatedAt, confirmedChildIds: node.children.map((c) => c.id) };
+}
 export function hrefWarning(href: string): string | null {
   const h = href.trim();
   if (!h) return null;
@@ -243,7 +257,7 @@ export function NavigationEditor({
       const res = await fetch(`/api/admin/navigation/${n.id}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ updatedAt: n.updatedAt }),
+        body: JSON.stringify(toDeletePayload(n)), // P9: 확인한 자식 집합 동반(cascade TOCTOU 차단)
       });
       await jsonOrThrow(res, "삭제 실패");
     },

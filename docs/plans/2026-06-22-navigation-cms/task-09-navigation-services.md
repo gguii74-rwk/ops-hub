@@ -1,6 +1,6 @@
 # task-09 — services: 게이트·audit·캡처·역할 미리보기
 
-**목적:** 쓰기 경로 서비스 계층. 모든 변경 진입에서 `requirePermission(...configure)`(D9), 변경 후 `AuditLog` 기록(D16), 삭제 시 자식 캡처→`cascadeDelete` 위임(F-6), 역할 미리보기 위임(D10).
+**목적:** 쓰기 경로 서비스 계층. 모든 변경 진입에서 `requirePermission(...configure)`(D9), 변경 후 `AuditLog` 기록(D16), 삭제 시 자식 캡처→확인 집합 대조(P9)→`cascadeDelete` 위임(F-6), 역할 미리보기 위임(D10).
 
 ## Files
 
@@ -21,7 +21,7 @@ task-07, task-08(repo 함수 전체).
 ## Cautions
 
 - **읽기는 라우트가 게이트(view), 변경은 서비스가 게이트(configure)** — 스펙 §8 "모든 변경 진입에서 requirePermission". 읽기 함수(`listNavigationTree`/`previewRoles`)는 서비스에서 재게이트하지 않는다(라우트 `authorize(view)` 담당 — users 패턴).
-- **삭제 캡처는 서비스 책임:** `getNodeForDelete(id)`로 직속 자식 `(id, updatedAt)`을 캡처해 `cascadeDelete`에 넘긴다. `parentUpdatedAt`은 **클라가 본 버전(expectedUpdatedAt)** — 부모 stale-tab lost-update 차단(SC-7).
+- **삭제 캡처는 서비스 책임:** `getNodeForDelete(id)`로 직속 자식 `(id, updatedAt)`을 캡처해 `cascadeDelete`에 넘긴다. `parentUpdatedAt`은 **클라가 본 버전(expectedUpdatedAt)** — 부모 stale-tab lost-update 차단(SC-7). 추가로 캡처 자식 ID 집합을 **클라가 확인한 집합(`confirmedChildIds`)과 대조**해 불일치 시 Conflict(P9 — 확인 화면 렌더 후 추가/이동된 자식의 cascade 오삭제 차단). 부모 `updatedAt`은 자식 추가로 안 바뀌므로 부모 CAS만으론 못 막는다 — render→capture는 이 집합 비교가, capture→커밋은 FK RESTRICT(task-08)가 막는다.
 - **audit는 서비스가 따로 기록하지 않는다(P1)** — repo 변경 함수가 같은 트랜잭션에서 `writeAudit(tx, ...)` 한다(task-07/08). 서비스는 게이트 + `actorId` 전달만. (커밋-후-audit 분리는 audit 실패 시 변경이 커밋된 채 실패 반환 → 재시도 중복 생성 위험 — 그래서 in-tx.)
 - 권한 거부(requirePermission throw) 시 repo가 호출되면 안 된다(게이트가 최우선).
 
@@ -76,19 +76,27 @@ describe("navigation services — 게이트·actorId 전달", () => {
     expect(repo.updateItem).toHaveBeenCalledWith("n1", { label: "새이름" }, at, "admin1");
   });
 
-  it("delete: 캡처 자식으로 cascadeDelete(input, actorId)", async () => {
+  it("delete: 확인 집합 일치 → 캡처 자식으로 cascadeDelete(input, actorId)", async () => {
     const at = new Date("2026-06-22T00:00:00Z");
     repo.getNodeForDelete.mockResolvedValue({ children: [{ id: "c1", updatedAt: at }] });
-    await deleteNavigationItem("admin1", "p1", at);
+    await deleteNavigationItem("admin1", "p1", at, ["c1"]);
     expect(repo.cascadeDelete).toHaveBeenCalledWith(
       { parentId: "p1", parentUpdatedAt: at, children: [{ id: "c1", updatedAt: at }] },
       "admin1",
     );
   });
 
+  it("delete(P9): 확인 후 추가된 자식(DB 집합≠확인 집합) → Conflict, cascade 미호출(TOCTOU 오삭제 차단)", async () => {
+    const at = new Date("2026-06-22T00:00:00Z");
+    // 확인 화면엔 c1만 보였는데 캡처 시점 DB엔 c1,c2(렌더 후 c2 추가) — 그대로 삭제하면 c2가 확인 없이 휩쓸린다.
+    repo.getNodeForDelete.mockResolvedValue({ children: [{ id: "c1", updatedAt: at }, { id: "c2", updatedAt: at }] });
+    await expect(deleteNavigationItem("admin1", "p1", at, ["c1"])).rejects.toBeInstanceOf(NavigationConflictError);
+    expect(repo.cascadeDelete).not.toHaveBeenCalled();
+  });
+
   it("delete: 노드 없으면 Conflict(cascade 미호출)", async () => {
     repo.getNodeForDelete.mockResolvedValue(null);
-    await expect(deleteNavigationItem("admin1", "x", new Date())).rejects.toBeInstanceOf(NavigationConflictError);
+    await expect(deleteNavigationItem("admin1", "x", new Date(), [])).rejects.toBeInstanceOf(NavigationConflictError);
     expect(repo.cascadeDelete).not.toHaveBeenCalled();
   });
 
@@ -170,11 +178,21 @@ export async function reparentNavigationItem(
   await reparentItem({ id, newParentId, expectedUpdatedAt }, actorId);
 }
 
-// 삭제(F-6): 직속 자식 캡처 → cascadeDelete(parentUpdatedAt=클라가 본 버전, audit in-tx). 노드 없으면 Conflict.
-export async function deleteNavigationItem(actorId: string, id: string, expectedUpdatedAt: Date): Promise<void> {
+// 삭제(F-6/P9): 직속 자식 캡처 → 확인 집합 대조 → cascadeDelete(parentUpdatedAt=클라가 본 버전, audit in-tx). 노드 없으면 Conflict.
+export async function deleteNavigationItem(
+  actorId: string, id: string, expectedUpdatedAt: Date, confirmedChildIds: string[],
+): Promise<void> {
   await requirePermission(actorId, RESOURCE, "configure");
   const captured = await getNodeForDelete(id);
   if (!captured) throw new NavigationConflictError("메뉴를 찾을 수 없습니다.");
+  // P9(TOCTOU): 확인 화면에 보인 자식 집합과 현재 DB 자식 집합이 다르면(렌더 후 추가/이동된 자식) 거부.
+  // 그대로 진행하면 확인 안 된 자식이 cascade에 휩쓸려 삭제된다 — 부모 updatedAt은 자식 추가로 안 바뀌어 부모 CAS가 못 잡음.
+  // (render→capture는 이 집합 비교가, capture→커밋은 cascadeDelete의 FK RESTRICT가 막는다 — SC-7/SC-8 F-6.)
+  const current = captured.children.map((c) => c.id);
+  const confirmed = new Set(confirmedChildIds);
+  if (current.length !== confirmed.size || !current.every((cid) => confirmed.has(cid))) {
+    throw new NavigationConflictError("하위 메뉴 구성이 변경되었습니다. 새로고침 후 다시 시도하세요.");
+  }
   await cascadeDelete({ parentId: id, parentUpdatedAt: expectedUpdatedAt, children: captured.children }, actorId);
 }
 ```

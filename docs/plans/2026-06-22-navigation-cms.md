@@ -128,6 +128,8 @@ export interface ReparentInput {
 
 단일 편집·이동·삭제는 클라이언트가 본 행 버전(`updatedAt` ISO)을 함께 보낸다. 라우트 body 스키마는 `expectedUpdatedAt`(`@/kernel/optimistic`)으로 받고 `parseExpectedUpdatedAt`으로 Date 변환 후 서비스에 별도 인자로 넘긴다. repo는 `updateMany({ where: { id, updatedAt }, ... })` + `count===0` → `NavigationConflictError`. 기존 leave/users 패턴과 동형.
 
+**삭제는 추가로 확인 자식 집합(`confirmedChildIds`)을 동반한다(P9 — cascade TOCTOU 차단).** 부모 `updatedAt`은 자식 추가 시 바뀌지 않으므로, 부모 CAS만으론 "확인 화면 렌더 후 다른 관리자가 그 부모 밑에 추가/이동한 자식이 확인 없이 cascade로 삭제되는" 창을 막지 못한다. 그래서 삭제 요청은 **확인 시점에 화면에 보인 직속 자식 ID 집합**을 함께 싣고, 서비스가 캡처(`getNodeForDelete`) 결과의 자식 ID 집합과 비교해 **불일치 시 `NavigationConflictError`(409, 새로고침 유도)**. 캡처 이후~삭제 커밋 사이의 늦은 추가는 SC-8 F-6의 `parentId RESTRICT`가 잡으므로, render→capture(집합 비교)와 capture→commit(FK RESTRICT) 두 창이 상보적으로 닫힌다.
+
 ### SC-8. 동시성 계약 — F-6·F-7 (스펙 §13 DEFERRED high → 본 계획 task-08 AC)
 
 생성·reparent·cascade 삭제·reorder 트랜잭션은 모두 `NAV_REPARENT_LOCK_NS` advisory xact lock으로 직렬화한 뒤 트랜잭션 내부에서 권위 재검증한다(leave `lockUserAndAssertNoOverlap` 패턴 동형). DB FK `parentId RESTRICT`(SC-1)가 최종 가드. 트리 구조를 바꾸는 **모든** 변경(create[top-level 포함 — P5]·reparent·cascade·reorder[P3])이 같은 락을 공유해야 한다 — 하나라도 빠지면 그 경로가 다른 경로의 검증을 우회한다. 락은 인터리빙만 막고 lost-update는 막지 못하므로, 행 버전(`updatedAt`)을 CAS로 함께 검사한다: 단일 편집·reparent·삭제는 클라가 본 `updatedAt`(SC-7), reorder는 형제별 `updatedAt`(P6).
@@ -137,7 +139,7 @@ export interface ReparentInput {
 export const NAV_REPARENT_LOCK_NS = 0x6e76; // 'nv'
 ```
 
-- **F-6 (cascade reparent-away 오삭제):** 확인 시점에 `(childId, parentId, updatedAt)` 캡처 → 트랜잭션 내 advisory lock 후 **각 자식을 `parentId`+`updatedAt` CAS로 `deleteMany`**, **영향 row 합계 == 캡처 수**가 아니면 `NavigationConflictError`로 롤백(reparent-away된 자식 오삭제 방지). 이어 부모 삭제 — 늦게 들어온 자식이 있으면 `parentId RESTRICT`로 DB가 거부·롤백.
+- **F-6 (cascade reparent-away 오삭제):** 확인 시점에 `(childId, parentId, updatedAt)` 캡처 → 트랜잭션 내 advisory lock 후 **각 자식을 `parentId`+`updatedAt` CAS로 `deleteMany`**, **영향 row 합계 == 캡처 수**가 아니면 `NavigationConflictError`로 롤백(reparent-away된 자식 오삭제 방지). 이어 부모 삭제 — 늦게 들어온 자식이 있으면 `parentId RESTRICT`로 DB가 거부·롤백. **확인 화면 렌더~캡처 사이에 추가/이동된 자식**(캡처엔 들어오나 관리자가 확인하지 못한 자식)은 서비스가 `confirmedChildIds`와 캡처 자식 집합을 대조해 거부한다(P9 — SC-7). 즉 render→capture는 집합 비교가, capture→커밋은 FK RESTRICT가 막는다.
 - **F-7 (동시 reparent 트리 불변식 위반):** reparent는 advisory lock 후 트랜잭션 내 **재검증**: ① 대상 부모(`newParentId`)가 여전히 top-level(`parentId == null`)인가, ② 이동 노드가 자식을 갖지 않는가(자식이 부모가 되면 depth-3), ③ 자기참조·순환 아님. 위반 시 `NavigationConflictError`. (두 유효 단일 reparent가 동시 적용돼도 lock 직렬화 + 재검증으로 하나는 거부.)
 
 ### SC-9. 에러 클래스 (task-06이 정의, api가 매핑)
