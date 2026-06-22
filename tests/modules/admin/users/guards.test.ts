@@ -204,8 +204,10 @@ describe("assertMinAvailability (D13ⓔ·D12 OWNER 보존)", () => {
       rolePerms: [{ roleId: "r1", effect: "ALLOW", scope: "all" }],
     });
     await expect(assertMinAvailability(tx)).rejects.toThrow(MinAvailabilityError);
+    // 통합리뷰 finding: OWNER 보존 count는 "사용 가능한" OWNER만 세야 한다 — mustChangePassword=true OWNER는
+    // 권한 엔진이 fail-closed로 전부 거부(task-07)해 OWNER 권능을 못 쓰므로 where에 mustChangePassword:false가 포함돼야 한다.
     expect((tx.user.count as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { systemRole: "OWNER", status: "ACTIVE" } }),
+      expect.objectContaining({ where: { systemRole: "OWNER", status: "ACTIVE", mustChangePassword: false } }),
     );
   });
 });

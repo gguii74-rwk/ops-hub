@@ -101,10 +101,13 @@ export async function withAvailabilityLock<T>(fn: (tx: PrismaTx) => Promise<T>):
 
 // 커밋 전 호출. ① ACTIVE OWNER 보존(D12·finding 1) ② 가용 user-management 관리자 ③ 가용 audit 조회자가 각각 1명 미만이면 거부.
 export async function assertMinAvailability(tx: PrismaTx): Promise<void> {
-  // finding 1: 권한 카운트와 별개로 최소 1명의 ACTIVE OWNER를 보존한다. mutation 후·커밋 전 상태를 보므로
+  // finding 1: 권한 카운트와 별개로 최소 1명의 "사용 가능한" ACTIVE OWNER를 보존한다. mutation 후·커밋 전 상태를 보므로
   // 마지막 OWNER 강등(updateUserTx systemRole)·비활성(setStatusTx disable)이 즉시 카운트에서 빠져 차단된다.
   // (위임 admin이 user-management·audit 권한을 모두 충족해도 OWNER가 0이면 OWNER-only 복구가 막히는 lockout 방지.)
-  const owners = await tx.user.count({ where: { systemRole: "OWNER", status: "ACTIVE" } });
+  // mustChangePassword=true OWNER는 권한 엔진이 fail-closed로 전부 거부(task-07)해 OWNER 권능을 못 쓰므로 "사용 가능"이 아니다.
+  // countAvailableByPermission의 "가용(ACTIVE && mustChangePassword===false)" 정의와 일치시킨다 —
+  // 안 그러면 임시비번 미완료 OWNER만 남았는데 마지막 사용가능 OWNER를 강등/비활성해 OWNER-only 복구가 막히는 lockout이 통과한다.
+  const owners = await tx.user.count({ where: { systemRole: "OWNER", status: "ACTIVE", mustChangePassword: false } });
   if (owners < 1) {
     throw new MinAvailabilityError("최소 1명의 활성 OWNER가 남아야 합니다.");
   }

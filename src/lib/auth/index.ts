@@ -26,8 +26,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!parsed.success) return null;
         const { email, password } = parsed.data;
 
-        // email은 사용자 병합 키(canonical). signup/resend/admin 생성이 모두 소문자로 저장하므로 조회도 소문자 정규화한다.
-        const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+        // email은 사용자 병합 키(canonical). write 경로(signup/resend/admin)는 소문자로 저장하지만, 입력을 소문자로
+        // 바꿔 exact-match하면 마이그레이션 백필 전 기존 혼합대소문자 행이 매칭되지 않아 로그인이 깨진다(통합리뷰 finding).
+        // 대소문자 무시 조회로 저장 케이스와 무관하게 매칭한다 — 케이스만 다른 중복행 미형성은 deploy 시 lower(email) 유니크가 보장(아래 follow-up).
+        const user = await prisma.user.findFirst({ where: { email: { equals: email, mode: "insensitive" } } });
         // 허용목록(fail-closed): ACTIVE만 통과. INVITED(미활성)·DISABLED는 거부.
         if (!user || user.status !== "ACTIVE") return null;
 
