@@ -29,7 +29,8 @@ export function generateNavKey(): string {
 // leave lockUserAndAssertNoOverlap의 advisory xact lock 패턴 동형. 트리 변경은 드물어 전역 직렬화로 충분.
 const NAV_REPARENT_LOCK_NS = 0x6e76; // 'nv'
 async function lockNavTree(tx: Prisma.TransactionClient): Promise<void> {
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(${NAV_REPARENT_LOCK_NS}::int4, 0::int4)`;
+  // pg_advisory_xact_lock은 void 반환 → $queryRaw는 컬럼 역직렬화로 P2010 실패. 실행만 하는 $executeRaw 사용(admin/users withAvailabilityLock 동형).
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${NAV_REPARENT_LOCK_NS}::int4, 0::int4)`;
 }
 
 // 깊이 2단 강제(D6): 부모는 parentId == null인 노드만. 락 안에서 호출해 동시 reparent 레이스 차단.

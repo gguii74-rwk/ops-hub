@@ -15,7 +15,7 @@ const h = vi.hoisted(() => {
     leaveAllocationHistory: { create: vi.fn(), findMany: vi.fn() },
     mailDelivery: { create: vi.fn(), updateMany: vi.fn() },
     auditLog: { create: vi.fn() },
-    $queryRaw: vi.fn(),
+    $executeRaw: vi.fn(),
   };
   const prisma = { ...db, $transaction: vi.fn(async (cb: (tx: typeof db) => unknown) => cb(db)) };
   return { db, prisma };
@@ -200,7 +200,7 @@ describe("createPendingRequest", () => {
     h.db.leaveRequest.create.mockResolvedValue({ id: "r1" });
     await createPendingRequest(base);
     expect(h.prisma.$transaction).toHaveBeenCalled();
-    expect(h.db.$queryRaw).toHaveBeenCalled();
+    expect(h.db.$executeRaw).toHaveBeenCalled();
     expect(h.db.leaveRequest.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ userId: "u1", status: { in: ["PENDING", "APPROVED"] } }),
     }));

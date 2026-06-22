@@ -8,7 +8,7 @@ const h = vi.hoisted(() => {
     },
     rolePermission: { findMany: vi.fn() },
     permission: { findMany: vi.fn() },
-    $queryRaw: vi.fn(),
+    $executeRaw: vi.fn(),
   };
   const prisma = { ...db, $transaction: vi.fn(async (cb: (tx: typeof db) => unknown) => cb(db)) };
   return { db, prisma };
@@ -39,7 +39,7 @@ describe("createItem", () => {
     h.db.navigationItem.findFirst.mockResolvedValue({ sortOrder: 20 });
     h.db.navigationItem.create.mockResolvedValue({ id: "n1" });
     await createItem({ label: "메뉴", href: "/x", parentId: null, requiredPermissionId: null }, "admin1");
-    expect(h.db.$queryRaw).toHaveBeenCalled(); // P5: top-level 생성도 트리락으로 sortOrder 경쟁 차단
+    expect(h.db.$executeRaw).toHaveBeenCalled(); // P5: top-level 생성도 트리락으로 sortOrder 경쟁 차단
     const data = h.db.navigationItem.create.mock.calls[0][0].data;
     expect(data.sortOrder).toBe(30);
     expect(data.parentId).toBe(null);
@@ -56,7 +56,7 @@ describe("createItem", () => {
     h.db.navigationItem.findFirst.mockResolvedValue(null);                 // 형제 없음
     h.db.navigationItem.create.mockResolvedValue({ id: "c1" });
     await createItem({ label: "자식", href: "/x/y", parentId: "p1", requiredPermissionId: null }, "admin1");
-    expect(h.db.$queryRaw).toHaveBeenCalled(); // lockNavTree
+    expect(h.db.$executeRaw).toHaveBeenCalled(); // lockNavTree
     const data = h.db.navigationItem.create.mock.calls[0][0].data;
     expect(data.parentId).toBe("p1");
     expect(data.sortOrder).toBe(10);
@@ -67,7 +67,7 @@ describe("createItem", () => {
     await expect(
       createItem({ label: "자식", href: "/x", parentId: "p1", requiredPermissionId: null }, "admin1"),
     ).rejects.toBeInstanceOf(NavigationValidationError);
-    expect(h.db.$queryRaw).toHaveBeenCalled(); // P5: lockNavTree acquired BEFORE depth validation throws
+    expect(h.db.$executeRaw).toHaveBeenCalled(); // P5: lockNavTree acquired BEFORE depth validation throws
     expect(h.db.navigationItem.create).not.toHaveBeenCalled();
     expect(writeAuditMock).not.toHaveBeenCalled();
   });
@@ -97,7 +97,7 @@ describe("reorderSiblings (락 + 집합 일치 + (id,parentId,updatedAt) CAS + a
     h.db.navigationItem.findMany.mockResolvedValue([{ id: "a" }, { id: "b" }]);
     h.db.navigationItem.updateMany.mockResolvedValue({ count: 1 });
     await reorderSiblings({ parentId: null, orderedItems: items("b", "a") }, "admin1");
-    expect(h.db.$queryRaw).toHaveBeenCalled(); // lockNavTree(P3)
+    expect(h.db.$executeRaw).toHaveBeenCalled(); // lockNavTree(P3)
     expect(h.db.navigationItem.updateMany).toHaveBeenNthCalledWith(1, { where: { id: "b", parentId: null, updatedAt: at }, data: { sortOrder: 10 } });
     expect(h.db.navigationItem.updateMany).toHaveBeenNthCalledWith(2, { where: { id: "a", parentId: null, updatedAt: at }, data: { sortOrder: 20 } });
     expect(writeAuditMock).toHaveBeenCalledWith(h.db, expect.objectContaining({ action: "reorder" }));
