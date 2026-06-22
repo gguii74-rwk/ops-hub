@@ -7,7 +7,7 @@ const h = vi.hoisted(() => {
       findUnique: vi.fn(), findFirst: vi.fn(), count: vi.fn(),
       deleteMany: vi.fn(), updateMany: vi.fn(),
     },
-    $queryRaw: vi.fn(),
+    $executeRaw: vi.fn(),
   };
   const prisma = { ...db, $transaction: vi.fn(async (cb: (tx: typeof db) => unknown) => cb(db)) };
   return { db, prisma };
@@ -34,7 +34,7 @@ describe("cascadeDelete (F-6)", () => {
       parentId: "p1", parentUpdatedAt: pAt,
       children: [{ id: "c1", updatedAt: cAt }, { id: "c2", updatedAt: cAt }],
     }, "admin1");
-    expect(h.db.$queryRaw).toHaveBeenCalled(); // lockNavTree
+    expect(h.db.$executeRaw).toHaveBeenCalled(); // lockNavTree
     // 각 자식 CAS where: id+parentId+updatedAt
     expect(h.db.navigationItem.deleteMany).toHaveBeenNthCalledWith(1, { where: { id: "c1", parentId: "p1", updatedAt: cAt } });
     expect(h.db.navigationItem.deleteMany).toHaveBeenNthCalledWith(2, { where: { id: "c2", parentId: "p1", updatedAt: cAt } });
@@ -93,7 +93,7 @@ describe("reparentItem (F-7)", () => {
     h.db.navigationItem.findFirst.mockResolvedValue({ sortOrder: 20 });
     h.db.navigationItem.updateMany.mockResolvedValue({ count: 1 });
     await reparentItem({ id: "a", newParentId: null, expectedUpdatedAt: expectedAt }, "admin1");
-    expect(h.db.$queryRaw).toHaveBeenCalled();
+    expect(h.db.$executeRaw).toHaveBeenCalled();
     expect(h.db.navigationItem.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: "a", updatedAt: expectedAt }, data: { parentId: null, sortOrder: 30 },
     }));

@@ -56,7 +56,8 @@ const LEAVE_OVERLAP_LOCK_NS = 0x6c76; // 'lv'
 async function lockUserAndAssertNoOverlap(
   tx: Prisma.TransactionClient, userId: string, start: Date, end: Date, excludeId?: string,
 ) {
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(${LEAVE_OVERLAP_LOCK_NS}::int4, hashtext(${userId}))`;
+  // pg_advisory_xact_lock은 void 반환 → $queryRaw는 P2010(void 역직렬화) 실패. 실행만 하는 $executeRaw 사용.
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LEAVE_OVERLAP_LOCK_NS}::int4, hashtext(${userId}))`;
   const overlap = await tx.leaveRequest.findFirst({ where: overlapWhere(userId, start, end, excludeId) });
   if (overlap) throw new LeaveConflictError("해당 기간에 이미 신청된 연차가 있습니다.");
 }
