@@ -197,6 +197,12 @@ const knownProtected = new Set<string>([
   "/api/admin/leave/users",
   "/api/admin/leave/status",
   "/api/admin/leave/status/export",
+  // navigation CMS (task-10) — requirePermission(admin.navigation, view|configure) 중앙 게이트
+  "/api/admin/navigation",
+  "/api/admin/navigation/[id]",
+  "/api/admin/navigation/[id]/reparent",
+  "/api/admin/navigation/reorder",
+  "/api/admin/navigation/roles",
 ]);
 
 beforeEach(() => {

@@ -8,6 +8,7 @@ export const ROLE_ALLOW: Record<string, string[]> = {
   admin: [
     "admin.users:view", "admin.users:create", "admin.users:update", "admin.users:approve",
     "admin.settings:configure", "admin.audit:view",
+    "admin.navigation:view", "admin.navigation:configure",
   ],
   "regular-developer": [
     "dashboard:view", "calendar.work:view", "calendar.leave:view", "calendar.personal:view",

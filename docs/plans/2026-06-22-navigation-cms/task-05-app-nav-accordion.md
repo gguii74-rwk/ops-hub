@@ -1,3 +1,89 @@
+# task-05 — AppNav 2단 아코디언
+
+**목적:** 사이드바를 평면→2단 아코디언으로 렌더한다(D5). 링크/토글 판정·자동 펼침 로직을 순수 함수 `computeNavRows`로 추출(DOM 없이 단위테스트 — 이 저장소 컴포넌트 테스트 관행), JSX는 얇게 유지. a11y(`aria-expanded`/`aria-controls`, `prefers-reduced-motion`).
+
+## Files
+
+- **Modify:** `src/app/(app)/app-nav.tsx` — `NavItem`에 children; `computeNavRows`/`isActiveHref` export; 아코디언 렌더.
+- **Create (test):** `tests/app/nav/compute-nav-rows.test.ts`(순수).
+
+## Prep
+
+- 스펙 §6(`AppNav` 절), 결정 D5.
+- 엔트리포인트 §Shared Contracts **SC-2**(`NavNode`·href 인코딩 규칙 — 링크/토글은 `href != null`로 판정).
+- 기존 출처: `src/app/(app)/app-nav.tsx`(현재 평면 렌더·`NAV_TONES`), `src/app/(app)/admin/_components/admin-tabs.tsx`(per-item child 컴포넌트로 hook 순서 안정화 패턴), `src/app/(app)/layout.tsx:36`(`<AppNav items={nav}/>` 소비처).
+
+## Deps
+
+task-04(`NavNode.children` + `loadNavigation`이 children·href 인코딩을 내려보냄).
+
+## Cautions
+
+- **권한으로 링크/토글을 판정하지 말 것** — 클라이언트엔 권한 정보가 없다. **`href != null`이면 링크, `null`이면 토글**(SC-2 인코딩 규칙. 서버 `selectVisibleNav`가 이미 자체 권한 실패 부모의 href를 null로 내려보냄).
+- **자동 펼침(D5):** 현재 경로가 자식 href(또는 그 하위)면 그 부모는 펼친다. `expanded = open || activeChild` — **활성 자식이 있는 섹션은 접히지 않는다**(의도: 현재 위치한 섹션 유지). localStorage 펼침 기억은 미포함(YAGNI — D5).
+- **hook 순서 안정화:** 부모 행마다 `useState`/`useId`를 쓰므로 **per-row 자식 컴포넌트로 분리**(admin-tabs `Tab` 패턴). `items.map` 안에서 직접 hook 호출 금지.
+- **layout.tsx는 무수정** — `loadNavigation`이 children 포함 `NavNode[]`를 반환하고 `AppNav`가 그대로 받는다.
+- 3단 렌더 금지(D6) — 자식은 항상 leaf. `row.children`만 그린다.
+
+## Step 1 — 실패 테스트: computeNavRows 순수 로직
+
+`tests/app/nav/compute-nav-rows.test.ts` 생성:
+
+```ts
+import { describe, it, expect } from "vitest";
+import { computeNavRows, isActiveHref } from "@/app/(app)/app-nav";
+
+type NavItem = { key: string; label: string; href: string | null; children: NavItem[] };
+const leaf = (key: string, href: string | null): NavItem => ({ key, label: key, href, children: [] });
+
+describe("isActiveHref", () => {
+  it("정확 일치·하위 경로는 active, null·무관 경로는 아님", () => {
+    expect(isActiveHref("/admin", "/admin")).toBe(true);
+    expect(isActiveHref("/admin", "/admin/navigation")).toBe(true);
+    expect(isActiveHref("/admin", "/dashboard")).toBe(false);
+    expect(isActiveHref(null, "/admin")).toBe(false);
+    expect(isActiveHref("/admin", "/administrators")).toBe(false); // prefix 오탐 방지(슬래시 경계)
+  });
+});
+
+describe("computeNavRows (D5 링크/토글·자동펼침)", () => {
+  const items: NavItem[] = [
+    leaf("dashboard", "/dashboard"),
+    { key: "admin", label: "관리", href: null, children: [leaf("admin-navigation", "/admin/navigation")] }, // 토글 부모
+    { key: "leave", label: "연차", href: "/leave", children: [leaf("leave-status", "/leave/status")] },     // 링크 부모
+  ];
+
+  it("href 있는 노드는 링크, null이면 토글", () => {
+    const rows = computeNavRows(items, "/dashboard");
+    expect(rows.find((r) => r.key === "dashboard")!.isLink).toBe(true);
+    expect(rows.find((r) => r.key === "admin")!.isLink).toBe(false);
+    expect(rows.find((r) => r.key === "leave")!.isLink).toBe(true);
+  });
+
+  it("현재 경로가 자식이면 부모 active + 자동 펼침, 자식 active 표시", () => {
+    const rows = computeNavRows(items, "/admin/navigation");
+    const admin = rows.find((r) => r.key === "admin")!;
+    expect(admin.active).toBe(true);
+    expect(admin.autoExpanded).toBe(true);
+    expect(admin.children.find((c) => c.key === "admin-navigation")!.active).toBe(true);
+  });
+
+  it("무관 경로면 부모 비활성·미펼침", () => {
+    const rows = computeNavRows(items, "/dashboard");
+    const admin = rows.find((r) => r.key === "admin")!;
+    expect(admin.active).toBe(false);
+    expect(admin.autoExpanded).toBe(false);
+  });
+});
+```
+
+실행: `npm test -- compute-nav-rows` → **FAIL**.
+
+## Step 2 — app-nav.tsx 재작성
+
+`src/app/(app)/app-nav.tsx` 전체 교체. `NAV_TONES`/`DEFAULT_TONE`/`NavTone`은 기존 값 보존, 그 아래에 순수 함수와 아코디언 렌더 추가:
+
+```tsx
 "use client";
 
 import Link from "next/link";
@@ -180,3 +266,14 @@ function NavRowView({ row }: { row: NavRow }) {
     </div>
   );
 }
+```
+
+실행: `npm test -- compute-nav-rows` → **PASS**.
+
+## Acceptance Criteria
+
+- `npm test -- compute-nav-rows` → PASS.
+- `npm run typecheck` → 0 errors(`layout.tsx`가 children 포함 `NavNode[]`를 `AppNav`에 전달, 타입 일치).
+- `npm run lint` → 0 errors.
+- `npm run build` → 성공(클라이언트 컴포넌트 컴파일).
+- `git diff src/app/(app)/layout.tsx` → 무변경.

@@ -1,0 +1,572 @@
+# task-11 — 관리 UI: 에디터·미리보기·탭·삭제 확인
+
+**목적:** `/admin/navigation` 관리 화면을 구현한다. 서버 게이트(view), 트리 표시·추가/수정/삭제(cascade 확인)·순서변경·필요권한 선택(공개 명시 — D8)·역할 미리보기(D10)·결과 미리보기 패널(D13)·한계 안내(D15). 페이로드/경고/확인 로직은 순수 헬퍼로 추출해 테스트(이 저장소 컴포넌트 테스트 관행).
+
+## Files
+
+- **Create:** `src/app/(app)/admin/navigation/page.tsx`(서버 게이트 view)
+- **Create:** `src/app/(app)/admin/navigation/_components/navigation-editor.tsx`(클라이언트 에디터 + 순수 헬퍼)
+- **Modify:** `src/app/(app)/admin/_components/admin-tabs.tsx`(`메뉴 관리` 탭)
+- **Create (test):** `tests/app/admin/navigation/payload.test.ts`
+
+## Prep
+
+- 스펙 §7(관리 UI)·결정 D8/D9/D10/D11/D13/D15/D17.
+- 엔트리포인트 §Shared Contracts **SC-3**(권한키)·**SC-4**(`isKnownInternalRoute`)·**SC-6**(`NavigationNodeAdmin`)·**SC-7**(낙관락 — 변경 시 `updatedAt` 동반).
+- 기존 출처: `src/app/(app)/admin/users/new/_components/create-user-form.tsx`(`useMutation`+`toXPayload` 순수 헬퍼+`router` 패턴), `src/app/(app)/admin/_components/admin-tabs.tsx`(탭·`useCan`), `src/app/(app)/admin/users/page.tsx`(서버 게이트), `src/components/ui`(`Card`/`Input`/`Label`/`Button`).
+
+## Deps
+
+task-06(`isKnownInternalRoute`), task-10(API).
+
+## Cautions
+
+- **공개는 명시 선택(D8):** 권한 select 기본은 "권한 선택"(미선택=저장 불가). 공개는 `"공개 — 로그인한 모든 사용자"` 옵션을 **명시 선택**해야 한다. 오타로 공개 흘리기 방지.
+- **`key`는 UI에 입력 항목으로 두지 말 것(D17)** — 서버 생성. 폼에 key 필드 없음.
+- **수정 시 부모 변경은 `/reparent` 전용 경로(P8):** 부모 select는 추가·수정 모두 노출(스펙 §7)하되, **수정 모드에서 부모 변경은 "저장"(PATCH, parentId 생략)이 아니라 별도 "이동" 버튼이 `/reparent`를 호출**한다(낙관락 `updatedAt` 동반, 409 처리). 한 번의 저장에 필드편집+이동을 섞으면 두 요청 사이 `updatedAt`이 어긋나 409가 난다 — 그래서 이동을 분리. 부모 select는 **자기 자신을 옵션에서 제외**(순환 방지, 서버도 거부).
+- **변경 요청에 `updatedAt` 동반(SC-7)** — 수정·삭제·이동은 그 행의 `updatedAt`(ISO)을 body에 넣는다. 빠지면 라우트 400/409.
+- **삭제는 2단계 확인 + 자식 수를 가시 텍스트로(D11/P4):** 첫 클릭은 확인 진입만(즉시 삭제 금지 — edit-leave-modal 패턴). 확인 단계는 `deleteConfirmLabel(node)`("하위 N개 함께 삭제")를 **`title`(툴팁)이 아니라 화면에 보이는 텍스트**로 렌더하고, 최종 삭제 버튼은 그 확인 영역(`role="alertdialog"`) 안에 둔다. 툴팁에만 두면 터치·키보드·더블클릭에서 경고를 못 보고 서브트리를 삭제(데이터 손실). 또한 삭제 요청은 **확인 화면에 보인 자식 ID 집합(`confirmedChildIds`)을 `toDeletePayload`로 동반**한다(P9) — 서버가 현재 DB 자식 집합과 대조해, 렌더 후 다른 관리자가 추가/이동한 자식이 확인 없이 cascade 삭제되는 TOCTOU를 막는다(불일치 시 409 → 새로고침).
+- **한계 안내(D15):** "새 보호영역(새 권한)은 개발자 요청" 문구를 화면에 둔다.
+- **순수 헬퍼만 테스트.** JSX/fetch는 이 저장소 관행상 단위테스트 안 함(헬퍼로 로직 추출).
+- `Button`은 `asChild` 미지원 — 링크 버튼은 쓰지 않는다(여기선 버튼/폼만).
+
+## Step 1 — 실패 테스트: 순수 헬퍼
+
+`tests/app/admin/navigation/payload.test.ts` 생성:
+
+```ts
+import { describe, it, expect } from "vitest";
+import {
+  toCreatePayload, toUpdatePayload, toReparentPayload, toDeletePayload, hrefWarning, deleteConfirmLabel, PUBLIC_OPTION,
+  type NavFormState,
+} from "@/app/(app)/admin/navigation/_components/navigation-editor";
+
+const base: NavFormState = { label: " 메뉴 ", href: "", parentId: "", permissionSelect: "" };
+
+describe("toCreatePayload", () => {
+  it("label trim, 빈 href·parentId·미선택권한 → null, 공개 옵션 → null", () => {
+    expect(toCreatePayload({ ...base, permissionSelect: PUBLIC_OPTION })).toEqual({
+      label: "메뉴", href: null, parentId: null, requiredPermissionId: null,
+    });
+  });
+  it("href·parentId·permissionId 값은 그대로", () => {
+    expect(toCreatePayload({ label: "자식", href: "/admin/x", parentId: "p1", permissionSelect: "perm9" })).toEqual({
+      label: "자식", href: "/admin/x", parentId: "p1", requiredPermissionId: "perm9",
+    });
+  });
+});
+
+describe("toUpdatePayload", () => {
+  it("updatedAt 포함, parentId 없음(이동은 reparent 전용)", () => {
+    const p = toUpdatePayload({ ...base, label: "x", permissionSelect: "perm9" }, "2026-06-22T00:00:00.000Z");
+    expect(p).toEqual({ label: "x", href: null, requiredPermissionId: "perm9", updatedAt: "2026-06-22T00:00:00.000Z" });
+    expect(p).not.toHaveProperty("parentId");
+  });
+});
+
+describe("toReparentPayload(P8 — 이동)", () => {
+  it("빈 부모 → null(대메뉴 승격), 값 있으면 그대로 + updatedAt", () => {
+    expect(toReparentPayload({ ...base, parentId: "" }, "2026-06-22T00:00:00.000Z")).toEqual({ newParentId: null, updatedAt: "2026-06-22T00:00:00.000Z" });
+    expect(toReparentPayload({ ...base, parentId: "p1" }, "2026-06-22T00:00:00.000Z")).toEqual({ newParentId: "p1", updatedAt: "2026-06-22T00:00:00.000Z" });
+  });
+});
+
+describe("toDeletePayload(P9 — 확인 자식 집합)", () => {
+  it("화면에 보인 직속 자식 ID + updatedAt 동반(leaf는 빈 배열)", () => {
+    expect(toDeletePayload({ updatedAt: "2026-06-22T00:00:00.000Z", children: [{ id: "c1" }, { id: "c2" }] }))
+      .toEqual({ updatedAt: "2026-06-22T00:00:00.000Z", confirmedChildIds: ["c1", "c2"] });
+    expect(toDeletePayload({ updatedAt: "2026-06-22T00:00:00.000Z", children: [] }))
+      .toEqual({ updatedAt: "2026-06-22T00:00:00.000Z", confirmedChildIds: [] });
+  });
+});
+
+describe("hrefWarning(소프트 경고 — D7)", () => {
+  it("빈 href·알려진 경로는 경고 없음, 미지 경로는 경고", () => {
+    expect(hrefWarning("")).toBeNull();
+    expect(hrefWarning("/admin/navigation")).toBeNull();
+    expect(hrefWarning("/unknown")).toMatch(/내부 경로/);
+  });
+});
+
+describe("deleteConfirmLabel(D11)", () => {
+  it("자식 수에 따라 cascade 문구", () => {
+    expect(deleteConfirmLabel({ label: "관리", children: [{}, {}] as never[] })).toMatch(/하위 메뉴 2개/);
+    expect(deleteConfirmLabel({ label: "대시보드", children: [] })).not.toMatch(/하위/);
+  });
+});
+```
+
+실행: `npm test -- admin/navigation/payload` → **FAIL**.
+
+## Step 2 — navigation-editor.tsx
+
+`src/app/(app)/admin/navigation/_components/navigation-editor.tsx`:
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useMutation } from "@tanstack/react-query";
+
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { isKnownInternalRoute } from "@/modules/admin/navigation/href";
+
+const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
+
+export interface NavRowDto {
+  id: string;
+  key: string;
+  label: string;
+  href: string | null;
+  parentId: string | null;
+  sortOrder: number;
+  requiredPermissionId: string | null;
+  isActive: boolean;
+  updatedAt: string; // ISO(낙관락 키)
+  children: NavRowDto[];
+}
+export interface PermissionOption {
+  id: string;
+  resource: string;
+  action: string;
+}
+
+// 권한 select의 공개 옵션 토큰(D8 — 명시 선택). 빈 값("")=미선택(저장 불가).
+export const PUBLIC_OPTION = "__public__";
+
+export interface NavFormState {
+  label: string;
+  href: string;             // "" = 그룹 헤더(null)
+  parentId: string;         // "" = 대메뉴(null)
+  permissionSelect: string; // "" 미선택 | PUBLIC_OPTION 공개 | permissionId
+}
+
+function requiredPermissionIdOf(s: NavFormState): string | null {
+  return s.permissionSelect === PUBLIC_OPTION ? null : s.permissionSelect || null;
+}
+
+// ── 순수 헬퍼(테스트 대상) ──
+export function toCreatePayload(s: NavFormState) {
+  return {
+    label: s.label.trim(),
+    href: s.href.trim() || null,
+    parentId: s.parentId || null,
+    requiredPermissionId: requiredPermissionIdOf(s),
+  };
+}
+export function toUpdatePayload(s: NavFormState, updatedAt: string) {
+  return {
+    label: s.label.trim(),
+    href: s.href.trim() || null,
+    requiredPermissionId: requiredPermissionIdOf(s),
+    updatedAt,
+  };
+}
+// 이동(reparent — P8): 수정 시 부모 변경은 /reparent 전용 경로로(PATCH는 parentId 생략). 빈 부모="" → null(대메뉴 승격).
+export function toReparentPayload(s: NavFormState, updatedAt: string) {
+  return { newParentId: s.parentId || null, updatedAt };
+}
+// 삭제(P9 — cascade TOCTOU): 확인 화면에 보인 직속 자식 ID 집합을 함께 보낸다. 서버가 현재 DB 자식 집합과
+// 대조해 불일치(렌더 후 추가/이동된 자식) 시 409 — 확인 안 된 자식의 cascade 오삭제 차단. updatedAt은 낙관락 키.
+export function toDeletePayload(node: { updatedAt: string; children: Array<{ id: string }> }) {
+  return { updatedAt: node.updatedAt, confirmedChildIds: node.children.map((c) => c.id) };
+}
+export function hrefWarning(href: string): string | null {
+  const h = href.trim();
+  if (!h) return null;
+  if (!isKnownInternalRoute(h)) return "알려진 내부 경로가 아닙니다 — 페이지가 아직 없을 수 있어요(저장은 가능).";
+  return null;
+}
+export function deleteConfirmLabel(node: { label: string; children: unknown[] }): string {
+  const n = node.children.length;
+  return n > 0
+    ? `'${node.label}'와(과) 하위 메뉴 ${n}개를 함께 삭제합니다. 계속할까요?`
+    : `'${node.label}'을(를) 삭제합니다. 계속할까요?`;
+}
+
+function permLabel(p: PermissionOption): string {
+  return `${p.resource}:${p.action}`;
+}
+async function jsonOrThrow(res: Response, fallback: string): Promise<void> {
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `${fallback} (${res.status})`);
+}
+
+// ── 컴포넌트 ──
+export function NavigationEditor({
+  tree, permissions, canConfigure,
+}: {
+  tree: NavRowDto[];
+  permissions: PermissionOption[];
+  canConfigure: boolean;
+}) {
+  const router = useRouter();
+  const [form, setForm] = useState<NavFormState | null>(null); // 추가/수정 폼(null=닫힘)
+  const [editingId, setEditingId] = useState<string | null>(null); // null=신규
+  const [editingUpdatedAt, setEditingUpdatedAt] = useState<string | null>(null);
+  const [editingOriginalParentId, setEditingOriginalParentId] = useState<string | null>(null); // 수정 진입 시 원래 부모(이동 변경 감지 — P8)
+  const parents = tree; // 최상위만 부모 후보(2단)
+  const set = <K extends keyof NavFormState>(k: K, v: NavFormState[K]) => setForm((s) => (s ? { ...s, [k]: v } : s));
+
+  const openNew = () => {
+    setEditingId(null);
+    setEditingUpdatedAt(null);
+    setEditingOriginalParentId(null);
+    setForm({ label: "", href: "", parentId: "", permissionSelect: "" });
+  };
+  const openEdit = (n: NavRowDto) => {
+    setEditingId(n.id);
+    setEditingUpdatedAt(n.updatedAt);
+    setEditingOriginalParentId(n.parentId);
+    setForm({
+      label: n.label,
+      href: n.href ?? "",
+      parentId: n.parentId ?? "",
+      permissionSelect: n.requiredPermissionId ?? PUBLIC_OPTION,
+    });
+  };
+  const close = () => setForm(null);
+
+  const save = useMutation({
+    mutationFn: async () => {
+      if (!form) return;
+      if (editingId) {
+        const res = await fetch(`/api/admin/navigation/${editingId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(toUpdatePayload(form, editingUpdatedAt!)),
+        });
+        await jsonOrThrow(res, "수정 실패");
+      } else {
+        const res = await fetch("/api/admin/navigation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(toCreatePayload(form)),
+        });
+        await jsonOrThrow(res, "추가 실패");
+      }
+    },
+    onSuccess: () => { close(); router.refresh(); },
+  });
+
+  const remove = useMutation({
+    mutationFn: async (n: NavRowDto) => {
+      const res = await fetch(`/api/admin/navigation/${n.id}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(toDeletePayload(n)), // P9: 확인한 자식 집합 동반(cascade TOCTOU 차단)
+      });
+      await jsonOrThrow(res, "삭제 실패");
+    },
+    onSuccess: () => router.refresh(),
+  });
+
+  const reorder = useMutation({
+    mutationFn: async (input: { parentId: string | null; orderedItems: Array<{ id: string; updatedAt: string }> }) => {
+      const res = await fetch("/api/admin/navigation/reorder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      await jsonOrThrow(res, "순서 변경 실패");
+    },
+    onSuccess: () => router.refresh(),
+  });
+
+  // 이동(reparent — P8): 수정 시 부모 변경을 /reparent로 적용(낙관락 updatedAt 동반, 409 시 메시지). 성공 시 폼 닫고 갱신.
+  const reparent = useMutation({
+    mutationFn: async () => {
+      if (!form || !editingId) return;
+      const res = await fetch(`/api/admin/navigation/${editingId}/reparent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(toReparentPayload(form, editingUpdatedAt!)),
+      });
+      await jsonOrThrow(res, "이동 실패");
+    },
+    onSuccess: () => { close(); router.refresh(); },
+  });
+
+  // 형제 묶음 내 i↔i+dir 교환 후 reorder. 각 형제의 관측 updatedAt 동반(P6 — 동시 재정렬 lost-update 차단).
+  const move = (siblings: NavRowDto[], parentId: string | null, index: number, dir: -1 | 1) => {
+    const j = index + dir;
+    if (j < 0 || j >= siblings.length) return;
+    const ordered = [...siblings];
+    [ordered[index], ordered[j]] = [ordered[j], ordered[index]];
+    reorder.mutate({ parentId, orderedItems: ordered.map((s) => ({ id: s.id, updatedAt: s.updatedAt })) });
+  };
+
+  const canSave = !!form && form.label.trim().length > 0 && form.permissionSelect !== "" && !save.isPending;
+  const warn = form ? hrefWarning(form.href) : null;
+
+  return (
+    <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
+      <section className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="font-display text-lg font-semibold">메뉴 트리</h2>
+          {canConfigure && <Button size="sm" onClick={openNew} disabled={!!form}>+ 메뉴 추가</Button>}
+        </div>
+
+        {form && (
+          <Card>
+            <CardContent className="grid gap-3">
+              <strong className="text-sm">{editingId ? "메뉴 수정" : "메뉴 추가"}</strong>
+              <div className="grid gap-1.5">
+                <Label htmlFor="nav-label">라벨</Label>
+                <Input id="nav-label" value={form.label} onChange={(e) => set("label", e.target.value)} />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="nav-href">경로(href) — 비우면 그룹 헤더</Label>
+                <Input id="nav-href" value={form.href} placeholder="/example" onChange={(e) => set("href", e.target.value)} />
+                {warn && <p className="text-xs text-amber-600">{warn}</p>}
+              </div>
+              <div className="grid gap-1.5">
+                <Label>부모 메뉴</Label>
+                <div className="flex gap-2">
+                  <select className={selectCls} value={form.parentId} onChange={(e) => set("parentId", e.target.value)}>
+                    <option value="">— 대메뉴(최상위) —</option>
+                    {parents.filter((p) => p.id !== editingId).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                  </select>
+                  {editingId && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={(form.parentId || null) === editingOriginalParentId || reparent.isPending}
+                      onClick={() => reparent.mutate()}
+                    >
+                      {reparent.isPending ? "이동 중…" : "이동"}
+                    </Button>
+                  )}
+                </div>
+                {editingId && (
+                  <p className="text-xs text-muted-foreground">부모 변경은 “이동”으로 즉시 적용됩니다(라벨·경로·권한은 “저장”).</p>
+                )}
+                {reparent.isError && <p className="text-xs text-destructive">{(reparent.error as Error).message}</p>}
+              </div>
+              <div className="grid gap-1.5">
+                <Label>필요 권한</Label>
+                <select className={selectCls} value={form.permissionSelect} onChange={(e) => set("permissionSelect", e.target.value)}>
+                  <option value="">— 권한 선택 —</option>
+                  <option value={PUBLIC_OPTION}>공개 — 로그인한 모든 사용자</option>
+                  {permissions.map((p) => <option key={p.id} value={p.id}>{permLabel(p)}</option>)}
+                </select>
+                <RolePreview permissionId={requiredPermissionIdOf(form)} selected={form.permissionSelect} />
+              </div>
+              {save.isError && <p className="text-sm text-destructive">{(save.error as Error).message}</p>}
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="ghost" onClick={close}>취소</Button>
+                <Button size="sm" disabled={!canSave} onClick={() => save.mutate()}>{save.isPending ? "저장 중…" : "저장"}</Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        <ul className="grid gap-1.5">
+          {parents.map((p, pi) => (
+            <li key={p.id} className="grid gap-1">
+              <NavManageRow
+                node={p} index={pi} siblings={parents} parentId={null}
+                canConfigure={canConfigure} permissions={permissions}
+                onEdit={openEdit} onDelete={(n) => remove.mutate(n)} onMove={move}
+              />
+              {p.children.length > 0 && (
+                <ul className="ml-5 grid gap-1 border-l border-border pl-2">
+                  {p.children.map((c, ci) => (
+                    <li key={c.id}>
+                      <NavManageRow
+                        node={c} index={ci} siblings={p.children} parentId={p.id}
+                        canConfigure={canConfigure} permissions={permissions}
+                        onEdit={openEdit} onDelete={(n) => remove.mutate(n)} onMove={move}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          ))}
+        </ul>
+
+        <p className="text-xs text-muted-foreground">
+          새 보호영역(새 권한)이 필요한 메뉴는 개발자에게 요청하세요 — 권한 카탈로그는 코드에서 관리됩니다.
+        </p>
+      </section>
+
+      <aside className="space-y-2">
+        <h2 className="font-display text-sm font-semibold text-muted-foreground">사이드바 미리보기</h2>
+        <Card>
+          <CardContent className="grid gap-1 py-3 text-sm">
+            {parents.filter((p) => p.isActive).map((p) => (
+              <div key={p.id} className="grid gap-1">
+                <span className={p.href ? "" : "text-muted-foreground"}>{p.label}{p.href ? "" : " (그룹)"}</span>
+                {p.children.filter((c) => c.isActive).length > 0 && (
+                  <div className="ml-3 grid gap-0.5 text-muted-foreground">
+                    {p.children.filter((c) => c.isActive).map((c) => <span key={c.id}>· {c.label}</span>)}
+                  </div>
+                )}
+              </div>
+            ))}
+            <p className="mt-2 text-xs text-muted-foreground">* 권한별 실제 노출은 사용자 권한에 따라 달라집니다(추정).</p>
+          </CardContent>
+        </Card>
+      </aside>
+    </div>
+  );
+}
+
+function NavManageRow({
+  node, index, siblings, parentId, canConfigure, permissions, onEdit, onDelete, onMove,
+}: {
+  node: NavRowDto;
+  index: number;
+  siblings: NavRowDto[];
+  parentId: string | null;
+  canConfigure: boolean;
+  permissions: PermissionOption[];
+  onEdit: (n: NavRowDto) => void;
+  onDelete: (n: NavRowDto) => void;
+  onMove: (siblings: NavRowDto[], parentId: string | null, index: number, dir: -1 | 1) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const permName = node.requiredPermissionId
+    ? permissions.find((p) => p.id === node.requiredPermissionId)
+    : null;
+  const permChip = node.requiredPermissionId ? (permName ? permLabel(permName) : "권한") : "공개";
+
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm">
+        <span className="flex-1 truncate">
+          {node.label}
+          <span className="ml-2 text-xs text-muted-foreground">{node.href ?? "그룹"}</span>
+          {!node.isActive && <span className="ml-2 text-xs text-amber-600">비활성</span>}
+        </span>
+        <span className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">{permChip}</span>
+        {canConfigure && (
+          <span className="flex items-center gap-1">
+            <Button size="sm" variant="ghost" aria-label="위로" disabled={index === 0} onClick={() => onMove(siblings, parentId, index, -1)}>↑</Button>
+            <Button size="sm" variant="ghost" aria-label="아래로" disabled={index === siblings.length - 1} onClick={() => onMove(siblings, parentId, index, 1)}>↓</Button>
+            <Button size="sm" variant="ghost" onClick={() => onEdit(node)}>수정</Button>
+            {!confirming && <Button size="sm" variant="ghost" onClick={() => setConfirming(true)}>삭제</Button>}
+          </span>
+        )}
+      </div>
+      {canConfigure && confirming && (
+        // P4: 자식 수를 title(툴팁)이 아니라 가시 텍스트로 노출 — 터치·키보드·더블클릭에서도
+        // "하위 메뉴 N개" 경고를 반드시 보고 확정하게 한다(데이터 손실 방지). 최종 삭제는 이 확인 영역에서.
+        <div role="alertdialog" aria-label="메뉴 삭제 확인" className="grid gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+          <p className="text-sm text-destructive">{deleteConfirmLabel(node)}</p>
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="ghost" onClick={() => setConfirming(false)}>취소</Button>
+            <Button size="sm" variant="ghost" className="text-destructive" onClick={() => onDelete(node)}>삭제</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 역할 미리보기(D10) — 권한 선택 시 ALLOW 역할 표시(역할 기준 추정).
+function RolePreview({ permissionId, selected }: { permissionId: string | null; selected: string }) {
+  const [roles, setRoles] = useState<Array<{ key: string; name: string }> | null>(null);
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  // 공개·미선택은 미리보기 없음.
+  if (selected === "" || selected === PUBLIC_OPTION) {
+    if (loadedFor !== null) { setRoles(null); setLoadedFor(null); }
+    return <p className="text-xs text-muted-foreground">{selected === PUBLIC_OPTION ? "로그인한 모든 사용자에게 보입니다." : ""}</p>;
+  }
+  if (permissionId && loadedFor !== permissionId) {
+    setLoadedFor(permissionId);
+    // ⚠ P10(R6 — DEFERRED_TO_IMPL): 이 fetch-in-render + 무조건 setRoles는 out-of-order 응답에 취약하다.
+    // impl은 아래 P10 노트대로 useEffect(키 permissionId/selected) + stale-guard(요청 토큰/AbortController)로 교체할 것 — loadedFor 가드만으론 부족.
+    fetch(`/api/admin/navigation/roles?permissionId=${encodeURIComponent(permissionId)}`)
+      .then((r) => (r.ok ? r.json() : { roles: [] }))
+      .then((d) => setRoles(d.roles ?? []))
+      .catch(() => setRoles([]));
+  }
+  return (
+    <p className="text-xs text-muted-foreground">
+      이 권한이 보이는 역할: {roles && roles.length > 0 ? roles.map((r) => r.name).join("·") : roles ? "없음" : "…"} (추정)
+    </p>
+  );
+}
+```
+
+> **P10(DEFERRED_TO_IMPL — 적대검증 R6):** 위 `RolePreview`의 fetch-in-render + 무조건 `setRoles`는 **out-of-order 응답에 취약**하다 — 권한 A 선택 후 빠르게 B 선택 시 느린 A 응답이 마지막에 도착해 B의 역할 미리보기를 덮어쓴다(권한 설정 화면이라 "누가 이 메뉴를 보는가"를 오인시킴). `loadedFor` 가드는 같은 키 재발사만 막을 뿐 stale 응답을 무시하지 못한다(R5까지의 "가드로 충분"은 이 race를 놓친 판단이었음). **구현 시: fetch를 `useEffect`(키 `permissionId`/`selected`)로 옮기고, 키 변경 시 roles를 리셋하며, 요청 토큰 또는 `AbortController`로 stale 응답을 무시/취소한다.** "최신 요청만 적용" 판정을 순수 헬퍼(요청 토큰 비교)로 추출하면 이 저장소 관행대로 단위테스트할 수 있다(아래 AC).
+
+## Step 3 — page.tsx
+
+`src/app/(app)/admin/navigation/page.tsx`:
+
+```tsx
+import { redirect } from "next/navigation";
+import { auth } from "@/lib/auth";
+import { getPermissionSummary } from "@/kernel/access";
+import { listNavigationTree, listPermissionOptions } from "@/modules/admin/navigation/services";
+import type { NavigationNodeAdmin } from "@/modules/admin/navigation/repositories";
+import { NavigationEditor, type NavRowDto } from "./_components/navigation-editor";
+
+function serializeNode(n: NavigationNodeAdmin): NavRowDto {
+  return {
+    id: n.id, key: n.key, label: n.label, href: n.href, parentId: n.parentId,
+    sortOrder: n.sortOrder, requiredPermissionId: n.requiredPermissionId, isActive: n.isActive,
+    updatedAt: n.updatedAt.toISOString(),
+    children: n.children.map(serializeNode),
+  };
+}
+
+export default async function AdminNavigationPage() {
+  const session = await auth();
+  if (!session?.user) redirect("/login");
+  const summary = await getPermissionSummary(session.user.id);
+  const canView = summary.isOwner || summary.keys.includes("admin.navigation:view");
+  if (!canView) redirect("/dashboard");
+  const canConfigure = summary.isOwner || summary.keys.includes("admin.navigation:configure");
+
+  const [tree, permissions] = await Promise.all([listNavigationTree(), listPermissionOptions()]);
+  return (
+    <NavigationEditor
+      tree={tree.map(serializeNode)}
+      permissions={permissions}
+      canConfigure={canConfigure}
+    />
+  );
+}
+```
+
+## Step 4 — admin-tabs.tsx에 탭 추가
+
+`src/app/(app)/admin/_components/admin-tabs.tsx`:
+
+`TABS` 배열에 추가:
+
+```ts
+  { href: "/admin/navigation", label: "메뉴 관리", resource: "admin.navigation", action: "view" },
+```
+
+`TAB_TONES`에 추가:
+
+```ts
+  "/admin/navigation": {
+    dot: "bg-nav-admin",
+    active: "border-nav-admin/40 bg-nav-admin/15 text-fuchsia-800 dark:text-fuchsia-100",
+    hover: "hover:border-nav-admin/30 hover:bg-nav-admin/10",
+  },
+```
+
+(`Tab`의 `useCan(tab.resource, tab.action)`가 권한 없으면 자동 숨김 — 기존 패턴.)
+
+실행: `npm test -- admin/navigation/payload` → **PASS**.
+
+## Acceptance Criteria
+
+- `npm test -- admin/navigation/payload` → 전부 PASS.
+- `npm run typecheck` → 0 errors.
+- `npm run lint` → 0 errors.
+- `npm run build` → 성공.
+- **(P10 — DEFERRED_TO_IMPL 종결 조건) RolePreview out-of-order 가드:** fetch를 `useEffect`(키 `permissionId`/`selected`)로 이전 + 키 변경 시 roles 리셋 + stale 응답 무시(요청 토큰/`AbortController`). **회귀테스트(순수 헬퍼 추출):** 권한 A 요청이 B 요청보다 늦게 resolve돼도 표시 역할이 A로 덮어써지지 않는다(B 유지). 이 테스트 통과가 ledger P10 종결 조건. (헬퍼 추출이 어려우면 최소한 dev 수동검증 "A→B 빠른 전환 후 미리보기가 B 역할 유지"로 갈음.)
+- (수동·dev) `/admin/navigation` 진입: 트리 표시, 추가/수정/삭제·↑/↓ 순서변경·필요권한 select(공개 명시)·역할 미리보기·미리보기 패널·한계 안내 동작. 권한 없는 사용자는 `/dashboard`로 redirect, 사이드바에 `관리 > 메뉴 관리` 노출(권한자만).
+- (수동·dev) **삭제 확인(P4):** "삭제" 클릭 시 자식 있는 부모는 "하위 메뉴 N개를 함께 삭제합니다" 문구가 **화면에 보이는 확인 영역**으로 표시되고, 그 안의 "삭제"를 눌러야 실제 삭제됨(툴팁 아님). 첫 클릭만으로는 삭제되지 않음.
+- (수동·dev) **이동(P8):** 메뉴 수정 시 부모 select에서 다른 부모/대메뉴를 고르고 "이동"을 누르면 `/reparent`가 호출돼 트리에서 위치가 바뀜(자식 보유 메뉴를 중메뉴로 이동 시 서버가 거부). 부모를 안 바꾸면 "이동" 버튼 비활성.
