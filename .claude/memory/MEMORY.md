@@ -9,4 +9,5 @@
 - [Verify current branch before commit](commit-verify-current-branch.md) — 두 노트북 교대로 브랜치가 예고 없이 바뀔 수 있어 커밋/푸시 전 git branch --show-current로 확인
 - [Memory sync key mismatch](memory-sync-key-mismatch.md) — 메모리는 repo `.claude/memory/`에 두고 git 동기화(my-study 패턴), 글로벌 경로는 junction; 집은 clone 후 junction 1회만
 - [Review-loop automation philosophy](review-loop-automation-philosophy.md) — 사람=병목, 자동화 극대화하되 위험군(critical·보안·방향전제)만 사람 결정으로
-- [User-management merge-ready](user-management-merge-ready.md) — feat/user-management 통합리뷰 수렴(미판정 blocking 0)·1002 테스트 통과로 main 머지 준비됨; 배포 follow-up 4종
+- [User-management merged](user-management-merge-ready.md) — feat/user-management → main 머지 **완료**(b99c7d4, 2026-06-22); 배포 follow-up 4종만 미적용
+- [Laptop sync stale artifacts](laptop-sync-stale-artifacts.md) — 노트북 전환 후 typecheck 거짓 실패 시 prisma:generate(stale client)·rm .next(stale build types) 먼저
