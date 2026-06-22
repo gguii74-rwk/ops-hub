@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createNavSchema, updateNavSchema, reorderNavSchema, deleteNavBodySchema } from "@/modules/admin/navigation/validations";
+import { createNavSchema, updateNavSchema, reorderNavSchema, deleteNavBodySchema, updateNavBodySchema, reparentNavSchema, reparentNavBodySchema } from "@/modules/admin/navigation/validations";
 import { HREF_PATTERN, isKnownInternalRoute } from "@/modules/admin/navigation/href";
 
 const hrefOk = (h: string) => HREF_PATTERN.test(h);
@@ -68,5 +68,51 @@ describe("deleteNavBodySchema(P9 — 확인 자식 집합 동반)", () => {
   });
   it("confirmedChildIds 누락 거부(fail-closed — TOCTOU 가드 우회 차단)", () => {
     expect(deleteNavBodySchema.safeParse({ updatedAt: AT }).success).toBe(false);
+  });
+});
+
+describe("SC-7 낙관락 body 스키마", () => {
+  const AT = "2026-06-22T00:00:00.000Z";
+
+  describe("updateNavBodySchema(수정 + updatedAt)", () => {
+    it("updatedAt + label로 성공", () => {
+      expect(updateNavBodySchema.safeParse({ updatedAt: AT, label: "메뉴" }).success).toBe(true);
+    });
+    it("updatedAt 누락 시 실패(낙관락 필수)", () => {
+      expect(updateNavBodySchema.safeParse({ label: "메뉴" }).success).toBe(false);
+    });
+    it("부분 필드(href, requiredPermissionId, isActive) 함께 통과", () => {
+      expect(updateNavBodySchema.safeParse({
+        updatedAt: AT,
+        label: "메뉴",
+        href: "/admin/navigation",
+        requiredPermissionId: "p1",
+        isActive: false
+      }).success).toBe(true);
+    });
+  });
+
+  describe("reparentNavBodySchema(이동 + updatedAt)", () => {
+    it("updatedAt + newParentId(null 허용)로 성공", () => {
+      expect(reparentNavBodySchema.safeParse({ updatedAt: AT, newParentId: null }).success).toBe(true);
+    });
+    it("updatedAt + newParentId(유효한 id)로 성공", () => {
+      expect(reparentNavBodySchema.safeParse({ updatedAt: AT, newParentId: "p1" }).success).toBe(true);
+    });
+    it("updatedAt 누락 시 실패(낙관락 필수)", () => {
+      expect(reparentNavBodySchema.safeParse({ newParentId: null }).success).toBe(false);
+    });
+  });
+
+  describe("reparentNavSchema(이동 스키마 — updatedAt 제외)", () => {
+    it("newParentId(null = 승격)로 성공", () => {
+      expect(reparentNavSchema.safeParse({ newParentId: null }).success).toBe(true);
+    });
+    it("newParentId(유효한 id)로 성공", () => {
+      expect(reparentNavSchema.safeParse({ newParentId: "p1" }).success).toBe(true);
+    });
+    it("newParentId(빈 문자열)은 거부(.min(1))", () => {
+      expect(reparentNavSchema.safeParse({ newParentId: "" }).success).toBe(false);
+    });
   });
 });
