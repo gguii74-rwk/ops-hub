@@ -5,7 +5,7 @@ import type { NavEntry } from "../src/kernel/access/catalog";
 // seedNavigation이 호출하는 클라이언트 표면(구조적 최소). 실 PrismaClient·테스트 mock 둘 다 충족.
 export interface NavWriteClient {
   navigationItem: {
-    findUnique(args: { where: { key: string }; select: { id: true; parentId: true } }): Promise<{ id: string; parentId: string | null } | null>;
+    findUnique(args: { where: { key: string }; select: { id: boolean; parentId: boolean } }): Promise<{ id: string; parentId: string | null } | null>;
     create(args: {
       data: {
         key: string; label: string; href: string; sortOrder: number;
@@ -35,7 +35,7 @@ export async function seedNavigation(
       // depth-3 위반이다(읽기·관리 경로는 2단만 처리). fail-closed로 중단(부분 부팅으로 트리 손상 방지).
       if (entry.children?.length && existing.parentId !== null) {
         throw new Error(
-          `부트스트랩 부모 '${entry.key}'가 더 이상 top-level이 아님(parentId=${existing.parentId}) — 자식 생성 시 depth-2 위반. 중단.`,
+          `부트스트랩 부모 '${entry.key}'가 더 이상 top-level이 아님(parentId=${existing.parentId}) — 자식 생성 시 depth-3 위반(3단 메뉴 생성 방지). 중단.`,
         );
       }
     } else {
