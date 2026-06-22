@@ -33,6 +33,9 @@ vi.mock("@/modules/admin/navigation/services", () => ({
 
 import { GET, POST } from "@/app/api/admin/navigation/route";
 import { PATCH, DELETE } from "@/app/api/admin/navigation/[id]/route";
+import { POST as REPARENT_POST } from "@/app/api/admin/navigation/[id]/reparent/route";
+import { POST as REORDER_POST } from "@/app/api/admin/navigation/reorder/route";
+import { GET as ROLES_GET } from "@/app/api/admin/navigation/roles/route";
 import { mapError } from "@/app/api/admin/navigation/_shared";
 import { NavigationConflictError, NavigationValidationError } from "@/modules/admin/navigation/errors";
 import { ForbiddenError } from "@/kernel/access";
@@ -69,9 +72,11 @@ describe("GET /api/admin/navigation", () => {
     h.getPermissionSummary.mockResolvedValueOnce({ keys: [], isOwner: true, isAdmin: true });
     expect((await GET()).status).toBe(200);
   });
-  it("정상 200", async () => {
-    expect((await GET()).status).toBe(200);
+  it("정상 200 + Cache-Control: no-store", async () => {
+    const res = await GET();
+    expect(res.status).toBe(200);
     expect(h.listNavigationTree).toHaveBeenCalled();
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 });
 
@@ -106,6 +111,11 @@ describe("POST /api/admin/navigation (create)", () => {
 });
 
 describe("PATCH /api/admin/navigation/[id]", () => {
+  it("미인증 401", async () => {
+    h.auth.mockResolvedValueOnce(null);
+    const body = JSON.stringify({ label: "새이름", updatedAt: AT });
+    expect((await PATCH(new Request("http://x", { method: "PATCH", body }), params("n1"))).status).toBe(401);
+  });
   it("empty patch(updatedAt만)는 400", async () => {
     const body = JSON.stringify({ updatedAt: AT });
     const res = await PATCH(new Request("http://x", { method: "PATCH", body }), params("n1"));
@@ -126,6 +136,11 @@ describe("PATCH /api/admin/navigation/[id]", () => {
 });
 
 describe("DELETE /api/admin/navigation/[id]", () => {
+  it("미인증 401", async () => {
+    h.auth.mockResolvedValueOnce(null);
+    const body = JSON.stringify({ updatedAt: AT, confirmedChildIds: ["c1"] });
+    expect((await DELETE(new Request("http://x", { method: "DELETE", body }), params("p1"))).status).toBe(401);
+  });
   it("정상 200 + updatedAt·confirmedChildIds 서비스 위임", async () => {
     const body = JSON.stringify({ updatedAt: AT, confirmedChildIds: ["c1"] });
     const res = await DELETE(new Request("http://x", { method: "DELETE", body }), params("p1"));
@@ -142,5 +157,46 @@ describe("DELETE /api/admin/navigation/[id]", () => {
     const res = await DELETE(new Request("http://x", { method: "DELETE", body }), params("p1"));
     expect(res.status).toBe(400);
     expect(h.deleteNavigationItem).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/admin/navigation/[id]/reparent", () => {
+  const valid = JSON.stringify({ newParentId: null, updatedAt: AT });
+  it("미인증 401", async () => {
+    h.auth.mockResolvedValueOnce(null);
+    expect((await REPARENT_POST(new Request("http://x", { method: "POST", body: valid }), params("a"))).status).toBe(401);
+  });
+});
+
+describe("POST /api/admin/navigation/reorder", () => {
+  const valid = JSON.stringify({ parentId: null, orderedItems: [{ id: "n1", updatedAt: AT }] });
+  it("미인증 401", async () => {
+    h.auth.mockResolvedValueOnce(null);
+    expect((await REORDER_POST(new Request("http://x", { method: "POST", body: valid }))).status).toBe(401);
+  });
+});
+
+describe("GET /api/admin/navigation/roles", () => {
+  it("미인증 401", async () => {
+    h.auth.mockResolvedValueOnce(null);
+    expect((await ROLES_GET(new Request("http://x/api/admin/navigation/roles?permissionId=p1"))).status).toBe(401);
+  });
+  it("permissionId 누락 400(서비스 미호출)", async () => {
+    const res = await ROLES_GET(new Request("http://x/api/admin/navigation/roles"));
+    expect(res.status).toBe(400);
+    expect(h.previewRoles).not.toHaveBeenCalled();
+  });
+  it("view 없으면 403(서비스 미호출)", async () => {
+    h.getPermissionSummary.mockResolvedValueOnce({ keys: [], isOwner: false, isAdmin: false });
+    const res = await ROLES_GET(new Request("http://x/api/admin/navigation/roles?permissionId=p1"));
+    expect(res.status).toBe(403);
+    expect(h.previewRoles).not.toHaveBeenCalled();
+  });
+  it("OWNER 200 + Cache-Control: no-store", async () => {
+    h.getPermissionSummary.mockResolvedValueOnce({ keys: [], isOwner: true, isAdmin: true });
+    const res = await ROLES_GET(new Request("http://x/api/admin/navigation/roles?permissionId=p1"));
+    expect(res.status).toBe(200);
+    expect(h.previewRoles).toHaveBeenCalledWith("p1");
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 });
