@@ -6,6 +6,7 @@ import { ACCESS_ROLE_KEYS, NAV as NAV_CATALOG, RESOURCES } from "../src/kernel/a
 import { EXTRA_PERMISSIONS } from "./seed-permissions";
 import { ROLE_ALLOW } from "./seed-roles";
 import { planGoogleSources } from "./seed-google";
+import { seedNavigation } from "./seed-navigation";
 
 const prisma = new PrismaClient();
 
@@ -23,13 +24,6 @@ const ROLE_NAMES: Record<string, string> = {
 };
 const ACCESS_ROLES = ACCESS_ROLE_KEYS.map((key) => ({ key, name: ROLE_NAMES[key] ?? key }));
 
-// nav도 catalog(NAV)가 단일 출처. 순서(sortOrder)만 여기서 부여.
-const NAV = NAV_CATALOG.map((item, index) => ({ ...item, sortOrder: (index + 1) * 10 }));
-
-function splitKey(key: string): { resource: string; action: string } {
-  const idx = key.lastIndexOf(":");
-  return { resource: key.slice(0, idx), action: key.slice(idx + 1) };
-}
 
 async function main() {
   // 1. Permissions
@@ -108,37 +102,10 @@ async function main() {
     create: { userId: admin.id, roleId: pmRoleId },
   });
 
-  // 5. NavigationItems — 선언된 permission은 반드시 해석돼야 한다. 미해석이면 fail-closed로 중단한다
-  //    (null로 두면 loadNavigation이 공개로 취급 → 오타가 메뉴를 공개로 만드는 함정, E3).
-  for (const item of NAV) {
-    const { resource, action } = splitKey(item.permission);
-    const permission = await prisma.permission.findUnique({
-      where: { resource_action: { resource, action } },
-      select: { id: true },
-    });
-    if (!permission) {
-      throw new Error(
-        `nav '${item.key}'의 권한 '${item.permission}'을 카탈로그에서 찾지 못함 — 중단(메뉴가 공개로 새는 것 방지).`,
-      );
-    }
-    await prisma.navigationItem.upsert({
-      where: { key: item.key },
-      update: {
-        label: item.label,
-        href: item.href,
-        sortOrder: item.sortOrder,
-        requiredPermissionId: permission.id,
-        isActive: true,
-      },
-      create: {
-        key: item.key,
-        label: item.label,
-        href: item.href,
-        sortOrder: item.sortOrder,
-        requiredPermissionId: permission.id,
-      },
-    });
-  }
+  // 5. NavigationItems — create-if-absent 트리 부트스트랩(D3). key 존재 시 skip(관리자 편집 보존),
+  //    미존재 시에만 NAV 값으로 create. 권한 미해석이면 fail-closed throw. 부모→자식 parentId 연결.
+  const resolveNavPermissionId = async (key: string) => permissionIdByKey.get(key) ?? null;
+  await seedNavigation(prisma, NAV_CATALOG, resolveNavPermissionId);
 
   // 6. CalendarSource — 공휴일(Google 공휴일 캘린더) + 설정된 Google 캘린더(best-effort)
   const HOLIDAY_CAL_ID = "ko.south_korea#holiday@group.v.calendar.google.com";
@@ -194,7 +161,7 @@ async function main() {
   // (데모 WorkflowTask/LeaveRequest는 메인 seed에 두지 않는다 — dev 전용 prisma/seed-demo.ts로 분리. step 3b.)
 
   console.log(
-    `seed 완료: permissions=${defs.size}, roles=${ACCESS_ROLES.length}, nav=${NAV.length}, admin=${email}, calendarSources=seeded`,
+    `seed 완료: permissions=${defs.size}, roles=${ACCESS_ROLES.length}, nav=${NAV_CATALOG.length}(트리), admin=${email}, calendarSources=seeded`,
   );
 }
 
