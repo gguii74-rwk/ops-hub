@@ -479,6 +479,8 @@ function RolePreview({ permissionId, selected }: { permissionId: string | null; 
   }
   if (permissionId && loadedFor !== permissionId) {
     setLoadedFor(permissionId);
+    // ⚠ P10(R6 — DEFERRED_TO_IMPL): 이 fetch-in-render + 무조건 setRoles는 out-of-order 응답에 취약하다.
+    // impl은 아래 P10 노트대로 useEffect(키 permissionId/selected) + stale-guard(요청 토큰/AbortController)로 교체할 것 — loadedFor 가드만으론 부족.
     fetch(`/api/admin/navigation/roles?permissionId=${encodeURIComponent(permissionId)}`)
       .then((r) => (r.ok ? r.json() : { roles: [] }))
       .then((d) => setRoles(d.roles ?? []))
@@ -492,7 +494,7 @@ function RolePreview({ permissionId, selected }: { permissionId: string | null; 
 }
 ```
 
-> 참고: `RolePreview`의 fetch-in-render는 `loadedFor` 가드로 1회만 발사된다(렌더 중 setState는 React가 즉시 재조정). 더 엄격히 하려면 `useEffect`로 옮길 수 있으나, 가드로 충분(추가 의존성 없음). JSX/fetch는 단위테스트 대상 아님.
+> **P10(DEFERRED_TO_IMPL — 적대검증 R6):** 위 `RolePreview`의 fetch-in-render + 무조건 `setRoles`는 **out-of-order 응답에 취약**하다 — 권한 A 선택 후 빠르게 B 선택 시 느린 A 응답이 마지막에 도착해 B의 역할 미리보기를 덮어쓴다(권한 설정 화면이라 "누가 이 메뉴를 보는가"를 오인시킴). `loadedFor` 가드는 같은 키 재발사만 막을 뿐 stale 응답을 무시하지 못한다(R5까지의 "가드로 충분"은 이 race를 놓친 판단이었음). **구현 시: fetch를 `useEffect`(키 `permissionId`/`selected`)로 옮기고, 키 변경 시 roles를 리셋하며, 요청 토큰 또는 `AbortController`로 stale 응답을 무시/취소한다.** "최신 요청만 적용" 판정을 순수 헬퍼(요청 토큰 비교)로 추출하면 이 저장소 관행대로 단위테스트할 수 있다(아래 AC).
 
 ## Step 3 — page.tsx
 
@@ -564,6 +566,7 @@ export default async function AdminNavigationPage() {
 - `npm run typecheck` → 0 errors.
 - `npm run lint` → 0 errors.
 - `npm run build` → 성공.
+- **(P10 — DEFERRED_TO_IMPL 종결 조건) RolePreview out-of-order 가드:** fetch를 `useEffect`(키 `permissionId`/`selected`)로 이전 + 키 변경 시 roles 리셋 + stale 응답 무시(요청 토큰/`AbortController`). **회귀테스트(순수 헬퍼 추출):** 권한 A 요청이 B 요청보다 늦게 resolve돼도 표시 역할이 A로 덮어써지지 않는다(B 유지). 이 테스트 통과가 ledger P10 종결 조건. (헬퍼 추출이 어려우면 최소한 dev 수동검증 "A→B 빠른 전환 후 미리보기가 B 역할 유지"로 갈음.)
 - (수동·dev) `/admin/navigation` 진입: 트리 표시, 추가/수정/삭제·↑/↓ 순서변경·필요권한 select(공개 명시)·역할 미리보기·미리보기 패널·한계 안내 동작. 권한 없는 사용자는 `/dashboard`로 redirect, 사이드바에 `관리 > 메뉴 관리` 노출(권한자만).
 - (수동·dev) **삭제 확인(P4):** "삭제" 클릭 시 자식 있는 부모는 "하위 메뉴 N개를 함께 삭제합니다" 문구가 **화면에 보이는 확인 영역**으로 표시되고, 그 안의 "삭제"를 눌러야 실제 삭제됨(툴팁 아님). 첫 클릭만으로는 삭제되지 않음.
 - (수동·dev) **이동(P8):** 메뉴 수정 시 부모 select에서 다른 부모/대메뉴를 고르고 "이동"을 누르면 `/reparent`가 호출돼 트리에서 위치가 바뀜(자식 보유 메뉴를 중메뉴로 이동 시 서버가 거부). 부모를 안 바꾸면 "이동" 버튼 비활성.
