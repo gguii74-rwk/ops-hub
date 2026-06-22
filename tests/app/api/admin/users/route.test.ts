@@ -114,6 +114,13 @@ describe("GET /api/admin/users", () => {
     expect(res.status).toBe(403);
     expect(h.listUsersForView).not.toHaveBeenCalled();
   });
+  it("통합리뷰 finding: OWNER는 keys에 해당 권한이 없어도 통과(권한키가 seed에만 있고 Permission 행 미존재여도 lockout 안 됨)", async () => {
+    // hasPermission(line: isOwner→true)과 동일하게 OWNER 허용은 키 멤버십과 무관(접근제어 SSOT 최상위 규칙).
+    h.getPermissionSummary.mockResolvedValueOnce({ keys: [], isOwner: true });
+    const res = await GET(new Request("http://x/api/admin/users"));
+    expect(res.status).toBe(200);
+    expect(h.listUsersForView).toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/admin/users (직접추가)", () => {

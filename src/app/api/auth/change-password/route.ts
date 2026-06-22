@@ -38,8 +38,10 @@ export async function POST(req: Request) {
 
   // D15 강화: 새 비밀번호가 현재 비밀번호와 같으면 거부한다. 강제변경(must-change) 사용자가 관리자 발급 임시 비번을
   // 양쪽에 그대로 제출해 mustChangePassword만 해제하고 알려진 임시 비번을 영구 비번으로 굳히는 우회를 차단한다.
-  // currentPassword는 위에서 저장 해시와 일치 검증됨 → 평문 동등 비교가 곧 "현재 비번 재사용" 판정.
-  if (newPassword === currentPassword) {
+  // 통합리뷰 finding: 평문 === 비교만으론 bcrypt가 72바이트 이후를 무시해, 72바이트 이후만 다른 새 비번이 통과하나
+  // 해시상 동등(reuse)이 된다. 저장 해시와 bcrypt.compare로 "유효 동등"을 검사해 절단 우회를 차단한다.
+  const sameAsCurrent = await bcrypt.compare(newPassword, user.passwordHash);
+  if (sameAsCurrent) {
     return NextResponse.json({ error: "새 비밀번호는 현재 비밀번호와 달라야 합니다." }, { status: 400 });
   }
 

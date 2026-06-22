@@ -11,6 +11,11 @@ import {
 // 두 read(requirePermission+getPermissionSummary)의 divergence(회수 race)를 없앤다. 키 부재면 ForbiddenError(→403).
 export async function authorize(userId: string, resource: string, action: string): Promise<PermissionSummary> {
   const summary = await getPermissionSummary(userId);
+  // OWNER 허용은 접근제어 SSOT의 최상위 규칙(hasPermission line: `if (ctx.isOwner) return true`와 동일). OWNER의 keys는
+  // Permission 테이블 전체에서 파생되므로, 코드가 참조하는 권한키가 아직 Permission 행으로 없으면(예: 신규 키가 seed에만 있고
+  // migration 미적용) OWNER조차 403이 되어 복구가 막힌다. OWNER는 키 멤버십과 무관하게 통과시켜 seed 의존 lockout을 없앤다.
+  // (must-change OWNER는 getPermissionSummary가 isOwner=false로 fail-closed하므로 여기서도 차단된다.)
+  if (summary.isOwner) return summary;
   if (!summary.keys.includes(`${resource}:${action}`)) {
     throw new ForbiddenError(`${resource}:${action} 권한이 없습니다.`);
   }
