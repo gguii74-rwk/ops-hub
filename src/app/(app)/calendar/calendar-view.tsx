@@ -10,13 +10,13 @@ const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 
 // kind별 칩 색(브랜드 팔레트 semantic 토큰).
 const KIND_CLASS: Record<string, string> = {
-  INTERNAL_LEAVE: "bg-accent",
-  EXTERNAL_VACATION: "bg-accent/70",
-  WORKFLOW_TASK: "bg-secondary",
-  HOLIDAY: "bg-destructive/15 text-destructive",
-  EXTERNAL_EVENT: "bg-muted",
-  PERSONAL_EVENT: "bg-primary/15",
-  TEAM_EVENT: "bg-primary/10",
+  INTERNAL_LEAVE: "bg-emerald-100 text-emerald-950 ring-1 ring-emerald-300/70 dark:bg-emerald-500/20 dark:text-emerald-100 dark:ring-emerald-400/30",
+  EXTERNAL_VACATION: "bg-lime-100 text-lime-950 ring-1 ring-lime-300/70 dark:bg-lime-400/20 dark:text-lime-100 dark:ring-lime-300/30",
+  WORKFLOW_TASK: "bg-orange-100 text-orange-950 ring-1 ring-orange-300/70 dark:bg-orange-500/20 dark:text-orange-100 dark:ring-orange-300/30",
+  HOLIDAY: "bg-rose-100 text-rose-950 ring-1 ring-rose-300/70 dark:bg-rose-500/20 dark:text-rose-100 dark:ring-rose-300/30",
+  EXTERNAL_EVENT: "bg-slate-200 text-slate-800 ring-1 ring-slate-300 dark:bg-slate-700/50 dark:text-slate-100 dark:ring-slate-600",
+  PERSONAL_EVENT: "bg-blue-100 text-blue-950 ring-1 ring-blue-300/70 dark:bg-blue-500/20 dark:text-blue-100 dark:ring-blue-300/30",
+  TEAM_EVENT: "bg-cyan-100 text-cyan-950 ring-1 ring-cyan-300/70 dark:bg-cyan-500/20 dark:text-cyan-100 dark:ring-cyan-300/30",
 };
 
 async function fetchFeed(view: ViewKey, anchorISO: string): Promise<FeedResponse> {
@@ -100,7 +100,7 @@ export function CalendarView({ allowedViews }: { allowedViews: ViewKey[] }) {
         </p>
       )}
 
-      <div className="grid grid-cols-7 overflow-hidden rounded-lg border border-border">
+      <div className="grid grid-cols-7 overflow-hidden rounded-lg border border-border bg-border">
         {WEEKDAYS.map((w) => (
           <div key={w} className="border-b border-border bg-card p-2 text-center text-xs font-medium text-muted-foreground">{w}</div>
         ))}
@@ -111,7 +111,7 @@ export function CalendarView({ allowedViews }: { allowedViews: ViewKey[] }) {
           const cellTone = day.isPast ? "bg-muted-foreground/10" : !day.inMonth ? "bg-muted/40" : "";
           const dimNumber = day.isPast || !day.inMonth; // 지난날·달력 외 → 숫자 흐리게
           return (
-            <div key={day.dateKey} className={`min-h-24 border-b border-r border-border p-1 ${cellTone}`}>
+            <div key={day.dateKey} className={`min-h-24 border-b border-r border-border bg-background p-1 ${cellTone}`}>
               <div className="text-xs">
                 {day.isToday ? (
                   // 오늘: 브랜드 색 동그라미로 강조.
@@ -124,7 +124,7 @@ export function CalendarView({ allowedViews }: { allowedViews: ViewKey[] }) {
               </div>
               <div className={`mt-1 space-y-0.5 ${day.isPast ? "opacity-60" : ""}`}>
                 {day.events.map((e) => (
-                  <div key={e.id} className={`truncate rounded px-1 py-0.5 text-[11px] ${KIND_CLASS[e.kind] ?? "bg-accent"}`} title={e.title}>
+                  <div key={e.id} className={`truncate rounded-md px-1.5 py-0.5 text-[11px] ${KIND_CLASS[e.kind] ?? "bg-accent"}`} title={e.title}>
                     {e.title}
                   </div>
                 ))}

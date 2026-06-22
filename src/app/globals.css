@@ -9,31 +9,29 @@
   --color-card-foreground: oklch(0.145 0 0);
   --color-popover: oklch(1 0 0);
   --color-popover-foreground: oklch(0.145 0 0);
-  --color-primary: oklch(0.205 0 0);
+  --color-primary: #111827;
   --color-primary-foreground: oklch(0.985 0 0);
-  --color-secondary: #F1EEF8;
+  --color-secondary: #EAF2FF;
   --color-secondary-foreground: oklch(0.205 0 0);
-  --color-muted: #F1EEF8;
-  --color-muted-foreground: #6B6878;
-  --color-accent: #ECE3FF;
-  --color-accent-foreground: #5B3D9E;
+  --color-muted: #F1F5F9;
+  --color-muted-foreground: #526071;
+  --color-accent: #E0F2FE;
+  --color-accent-foreground: #0F4C81;
   --color-destructive: oklch(0.577 0.245 27.325);
   --color-destructive-foreground: oklch(0.985 0 0);
-  --color-border: #E9E5F2;
-  --color-input: #E9E5F2;
-  --color-ring: #7C3AED;
-  --color-page: #F6F3FC;
+  --color-border: #D7DEE8;
+  --color-input: #CBD5E1;
+  --color-ring: #2563EB;
+  --color-page: #F5F7FA;
 
   /* 신규 브랜드 토큰 (라이트·다크 공통 hue). 향후 도메인 화면이 소비.
      chart-cyan·point-lime은 매우 밝아 텍스트색으로 쓰지 않고 칩/소프트 배경으로만 쓴다. */
-  --color-brand: #BA8DFF;
-  --color-brand-foreground: #2A1A4A;
-  --color-brand-2: #FBC6F2;
-  --color-brand-2-foreground: #7A2E66;
-  --color-chart-cyan: #24D0FE;
-  --color-point-lime: #EAFF00;
-
-  /* 사이드바 네비게이션 per-섹션 톤 (app-nav.tsx가 소비, 라이트·다크 공통 hue). */
+  --color-brand: #2563EB;
+  --color-brand-foreground: #0B1F4D;
+  --color-brand-2: #F43F5E;
+  --color-brand-2-foreground: #74112A;
+  --color-chart-cyan: #06B6D4;
+  --color-point-lime: #A3E635;
   --color-nav-dashboard: #2563EB;
   --color-nav-calendar: #0891B2;
   --color-nav-workflows: #F97316;
@@ -54,25 +52,25 @@
 
 @layer base {
   [data-theme="dark"] {
-    --color-background: #0C0B11;
-    --color-foreground: #F4F2F8;
-    --color-card: #16141C;
-    --color-card-foreground: #F4F2F8;
-    --color-popover: #16141C;
-    --color-popover-foreground: #F4F2F8;
-    --color-primary: #F4F2F8;
-    --color-primary-foreground: #16141C;
-    --color-secondary: #221F2B;
-    --color-secondary-foreground: #F4F2F8;
-    --color-muted: #221F2B;
-    --color-muted-foreground: #9A95A8;
-    --color-accent: #241E33;
-    --color-accent-foreground: #D9C9FF;
+    --color-background: #0B1220;
+    --color-foreground: #F8FAFC;
+    --color-card: #111827;
+    --color-card-foreground: #F8FAFC;
+    --color-popover: #111827;
+    --color-popover-foreground: #F8FAFC;
+    --color-primary: #F8FAFC;
+    --color-primary-foreground: #111827;
+    --color-secondary: #162238;
+    --color-secondary-foreground: #F8FAFC;
+    --color-muted: #182234;
+    --color-muted-foreground: #A8B3C5;
+    --color-accent: #12365D;
+    --color-accent-foreground: #C7E8FF;
     --color-destructive: #ef4444;
-    --color-destructive-foreground: #F4F2F8;
-    --color-border: #2A2733;
-    --color-input: #2A2733;
-    --color-ring: #C9A8FF;
-    --color-page: #0C0B11;
+    --color-destructive-foreground: #F8FAFC;
+    --color-border: #26364C;
+    --color-input: #334155;
+    --color-ring: #38BDF8;
+    --color-page: #07111F;
   }
 }
