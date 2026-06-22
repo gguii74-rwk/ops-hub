@@ -128,7 +128,7 @@ export interface ReparentInput {
 
 ### SC-8. 동시성 계약 — F-6·F-7 (스펙 §13 DEFERRED high → 본 계획 task-08 AC)
 
-reparent·cascade 삭제 트랜잭션은 `NAV_REPARENT_LOCK_NS` advisory xact lock으로 직렬화한 뒤 트랜잭션 내부에서 권위 재검증한다(leave `lockUserAndAssertNoOverlap` 패턴 동형). DB FK `parentId RESTRICT`(SC-1)가 최종 가드.
+reparent·cascade 삭제·**reorder**(P3) 트랜잭션은 모두 `NAV_REPARENT_LOCK_NS` advisory xact lock으로 직렬화한 뒤 트랜잭션 내부에서 권위 재검증한다(leave `lockUserAndAssertNoOverlap` 패턴 동형). DB FK `parentId RESTRICT`(SC-1)가 최종 가드. 트리 구조를 바꾸는 모든 변경(생성-with-parent·reparent·cascade·reorder)이 같은 락을 공유해야 한다 — 하나라도 빠지면 그 경로가 다른 경로의 검증을 우회한다.
 
 ```ts
 // navigation 도메인 advisory lock 네임스페이스 — 타 사용처(leave 0x6c76)와 충돌 금지.

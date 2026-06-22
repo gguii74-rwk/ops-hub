@@ -27,6 +27,7 @@ task-01(FK RESTRICT 전제), task-02(카탈로그), task-06(타입·에러).
 - `rolesGrantingPermission`은 **역할 ALLOW만**(D10) — override·OWNER 제외. scope별 중복 행은 dedup.
 - **audit는 변경 repo 함수의 트랜잭션 내부에서 기록(P1 — `writeAudit(tx, ...)`)** — 서비스에서 post-commit으로 따로 기록하지 말 것. 변경 커밋 후 audit가 실패하면 라우트가 실패를 반환하는데 행은 이미 존재 → 재시도가 랜덤 key로 중복 생성한다. in-tx면 audit 실패 시 변경도 롤백 → 재시도 안전. (leave `deleteByAdminTx` 패턴 동형.)
 - **reorder 중복 ID 거부(P2):** zod(task-06)에 더해 repo도 무중복+집합 정확 일치를 재검증. 중복이 통과하면 한 행을 두 번 갱신·다른 형제 누락으로 sortOrder가 손상된다.
+- **reorder도 트리락 직렬화(P3):** `reorderSiblings`는 reparent/cascade와 **동일 `lockNavTree`**로 직렬화하고, 각 행을 `updateMany({where:{id, parentId}})` **parent-scoped CAS(count===1)**로 갱신한다. 락 없이 `id`만으로 갱신하면 집합검사~갱신 사이 동시 reparent가 옮긴 행을 새 부모 스코프에서 덮어써 충돌 없이 순서가 손상된다. reparent-away된 행은 count 0 → Conflict.
 
 ## Step 1 — 실패 테스트
 
@@ -124,24 +125,30 @@ describe("updateItem (CAS 낙관락 + audit in-tx)", () => {
   });
 });
 
-describe("reorderSiblings (트랜잭션 + 집합 일치 + audit)", () => {
-  it("형제 집합 일치 시 인덱스별 sortOrder 재부여 + audit", async () => {
+describe("reorderSiblings (락 + 집합 일치 + parent-scoped CAS + audit)", () => {
+  it("형제 집합 일치 시 락 획득·parent-scoped CAS로 sortOrder 재부여 + audit", async () => {
     h.db.navigationItem.findMany.mockResolvedValue([{ id: "a" }, { id: "b" }]);
-    h.db.navigationItem.update.mockResolvedValue({});
+    h.db.navigationItem.updateMany.mockResolvedValue({ count: 1 });
     await reorderSiblings({ parentId: null, orderedIds: ["b", "a"] }, "admin1");
-    expect(h.db.navigationItem.update).toHaveBeenNthCalledWith(1, { where: { id: "b" }, data: { sortOrder: 10 } });
-    expect(h.db.navigationItem.update).toHaveBeenNthCalledWith(2, { where: { id: "a" }, data: { sortOrder: 20 } });
+    expect(h.db.$queryRaw).toHaveBeenCalled(); // lockNavTree(P3)
+    expect(h.db.navigationItem.updateMany).toHaveBeenNthCalledWith(1, { where: { id: "b", parentId: null }, data: { sortOrder: 10 } });
+    expect(h.db.navigationItem.updateMany).toHaveBeenNthCalledWith(2, { where: { id: "a", parentId: null }, data: { sortOrder: 20 } });
     expect(writeAuditMock).toHaveBeenCalledWith(h.db, expect.objectContaining({ action: "reorder" }));
   });
-  it("형제 구성이 바뀌면 NavigationConflictError(부분 갱신 없음)", async () => {
+  it("P3: reparent-away로 parent-scoped CAS count 0이면 Conflict", async () => {
+    h.db.navigationItem.findMany.mockResolvedValue([{ id: "a" }, { id: "b" }]);
+    h.db.navigationItem.updateMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 });
+    await expect(reorderSiblings({ parentId: null, orderedIds: ["b", "a"] }, "admin1")).rejects.toBeInstanceOf(NavigationConflictError);
+  });
+  it("형제 구성이 바뀌면 NavigationConflictError(CAS 전 차단)", async () => {
     h.db.navigationItem.findMany.mockResolvedValue([{ id: "a" }, { id: "b" }]);
     await expect(reorderSiblings({ parentId: null, orderedIds: ["a"] }, "admin1")).rejects.toBeInstanceOf(NavigationConflictError);
-    expect(h.db.navigationItem.update).not.toHaveBeenCalled();
+    expect(h.db.navigationItem.updateMany).not.toHaveBeenCalled();
   });
-  it("중복 ID(P2)면 NavigationConflictError(부분 갱신 없음)", async () => {
+  it("중복 ID(P2)면 NavigationConflictError(CAS 전 차단)", async () => {
     h.db.navigationItem.findMany.mockResolvedValue([{ id: "a" }, { id: "b" }]);
     await expect(reorderSiblings({ parentId: null, orderedIds: ["a", "a"] }, "admin1")).rejects.toBeInstanceOf(NavigationConflictError);
-    expect(h.db.navigationItem.update).not.toHaveBeenCalled();
+    expect(h.db.navigationItem.updateMany).not.toHaveBeenCalled();
   });
 });
 
@@ -315,10 +322,14 @@ export async function updateItem(
   });
 }
 
-// 재정렬 — 무중복 + 형제 집합 정확 일치 검증 후 인덱스별 sortOrder 재부여(트랜잭션). audit in-tx(P1).
+// 재정렬 — reparent/cascade와 동일 트리락으로 직렬화(P3) 후 무중복+형제 집합 정확 일치 검증,
+// 인덱스별 sortOrder를 parent-scoped CAS로 재부여(트랜잭션). audit in-tx(P1).
+// 락 없이 id만으로 갱신하면, 집합검사~갱신 사이 동시 reparent가 옮긴 행의 sortOrder를 새 부모 스코프에서
+// 덮어써 충돌 없이 순서가 손상된다(P3). 락 직렬화 + `where:{id,parentId}` CAS(count===1)로 막는다.
 // 중복 ID는 한 행을 두 번 갱신하고 다른 형제를 누락해 sortOrder를 손상시킨다(P2) → 거부.
 export async function reorderSiblings(input: ReorderNavInput, actorId: string): Promise<void> {
   await prisma.$transaction(async (tx) => {
+    await lockNavTree(tx); // P3: reparent/cascade와 동일 advisory lock으로 직렬화
     const current = await tx.navigationItem.findMany({
       where: { parentId: input.parentId ?? null },
       select: { id: true },
@@ -331,7 +342,14 @@ export async function reorderSiblings(input: ReorderNavInput, actorId: string): 
       throw new NavigationConflictError("형제 메뉴 구성이 변경되었습니다. 새로고침 후 다시 시도하세요.");
     }
     for (let i = 0; i < input.orderedIds.length; i++) {
-      await tx.navigationItem.update({ where: { id: input.orderedIds[i] }, data: { sortOrder: (i + 1) * 10 } });
+      // parent-scoped CAS — 락 안이라도 방어 심층. reparent-away된 행은 이 부모 스코프에 없어 count 0 → 충돌(P3).
+      const res = await tx.navigationItem.updateMany({
+        where: { id: input.orderedIds[i], parentId: input.parentId ?? null },
+        data: { sortOrder: (i + 1) * 10 },
+      });
+      if (res.count !== 1) {
+        throw new NavigationConflictError("형제 메뉴 구성이 변경되었습니다. 새로고침 후 다시 시도하세요.");
+      }
     }
     await writeAudit(tx, {
       actorId, entityType: "NavigationItem", entityId: input.parentId, action: "reorder",
@@ -370,3 +388,4 @@ export async function rolesGrantingPermission(permissionId: string): Promise<Arr
 - `generateNavKey`가 라벨과 무관함을 테스트가 고정(D17).
 - 변경 함수(`createItem`/`updateItem`/`reorderSiblings`)가 `actorId`를 받아 **같은 트랜잭션에서** `writeAudit(tx,...)` 호출(P1). 충돌·검증 실패 시 audit 미기록을 테스트가 고정.
 - `reorderSiblings`가 중복 ID를 `NavigationConflictError`로 거부(P2).
+- `reorderSiblings`가 `lockNavTree` 획득 + parent-scoped CAS(count===1)로 동작, reparent-away 행(count 0)에 Conflict를 반환함을 테스트가 고정(P3).
