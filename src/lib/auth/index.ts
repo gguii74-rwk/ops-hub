@@ -22,6 +22,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         password: { label: "비밀번호", type: "password" },
       },
       async authorize(raw) {
+        // 자격검증 시작 시각 — 해시 읽기/ bcrypt 前에 찍는다(아래 token.iatMs 기준). 검증 도중 커밋된 비번변경이
+        // 이 시각보다 뒤면 passwordChangedAt > loginAtMs로 이 로그인을 무효화한다(발급시각으로 찍을 때 생기는 race 차단).
+        const loginAtMs = Date.now();
         const parsed = credentialsSchema.safeParse(raw);
         if (!parsed.success) return null;
         const { email, password } = parsed.data;
@@ -47,6 +50,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           jobFunction: user.jobFunction,
           mustChangePassword: user.mustChangePassword,
           status: user.status,
+          loginAtMs, // jwt 콜백이 token.iatMs로 사용(자격검증 시작 시각 = 세션 무효화 race 차단 기준)
         };
       },
     }),

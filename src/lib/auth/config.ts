@@ -27,9 +27,10 @@ export const authConfig: NextAuthConfig = {
         token.jobFunction = user.jobFunction;
         token.mustChange = user.mustChangePassword;
         token.status = user.status;
-        // sign-in 시점에만 ms 발급시각 기록(매 요청 refresh가 아님 — user는 sign-in에만 존재). 세션 무효화 판정이
-        // 초 단위 표준 iat 대신 이걸 써, 같은 초 내 강제 비번변경 직후 재로그인이 잘못 무효화되는 lockout을 막는다.
-        token.iatMs = Date.now();
+        // sign-in 시점에만 기록(매 요청 refresh가 아님 — user는 sign-in에만 존재). 세션 무효화 판정이 초 단위 표준 iat 대신
+        // 이 ms 값을 써 ① 같은 초 재로그인 lockout과 ② 자격검증 도중 비번변경을 추월하는 race를 막는다. authorize가 해시 읽기 前에
+        // 찍은 loginAtMs(자격검증 시작 시각)를 쓴다 — 발급(bcrypt 이후) 시각이면 검증 도중 커밋된 변경이 과거가 돼 racy 토큰이 산다.
+        token.iatMs = user.loginAtMs ?? Date.now();
       }
       return token;
     },

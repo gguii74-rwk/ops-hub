@@ -26,6 +26,10 @@ declare module "next-auth" {
     jobFunction: JobFunction;
     mustChangePassword: boolean; // 신규 — authorize가 반환(아래 step 6)
     status: string;             // 신규 — authorize가 반환(로그인 시점 status; 세션 재검증은 DB가 권위)
+    // 자격검증 시작 시각(ms). authorize가 비번 해시를 읽기 전에 찍어 jwt 콜백이 token.iatMs로 쓴다.
+    // 토큰 발급(bcrypt 이후) 시각으로 찍으면, 검증 도중 커밋된 비번변경이 iatMs보다 과거가 돼 racy 토큰이 살아남는다(통합리뷰 finding).
+    // 시작 시각으로 찍으면 그 이후의 비번변경(passwordChangedAt > 시작시각)이 이 로그인을 정확히 무효화한다.
+    loginAtMs?: number;
   }
 }
 
