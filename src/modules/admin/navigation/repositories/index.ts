@@ -1,6 +1,6 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { writeAudit } from "@/kernel/audit";
 import { NavigationConflictError, NavigationValidationError } from "../errors";
@@ -179,4 +179,94 @@ export async function rolesGrantingPermission(permissionId: string): Promise<Arr
   const byKey = new Map<string, { key: string; name: string }>();
   for (const r of rows) byKey.set(r.role.key, r.role);
   return [...byKey.values()];
+}
+
+// Prisma FK 제약 위반(P2003) 식별 — cascade 부모 삭제가 늦은 자식 때문에 거부될 때(F-4).
+function isForeignKeyViolation(e: unknown): boolean {
+  return e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2003";
+}
+
+// cascade 삭제(D11/F-6). 확인 시점 captured 자식을 (id, parentId, updatedAt) CAS로만 삭제하고
+// 영향 row 합계가 캡처 수와 일치해야 한다(reparent-away/수정된 자식 오삭제 방지 → 불일치면 롤백).
+// 이후 부모 CAS 삭제. count 체크 후 늦게 추가/이동된 자식이 있으면 parentId FK RESTRICT가
+// 부모 삭제를 거부(P2003) → Conflict로 변환·롤백(F-4). leaf는 children=[]로 부모만 삭제.
+export async function cascadeDelete(input: {
+  parentId: string;
+  parentUpdatedAt: Date;
+  children: Array<{ id: string; updatedAt: Date }>;
+}, actorId: string): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await lockNavTree(tx);
+    let affected = 0;
+    for (const child of input.children) {
+      const res = await tx.navigationItem.deleteMany({
+        where: { id: child.id, parentId: input.parentId, updatedAt: child.updatedAt },
+      });
+      affected += res.count;
+    }
+    if (affected !== input.children.length) {
+      throw new NavigationConflictError("하위 메뉴 구성이 변경되었습니다. 새로고침 후 다시 시도하세요.");
+    }
+    try {
+      const parentRes = await tx.navigationItem.deleteMany({
+        where: { id: input.parentId, updatedAt: input.parentUpdatedAt },
+      });
+      if (parentRes.count === 0) throw new NavigationConflictError();
+    } catch (e) {
+      if (isForeignKeyViolation(e)) {
+        throw new NavigationConflictError("다른 사용자가 하위 메뉴를 추가했습니다. 새로고침 후 다시 시도하세요.");
+      }
+      throw e;
+    }
+    // audit in-tx(P1) — 삭제 성공 후 같은 트랜잭션에서 기록(실패 시 삭제 롤백).
+    await writeAudit(tx, {
+      actorId, entityType: "NavigationItem", entityId: input.parentId, action: "delete",
+      metadata: { childCount: input.children.length },
+    });
+  });
+}
+
+// reparent(D6/D12/F-7). advisory lock 직렬화 후 트리 불변식 재검증:
+// ① 대상 부모 top-level ② 이동 노드 무자식(중메뉴화=depth3 차단) ③ 자기참조 아님. CAS로 이동.
+export async function reparentItem(input: {
+  id: string;
+  newParentId: string | null;
+  expectedUpdatedAt: Date;
+}, actorId: string): Promise<void> {
+  if (input.newParentId === input.id) {
+    throw new NavigationValidationError("자기 자신을 부모로 지정할 수 없습니다.");
+  }
+  await prisma.$transaction(async (tx) => {
+    await lockNavTree(tx);
+    const node = await tx.navigationItem.findUnique({
+      where: { id: input.id },
+      select: { updatedAt: true, parentId: true },
+    });
+    if (!node) throw new NavigationConflictError("메뉴를 찾을 수 없습니다.");
+    if (node.updatedAt.getTime() !== input.expectedUpdatedAt.getTime()) throw new NavigationConflictError();
+
+    if (input.newParentId !== null) {
+      await assertParentTopLevel(tx, input.newParentId);     // ② depth-2(F-7)
+      const childCount = await tx.navigationItem.count({ where: { parentId: input.id } });
+      if (childCount > 0) {
+        throw new NavigationValidationError("하위 메뉴가 있는 메뉴는 중메뉴로 옮길 수 없습니다(2단까지).");
+      }
+    }
+
+    const last = await tx.navigationItem.findFirst({
+      where: { parentId: input.newParentId },
+      orderBy: { sortOrder: "desc" },
+      select: { sortOrder: true },
+    });
+    const updated = await tx.navigationItem.updateMany({
+      where: { id: input.id, updatedAt: input.expectedUpdatedAt },
+      data: { parentId: input.newParentId, sortOrder: (last?.sortOrder ?? 0) + 10 },
+    });
+    if (updated.count === 0) throw new NavigationConflictError();
+    // audit in-tx(P1).
+    await writeAudit(tx, {
+      actorId, entityType: "NavigationItem", entityId: input.id, action: "reparent",
+      metadata: { newParentId: input.newParentId },
+    });
+  });
 }
