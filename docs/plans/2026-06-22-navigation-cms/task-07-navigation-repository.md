@@ -22,7 +22,7 @@ task-01(FK RESTRICT 전제), task-02(카탈로그), task-06(타입·에러).
 
 - **`key`는 서버 생성·불변(D17)** — `generateNavKey()`만 사용. **라벨에서 파생 금지**(한글/중복 라벨 충돌 방지). update 경로는 key를 절대 건드리지 않는다.
 - **CAS는 클라가 본 `updatedAt`으로**(SC-7) — 서버 재로드값 아님. `updateMany({where:{id, updatedAt}})` + `count===0` → `NavigationConflictError`.
-- **깊이 2단(D6):** 자식 아래 자식 금지. `assertParentTopLevel`은 부모의 `parentId == null`을 강제. child-create는 `lockNavTree` 안에서 검증(task-08 reparent와 동일 락으로 직렬화 — 동시 reparent가 부모를 자식으로 만드는 레이스 차단).
+- **깊이 2단(D6):** 자식 아래 자식 금지. `assertParentTopLevel`은 부모의 `parentId == null`을 강제. **모든 `createItem`이 `lockNavTree`를 잡는다(P5 — top-level 포함)** — child-create의 깊이 검증을 동시 reparent와 직렬화하고, top-level 동시 생성/재정렬의 sortOrder 경쟁도 막는다.
 - **cascade 삭제·reparent는 본 태스크에 두지 말 것** — task-08(F-6/F-7 전용 동시성 코어). 본 태스크는 헬퍼만 제공.
 - `rolesGrantingPermission`은 **역할 ALLOW만**(D10) — override·OWNER 제외. scope별 중복 행은 dedup.
 - **audit는 변경 repo 함수의 트랜잭션 내부에서 기록(P1 — `writeAudit(tx, ...)`)** — 서비스에서 post-commit으로 따로 기록하지 말 것. 변경 커밋 후 audit가 실패하면 라우트가 실패를 반환하는데 행은 이미 존재 → 재시도가 랜덤 key로 중복 생성한다. in-tx면 audit 실패 시 변경도 롤백 → 재시도 안전. (leave `deleteByAdminTx` 패턴 동형.)
@@ -71,11 +71,11 @@ describe("generateNavKey (D17)", () => {
 });
 
 describe("createItem", () => {
-  it("대메뉴(parentId null): 락 미사용, 형제 말미 sortOrder, 서버 생성 key, audit in-tx", async () => {
+  it("대메뉴(parentId null): 트리락 획득(P5), 형제 말미 sortOrder, 서버 생성 key, audit in-tx", async () => {
     h.db.navigationItem.findFirst.mockResolvedValue({ sortOrder: 20 });
     h.db.navigationItem.create.mockResolvedValue({ id: "n1" });
     await createItem({ label: "메뉴", href: "/x", parentId: null, requiredPermissionId: null }, "admin1");
-    expect(h.db.$queryRaw).not.toHaveBeenCalled(); // 대메뉴는 트리락 불필요
+    expect(h.db.$queryRaw).toHaveBeenCalled(); // P5: top-level 생성도 트리락으로 sortOrder 경쟁 차단
     const data = h.db.navigationItem.create.mock.calls[0][0].data;
     expect(data.sortOrder).toBe(30);
     expect(data.parentId).toBe(null);
@@ -268,12 +268,13 @@ export async function getNodeForDelete(
   return { children: node.children };
 }
 
-// 생성 — 서버 opaque key + 형제 말미 sortOrder. parentId 있으면 락+깊이검증(D6).
-// audit는 같은 트랜잭션 내(P1) — 실패 시 create도 롤백 → 재시도 안전(랜덤 key 중복 생성 방지).
+// 생성 — 서버 opaque key + 형제 말미 sortOrder. 모든 생성이 트리락(P5) — top-level 포함.
+// 락 없이 형제 sortOrder를 읽고 +10하면 동시 top-level 생성/재정렬이 stale로 sortOrder를 중복시킨다.
+// parentId 있으면 깊이검증(D6)도 락 안에서. audit는 같은 트랜잭션 내(P1) — 실패 시 create 롤백.
 export async function createItem(input: CreateNavInput, actorId: string): Promise<{ id: string }> {
   return prisma.$transaction(async (tx) => {
+    await lockNavTree(tx); // P5: top-level 포함 모든 생성을 reorder/reparent와 동일 락으로 직렬화
     if (input.parentId) {
-      await lockNavTree(tx);
       await assertParentTopLevel(tx, input.parentId);
     }
     const last = await tx.navigationItem.findFirst({
@@ -389,3 +390,4 @@ export async function rolesGrantingPermission(permissionId: string): Promise<Arr
 - 변경 함수(`createItem`/`updateItem`/`reorderSiblings`)가 `actorId`를 받아 **같은 트랜잭션에서** `writeAudit(tx,...)` 호출(P1). 충돌·검증 실패 시 audit 미기록을 테스트가 고정.
 - `reorderSiblings`가 중복 ID를 `NavigationConflictError`로 거부(P2).
 - `reorderSiblings`가 `lockNavTree` 획득 + parent-scoped CAS(count===1)로 동작, reparent-away 행(count 0)에 Conflict를 반환함을 테스트가 고정(P3).
+- `createItem`이 **top-level 포함 항상** `lockNavTree`를 획득함을 테스트가 고정(P5 — sortOrder 경쟁 차단). 트리 변경 4경로(create/reparent/cascade/reorder)가 모두 같은 락 공유.

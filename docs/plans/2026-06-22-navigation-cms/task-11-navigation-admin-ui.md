@@ -24,7 +24,7 @@ task-06(`isKnownInternalRoute`), task-10(API).
 - **공개는 명시 선택(D8):** 권한 select 기본은 "권한 선택"(미선택=저장 불가). 공개는 `"공개 — 로그인한 모든 사용자"` 옵션을 **명시 선택**해야 한다. 오타로 공개 흘리기 방지.
 - **`key`는 UI에 입력 항목으로 두지 말 것(D17)** — 서버 생성. 폼에 key 필드 없음.
 - **변경 요청에 `updatedAt` 동반(SC-7)** — 수정·삭제·이동은 그 행의 `updatedAt`(ISO)을 body에 넣는다. 빠지면 라우트 400/409.
-- **삭제는 2단계 확인 + 자식 수 표기(D11):** 첫 클릭은 확인 진입만(즉시 삭제 금지 — edit-leave-modal 패턴). cascade는 "하위 N개 함께 삭제" 문구.
+- **삭제는 2단계 확인 + 자식 수를 가시 텍스트로(D11/P4):** 첫 클릭은 확인 진입만(즉시 삭제 금지 — edit-leave-modal 패턴). 확인 단계는 `deleteConfirmLabel(node)`("하위 N개 함께 삭제")를 **`title`(툴팁)이 아니라 화면에 보이는 텍스트**로 렌더하고, 최종 삭제 버튼은 그 확인 영역(`role="alertdialog"`) 안에 둔다. 툴팁에만 두면 터치·키보드·더블클릭에서 경고를 못 보고 서브트리를 삭제(데이터 손실).
 - **한계 안내(D15):** "새 보호영역(새 권한)은 개발자 요청" 문구를 화면에 둔다.
 - **순수 헬퍼만 테스트.** JSX/fetch는 이 저장소 관행상 단위테스트 안 함(헬퍼로 로직 추출).
 - `Button`은 `asChild` 미지원 — 링크 버튼은 쓰지 않는다(여기선 버튼/폼만).
@@ -379,26 +379,33 @@ function NavManageRow({
   const permChip = node.requiredPermissionId ? (permName ? permLabel(permName) : "권한") : "공개";
 
   return (
-    <div className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm">
-      <span className="flex-1 truncate">
-        {node.label}
-        <span className="ml-2 text-xs text-muted-foreground">{node.href ?? "그룹"}</span>
-        {!node.isActive && <span className="ml-2 text-xs text-amber-600">비활성</span>}
-      </span>
-      <span className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">{permChip}</span>
-      {canConfigure && (
-        <span className="flex items-center gap-1">
-          <Button size="sm" variant="ghost" aria-label="위로" disabled={index === 0} onClick={() => onMove(siblings, parentId, index, -1)}>↑</Button>
-          <Button size="sm" variant="ghost" aria-label="아래로" disabled={index === siblings.length - 1} onClick={() => onMove(siblings, parentId, index, 1)}>↓</Button>
-          <Button size="sm" variant="ghost" onClick={() => onEdit(node)}>수정</Button>
-          {confirming ? (
-            <Button size="sm" variant="ghost" className="text-destructive" onClick={() => onDelete(node)} title={deleteConfirmLabel(node)}>
-              삭제 확인
-            </Button>
-          ) : (
-            <Button size="sm" variant="ghost" onClick={() => setConfirming(true)}>삭제</Button>
-          )}
+    <div className="grid gap-2">
+      <div className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm">
+        <span className="flex-1 truncate">
+          {node.label}
+          <span className="ml-2 text-xs text-muted-foreground">{node.href ?? "그룹"}</span>
+          {!node.isActive && <span className="ml-2 text-xs text-amber-600">비활성</span>}
         </span>
+        <span className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">{permChip}</span>
+        {canConfigure && (
+          <span className="flex items-center gap-1">
+            <Button size="sm" variant="ghost" aria-label="위로" disabled={index === 0} onClick={() => onMove(siblings, parentId, index, -1)}>↑</Button>
+            <Button size="sm" variant="ghost" aria-label="아래로" disabled={index === siblings.length - 1} onClick={() => onMove(siblings, parentId, index, 1)}>↓</Button>
+            <Button size="sm" variant="ghost" onClick={() => onEdit(node)}>수정</Button>
+            {!confirming && <Button size="sm" variant="ghost" onClick={() => setConfirming(true)}>삭제</Button>}
+          </span>
+        )}
+      </div>
+      {canConfigure && confirming && (
+        // P4: 자식 수를 title(툴팁)이 아니라 가시 텍스트로 노출 — 터치·키보드·더블클릭에서도
+        // "하위 메뉴 N개" 경고를 반드시 보고 확정하게 한다(데이터 손실 방지). 최종 삭제는 이 확인 영역에서.
+        <div role="alertdialog" aria-label="메뉴 삭제 확인" className="grid gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+          <p className="text-sm text-destructive">{deleteConfirmLabel(node)}</p>
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="ghost" onClick={() => setConfirming(false)}>취소</Button>
+            <Button size="sm" variant="ghost" className="text-destructive" onClick={() => onDelete(node)}>삭제</Button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -500,4 +507,5 @@ export default async function AdminNavigationPage() {
 - `npm run typecheck` → 0 errors.
 - `npm run lint` → 0 errors.
 - `npm run build` → 성공.
-- (수동·dev) `/admin/navigation` 진입: 트리 표시, 추가/수정/삭제(자식 있는 부모 "하위 N개" 확인)·↑/↓ 순서변경·필요권한 select(공개 명시)·역할 미리보기·미리보기 패널·한계 안내 동작. 권한 없는 사용자는 `/dashboard`로 redirect, 사이드바에 `관리 > 메뉴 관리` 노출(권한자만).
+- (수동·dev) `/admin/navigation` 진입: 트리 표시, 추가/수정/삭제·↑/↓ 순서변경·필요권한 select(공개 명시)·역할 미리보기·미리보기 패널·한계 안내 동작. 권한 없는 사용자는 `/dashboard`로 redirect, 사이드바에 `관리 > 메뉴 관리` 노출(권한자만).
+- (수동·dev) **삭제 확인(P4):** "삭제" 클릭 시 자식 있는 부모는 "하위 메뉴 N개를 함께 삭제합니다" 문구가 **화면에 보이는 확인 영역**으로 표시되고, 그 안의 "삭제"를 눌러야 실제 삭제됨(툴팁 아님). 첫 클릭만으로는 삭제되지 않음.
