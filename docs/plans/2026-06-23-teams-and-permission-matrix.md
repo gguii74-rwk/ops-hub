@@ -159,9 +159,10 @@ rg -n "\bdepartment\b" src tests prisma --glob '!prisma/migrations/**'
 
 **spec phase(F1~F9)** — 모두 spec에서 FIXED/ACCEPTED. plan AC로 연결: **F8**(task-07 게이트), **F9**(task-05 무소속 team-scope fail-closed 테스트), **F3**(task-03 교차팀 lead 거부 테스트), **F4**(task-06 비-empty RolePermission 업그레이드 마이그레이션 테스트), **F2/F5**(task-02·06 보안 negative: team-scope만 가진 사용자 → 메뉴 노출되나 unscoped `requirePermission` 거부; 비-scopeable resource team/own 비활성), **PD3**(task-05 `getRequest` 단건 상세 target-aware — any-scope summary 과허가 차단).
 
-**plan phase(R1, 2026-06-23)** — codex 적대검증 R1에서 3건 FIXED:
-- **F-A**(high) — any-scope summary가 비-scopeable resource의 team/own override를 노출(서버 페이지가 summary 키로 가드 후 직접 데이터 읽기). → 엔진(`getEffectiveScope`/`getPermissionSummary`)이 `allowedScopes(resource)`로 clamp(task-02 + 보안 negative). PD3·PD2 갱신.
-- **F-B**(high) — 승인 target authz가 상태변경 트랜잭션 밖 → 팀 재배정 TOCTOU. → `approveTx`/`rejectRequest`가 신청자 행을 `FOR UPDATE` 잠그고 트랜잭션 내부에서 재점검(task-05 + 원자 회귀 테스트).
-- **F-C**(medium) — F8 게이트가 자체 테스트·이관 헬퍼와 충돌(영원히 실패)·prisma 스캔 누락. → 명시 ALLOWLIST(마이그레이션 아티팩트) + 스캔 범위를 계약과 일치 + 로직 export해 자체 테스트가 실제 동작 검증(task-07).
+**plan phase(2026-06-23, codex 적대검증)** — 미판정 blocking 0으로 종료. FIXED:
+- **F-A**(high, R1) — any-scope summary가 비-scopeable resource의 team/own override를 노출(서버 페이지가 summary 키로 가드 후 직접 데이터 읽기). → 엔진(`getEffectiveScope`/`getPermissionSummary`)이 `allowedScopes(resource)`로 clamp(task-02 + 보안 negative). PD3·PD2 갱신. **R2 부재 → 확정.**
+- **F-C**(medium, R1) — F8 게이트가 자체 테스트·이관 헬퍼와 충돌(영원히 실패)·prisma 스캔 누락. → 명시 ALLOWLIST(마이그레이션 아티팩트) + 스캔 범위 계약 일치 + 로직 export해 자체 테스트가 실제 동작 검증(task-07). **R2 부재 → 확정.**
+- **F-B→F-D**(high, R1→R2) — 승인 target authz가 상태변경 트랜잭션 밖 → 팀 재배정 TOCTOU. R1은 applicant만 잠금했으나 R2가 **actor 팀 stale** 지적. → `approveTx`/`rejectRequest`가 **actor·applicant 두 행을 id 순서로 `FOR UPDATE` 잠그고 현재 teamId 비교**(precomputed teamId 폐기, task-05 + actor·applicant 재배정 회귀 테스트).
+- **F-E**(high, R2) — 팀장 지정의 후보 검증(plain read)과 leadUserId 쓰기 사이 동시 멤버 이동 → 교차팀 lead(F3 누수 race 재현). → `updateTeam`이 후보 user 행을 `FOR UPDATE` 잠근 뒤 검증; task-04 teamId UPDATE+reconcile(같은 tx)과 직렬화(task-03 + 잠금-우선 순서 테스트).
 
-plan 완료 후 `review-loop --phase plan --base main`(재검).
+plan-phase 완료. impl은 새 세션에서 `superpowers:subagent-driven-development`로 task-01부터.

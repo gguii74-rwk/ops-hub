@@ -157,6 +157,10 @@ export async function updateTeam(
       if (patch.leadUserId === null) {
         data.leadUserId = null;
       } else {
+        // 후보 user 행을 잠가(FOR UPDATE) 동시 멤버십 이동(task-04 user-edit teamId 변경·reconcileTeamLeadTx)과 직렬화한다(F-E).
+        // 잠금 없이 plain read로 검증하면, 검증 후 leadUserId 쓰기 전에 후보가 다른 팀으로 이동해 교차팀 lead가 남고
+        // 알림 수신자(D12④)가 타 팀에 샌다(F3 race 재현). user-edit의 teamId UPDATE도 같은 행을 잠그므로 직렬화된다.
+        await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${patch.leadUserId} FOR UPDATE`;
         const cand = await tx.user.findUnique({ where: { id: patch.leadUserId }, select: { teamId: true, status: true } });
         if (!cand || cand.teamId !== id || cand.status !== "ACTIVE") {
           throw new TeamInvariantError("팀장은 해당 팀의 활성 소속원만 지정할 수 있습니다.");
@@ -405,6 +409,7 @@ const h = vi.hoisted(() => {
     team: { findUnique: vi.fn(), updateMany: vi.fn() },
     user: { findUnique: vi.fn() },
     auditLog: { create: vi.fn() },
+    $queryRaw: vi.fn(),               // 후보 user 행 FOR UPDATE 잠금(F-E)
   };
   return { tx, db: { $transaction: vi.fn(async (fn: (t: typeof tx) => unknown) => fn(tx)) } };
 });
@@ -419,13 +424,24 @@ beforeEach(() => {
   h.tx.team.findUnique.mockResolvedValue({ name: "A", active: true, leadUserId: null, updatedAt: NOW });
   h.tx.team.updateMany.mockResolvedValue({ count: 1 });
   h.tx.auditLog.create.mockResolvedValue({});
+  h.tx.$queryRaw.mockResolvedValue([]); // FOR UPDATE 잠금(반환값 미사용)
 });
 
-describe("팀장 불변식(F3)", () => {
+describe("팀장 불변식(F3·F-E)", () => {
   it("타 팀 사용자를 lead로 지정하면 거부", async () => {
     h.tx.user.findUnique.mockResolvedValue({ teamId: "teamB", status: "ACTIVE" });
     await expect(updateTeam("teamA", { leadUserId: "u1" }, NOW, "owner")).rejects.toThrow(/팀장은/);
     expect(h.tx.team.updateMany).not.toHaveBeenCalled();
+  });
+  it("F-E: 후보 검증 전에 후보 user 행을 FOR UPDATE 잠근다(동시 멤버 이동 직렬화)", async () => {
+    const calls: string[] = [];
+    h.tx.$queryRaw.mockImplementation((q: { raw?: string[] } | TemplateStringsArray) => {
+      calls.push("lock"); // $queryRaw 태그드 호출 — FOR UPDATE
+      return Promise.resolve([]);
+    });
+    h.tx.user.findUnique.mockImplementation(() => { calls.push("read"); return Promise.resolve({ teamId: "teamA", status: "ACTIVE" }); });
+    await updateTeam("teamA", { leadUserId: "u1" }, NOW, "owner");
+    expect(calls).toEqual(["lock", "read"]); // 잠금이 검증 read보다 먼저
   });
   it("비active 사용자를 lead로 지정하면 거부", async () => {
     h.tx.user.findUnique.mockResolvedValue({ teamId: "teamA", status: "DISABLED" });
@@ -448,7 +464,7 @@ describe("팀장 불변식(F3)", () => {
 ### 8. 통과 + 커밋
 
 ## Acceptance Criteria
-- `npm test -- teams-service teams-catalog` → PASS.
+- `npm test -- teams-service teams-catalog` → PASS (F3 불변식 + F-E 잠금-우선 순서 포함).
 - `npm run typecheck` → 0 errors.
 - `npm run lint` → 0 errors (boundaries: modules/admin/teams는 admin 경계 내).
 - `npm run prisma:validate` → valid (스키마 무변경, catalog만).
@@ -457,5 +473,6 @@ describe("팀장 불변식(F3)", () => {
 ## Cautions
 - **Don't** `leadUserId`를 authz 결정에 쓴다. Reason: 팀장은 라우팅/알림/표시용(D14). 인가는 scope 엔진만.
 - **Don't** lead 불변식 검증을 생략. Reason: 무제약 lead + 알림 포함 → 교차팀 누수(F3). 항상 lead ∈ 해당 팀 active 소속원.
+- **Don't** 후보 검증을 plain read로만 한다(잠금 없이). Reason: 검증과 leadUserId 쓰기 사이 동시 멤버 이동(task-04 user-edit)으로 교차팀 lead가 남는다(F-E race — F3 누수 재현). 후보 user 행을 `FOR UPDATE`로 잠근 뒤 검증 — task-04의 teamId UPDATE(같은 행 잠금)+reconcile과 직렬화된다.
 - **Don't** `reconcileTeamLeadTx`를 task-03에서 호출부에 못 박는다. Reason: 호출부(user-edit teamId 변경·user 비활성화)는 task-04. 여기선 helper만 제공하고 task-04가 wiring.
 - **Don't** catalog의 `RESOURCES`/`NAV`를 task-06과 충돌나게 같은 줄에서 편집. Reason: task-06이 `admin.roles`를 같은 배열에 추가 — 다른 항목이라 충돌 없지만, 추가만 하고 기존 항목 재배열 금지(surgical).

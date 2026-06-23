@@ -157,6 +157,6 @@ expect(adminCreateSchema.parse({ ...base, teamId: null }).teamId).toBeNull();
 
 ## Cautions
 - **Don't** signup이 팀을 받게 한다. Reason: Team은 curated(관리자 승인 시 배정) — 자유텍스트 희망부서는 제거(사용자 결정). PENDING은 무소속, 승인 시 teamId 배정.
-- **Don't** teamId 변경/비활성화에서 reconcile을 빠뜨린다. Reason: 팀을 떠난 사용자가 이전 팀 leadUserId로 남으면 알림이 교차팀으로 샌다(F3/D1).
+- **Don't** teamId 변경/비활성화에서 reconcile을 빠뜨리거나 teamId UPDATE와 **다른** 트랜잭션에 둔다. Reason: 팀을 떠난 사용자가 이전 팀 leadUserId로 남으면 알림이 교차팀으로 샌다(F3/D1). 또한 teamId UPDATE+reconcile이 같은 tx여야 task-03 팀장 지정의 후보 `FOR UPDATE`와 **직렬화**되어 lead 지정 race가 닫힌다(F-E).
 - **Don't** `department` 잔존 참조를 남긴다(주석 포함). Reason: task-07 F8 게이트(`\bdepartment\b` 0건)가 drop을 막는다.
 - **Don't** 표시용에 `teamId`(cuid)를 노출. Reason: 사용자에겐 `teamName`. id는 select/PATCH 값으로만.
