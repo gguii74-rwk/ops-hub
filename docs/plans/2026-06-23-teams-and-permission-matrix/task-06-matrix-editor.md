@@ -84,8 +84,8 @@ export const ROLE_ALLOW: Record<string, Cell[]> = {
     }
   }
 
-  // 3b. 업그레이드-once(D10·F4) — 추출된 helper 호출(테스트 가능). 비어있지 않은 DB의 위임-admin 신규 grant를 1회 멱등 upsert.
-  await applyTeamsPermissionUpgrade(prisma, roleIdByKey, permissionIdByKey);
+  // 3b. 업그레이드-once(D10·F4·F-K) — 트랜잭션으로 감싸 upsert+플래그 원자화. 비어있지 않은 DB의 위임-admin 신규 grant를 1회 멱등 upsert.
+  await prisma.$transaction((tx) => applyTeamsPermissionUpgrade(tx, roleIdByKey, permissionIdByKey));
 ```
 (`allKeys`는 기존 step3 위에서 선언됨 — 위치 유지. `*` 분기는 `[key,"all"]` 튜플로 매핑. step3b helper는 seed.ts 상단에서 `import { applyTeamsPermissionUpgrade } from "./migrate-helpers/teams-upgrade";`)
 
@@ -110,6 +110,8 @@ export const UPGRADE_FLAG = "migration.teams-permission-matrix.upgrade.applied";
 export const UPGRADE_GRANT_KEYS = ["admin.teams:view", "admin.teams:configure", "admin.roles:view"] as const;
 
 // 위임 admin에 신규 grant upsert(F4). 이미 적용(플래그 존재)이면 no-op. roleIdByKey/permissionIdByKey는 seed가 채운 맵.
+// F-K fail-closed: 전제(위임 admin 역할 + 모든 신규 grant permission)가 하나라도 없으면 **throw**(플래그 미설정) —
+// seed 순서/카탈로그 드리프트로 grant를 건너뛴 채 영구 "applied"로 마킹되는 fail-open을 막는다. 플래그는 **모든 upsert 성공 후**에만.
 export async function applyTeamsPermissionUpgrade(
   db: UpgradeClient,
   roleIdByKey: Map<string, string>,
@@ -118,22 +120,25 @@ export async function applyTeamsPermissionUpgrade(
   const already = await db.systemSetting.findUnique({ where: { key: UPGRADE_FLAG } });
   if (already) return { applied: false };
   const adminRoleId = roleIdByKey.get("admin");
-  if (adminRoleId) {
-    for (const key of UPGRADE_GRANT_KEYS) {
-      const pid = permissionIdByKey.get(key);
-      if (!pid) continue;
-      await db.rolePermission.upsert({
-        where: { roleId_permissionId_scope: { roleId: adminRoleId, permissionId: pid, scope: "all" } },
-        update: {},
-        create: { roleId: adminRoleId, permissionId: pid, effect: "ALLOW", scope: "all" },
-      });
-    }
+  if (!adminRoleId) throw new Error("teams-upgrade: 'admin' 역할 미존재(seed 순서/드리프트) — 플래그 미설정, 다음 seed에서 재시도");
+  // 모든 grant permission id를 먼저 해석(하나라도 없으면 throw — upsert/플래그 전에 중단).
+  const grants = UPGRADE_GRANT_KEYS.map((key) => {
+    const pid = permissionIdByKey.get(key);
+    if (!pid) throw new Error(`teams-upgrade: 권한 '${key}' 미존재 — 플래그 미설정, 재시도 필요`);
+    return pid;
+  });
+  for (const pid of grants) {
+    await db.rolePermission.upsert({
+      where: { roleId_permissionId_scope: { roleId: adminRoleId, permissionId: pid, scope: "all" } },
+      update: {},
+      create: { roleId: adminRoleId, permissionId: pid, effect: "ALLOW", scope: "all" },
+    });
   }
-  await db.systemSetting.create({ data: { key: UPGRADE_FLAG, value: { appliedAt: "bootstrap" } } });
+  await db.systemSetting.create({ data: { key: UPGRADE_FLAG, value: { appliedAt: "bootstrap" } } }); // 모든 upsert 성공 후에만
   return { applied: true };
 }
 ```
-(seed가 `new Date()` 대신 고정 문자열을 value로 — 결정성. 타임스탬프가 필요하면 seed가 별도 기록.)
+(seed가 `new Date()` 대신 고정 문자열을 value로 — 결정성. **원자성**: seed.ts step 3b는 `prisma.$transaction((tx) => applyTeamsPermissionUpgrade(tx, ...))`로 감싸 upsert+플래그를 한 트랜잭션에 둔다 — 부분 적용 후 플래그 set 방지. `UpgradeClient`는 tx 클라이언트로 충족(rolePermission.upsert·systemSetting.*).)
 
 `tests/prisma/teams-upgrade.test.ts` (F4 — 비어있지 않은 DB 업그레이드):
 ```ts
@@ -162,6 +167,17 @@ describe("applyTeamsPermissionUpgrade (D10/F4)", () => {
     const r = await applyTeamsPermissionUpgrade(db as never, roleIds, permIds);
     expect(r.applied).toBe(false);
     expect(db.rolePermission.upsert).not.toHaveBeenCalled();
+  });
+  it("필수 권한 누락 시 throw + 플래그 미설정(fail-closed, F-K)", async () => {
+    const db = mkDb(false);
+    const partialPerms = new Map([[UPGRADE_GRANT_KEYS[0], "perm-0"]]); // 1개만 존재 — 나머지 누락
+    await expect(applyTeamsPermissionUpgrade(db as never, roleIds, partialPerms)).rejects.toThrow(/미존재/);
+    expect(db.systemSetting.create).not.toHaveBeenCalled(); // 플래그 set 안 됨 → 다음 seed 재시도
+  });
+  it("admin 역할 누락 시 throw + 플래그 미설정", async () => {
+    const db = mkDb(false);
+    await expect(applyTeamsPermissionUpgrade(db as never, new Map(), permIds)).rejects.toThrow(/admin/);
+    expect(db.systemSetting.create).not.toHaveBeenCalled();
   });
 });
 ```

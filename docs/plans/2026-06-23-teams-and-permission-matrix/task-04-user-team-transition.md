@@ -76,6 +76,18 @@ export { listActiveTeamOptions } from "../repositories";
 
 `src/modules/admin/users/repositories/index.ts`:
 
+**(a0) active-team 검증 helper(F-J — 임의/비active teamId 차단).** validation은 teamId를 non-empty string으로만 보므로, **teamId를 non-null로 쓰기 전** 같은 트랜잭션에서 그 팀이 **존재 + active**인지 확인한다. 미존재/비active면 도메인 에러(→ `mapError`가 400). 비active 팀이 승인/캘린더/알림의 authz 경계가 되는 것·잘못된 id의 FK 500을 막는다.
+```ts
+import { UserValidationError } from "../errors";
+// teamId가 null이면 무소속(검증 불필요). 값이 있으면 active 팀이어야 한다. tx 내부 호출(쓰기와 같은 트랜잭션).
+async function assertActiveTeamTx(tx: Prisma.TransactionClient, teamId: string | null | undefined): Promise<void> {
+  if (teamId == null) return;
+  const team = await tx.team.findUnique({ where: { id: teamId }, select: { active: true } });
+  if (!team || !team.active) throw new UserValidationError("배정할 팀이 없거나 비활성 상태입니다.");
+}
+```
+이 helper를 **(e) create·(f) approve·(g) update**에서 teamId를 data에 넣기 직전 호출한다(teamId가 patch/인자에 **존재하고 non-null**일 때만). null(무소속)은 통과.
+
 **(a) 타입/DTO**: `department: string | null`이 들어간 인터페이스(`UserRow`/`UserDetail`/생성·승인·편집 인자)를 모두 `teamId: string | null`로 교체하고, 표시용 DTO에는 `teamName: string | null`을 추가.
 - `UserRow`(줄 13 부근): `department: string | null;` → `teamId: string | null; teamName: string | null;`
 
@@ -85,20 +97,20 @@ export { listActiveTeamOptions } from "../repositories";
 
 **(d) createPendingSignup**(줄 112-): 인자 `department: string | null` **제거**, data의 `department: args.department,` **제거**(signup은 팀 미배정 — PENDING은 무소속, 승인 시 배정).
 
-**(e) createActiveUserByAdminTx**(줄 113·135 부근): 인자 `department: string | null` → `teamId: string | null`, create data `department: args.department,` → `teamId: args.teamId,`.
+**(e) createActiveUserByAdminTx**(줄 113·135 부근): 인자 `department: string | null` → `teamId: string | null`, create data `department: args.department,` → `teamId: args.teamId,`. **create 전 `await assertActiveTeamTx(tx, args.teamId);`**(F-J).
 
-**(f) approveTx**(줄 193·203·225·246 부근): 인자 타입의 `department: string | null` → `teamId: string | null`; decision 타입 `department?: string | null` → `teamId?: string | null`; create/update data의 `department: ...` → `teamId: ...`. **teamId가 바뀌면 reconcile**:
+**(f) approveTx**(줄 193·203·225·246 부근): 인자 타입의 `department: string | null` → `teamId: string | null`; decision 타입 `department?: string | null` → `teamId?: string | null`; create/update data의 `department: ...` → `teamId: ...`. **순서**: ① user create/update **data 쓰기 직전** `if (decision.teamId !== undefined) await assertActiveTeamTx(tx, decision.teamId);`(F-J — FK 500 전에 도메인 400), ② **쓰기 후** teamId가 바뀌면 reconcile:
 ```ts
-// 승인 시 teamId가 지정되면, 이전에 무소속이었다면 영향 없음. 그래도 방어적으로 reconcile(이 user가 어떤 팀의 stale lead였으면 정리).
+// 쓰기 후: teamId가 지정되면 reconcile(이 user가 어떤 팀의 stale lead였으면 정리). active 검증은 위에서 이미 통과.
 if (decision.teamId !== undefined) {
   const { reconcileTeamLeadTx } = await import("@/modules/admin/teams/repositories");
   await reconcileTeamLeadTx(tx, id);
 }
 ```
 
-**(g) updateUserTx**(줄 279·291 부근): patch 타입 `department?: string | null` → `teamId?: string | null`; update data `department: patch.department` → `teamId: patch.teamId`. **teamId 변경 시 같은 트랜잭션에서 reconcile**(팀 이동으로 무효가 된 lead 정리, D1):
+**(g) updateUserTx**(줄 279·291 부근): patch 타입 `department?: string | null` → `teamId?: string | null`; update data `department: patch.department` → `teamId: patch.teamId`. **순서**: ① update **data 쓰기 직전** `if (patch.teamId !== undefined) await assertActiveTeamTx(tx, patch.teamId);`(F-J), ② **쓰기 후** 같은 트랜잭션에서 reconcile(팀 이동으로 무효가 된 lead 정리, D1):
 ```ts
-// teamId가 바뀌면, 이 user가 떠난 팀의 팀장이었다면 그 팀의 leadUserId를 정리(F3/D1 불변식).
+// 쓰기 후: teamId가 바뀌면, 이 user가 떠난 팀의 팀장이었다면 그 팀의 leadUserId를 정리(F3/D1 불변식).
 if (patch.teamId !== undefined) {
   const { reconcileTeamLeadTx } = await import("@/modules/admin/teams/repositories");
   await reconcileTeamLeadTx(tx, id);
@@ -145,6 +157,19 @@ expect(adminCreateSchema.parse({ ...base, teamId: null }).teamId).toBeNull();
 ```
 나머지 10개 파일도 같은 규칙으로 기계 치환. 실행하며 RED→GREEN.
 
+**F-J 검증 negative(필수 — repositories 테스트)**: create/approve/update에 **미존재 teamId** → `UserValidationError`(→ route 400); **비active 팀 id** → `UserValidationError`; **null teamId** → 통과(무소속). `assertActiveTeamTx`가 data 쓰기 전에 호출됨(`tx.team.findUnique` mock으로 active/inactive/none 분기). 대표:
+```ts
+it("비active 팀 배정은 거부(F-J)", async () => {
+  h.tx.team.findUnique.mockResolvedValue({ active: false });
+  await expect(updateUserTx("u1", { teamId: "team-x" }, ...)).rejects.toBeInstanceOf(UserValidationError);
+  expect(h.tx.user.update).not.toHaveBeenCalled();
+});
+it("미존재 팀 배정은 거부(FK 500 전에 400)", async () => {
+  h.tx.team.findUnique.mockResolvedValue(null);
+  await expect(updateUserTx("u1", { teamId: "team-x" }, ...)).rejects.toBeInstanceOf(UserValidationError);
+});
+```
+
 ### 10. 통과 + 커밋
 `npm test -- admin/users` 통과. `rg -n "\bdepartment\b" src/modules/admin src/app/api/auth/signup src/app/signup src/app/\(app\)/admin/users` → **0건**(이 task 범위 확인; 전역 0은 task-07).
 
@@ -153,10 +178,12 @@ expect(adminCreateSchema.parse({ ...base, teamId: null }).teamId).toBeNull();
 - `npm test -- admin/users auth-signup` → PASS.
 - `npm run lint` → 0 errors (admin/users→admin/teams 경계 허용 확인; 불가 시 동적 import).
 - 범위 내 `department` 참조 0(전역 게이트는 task-07).
-- 수동: signup 폼에 부서 입력 없음; 승인 모달·생성·편집에 팀 select; 사용자 목록에 팀 이름 표시.
+- **F-J**: create/approve/update가 미존재·비active teamId를 `UserValidationError`(400)로 거부, null은 통과 — 테스트 GREEN.
+- 수동: signup 폼에 부서 입력 없음; 승인 모달·생성·편집에 팀 select; 사용자 목록에 팀 이름 표시; 직접 API로 가짜 teamId → 400(FK 500 아님).
 
 ## Cautions
 - **Don't** signup이 팀을 받게 한다. Reason: Team은 curated(관리자 승인 시 배정) — 자유텍스트 희망부서는 제거(사용자 결정). PENDING은 무소속, 승인 시 teamId 배정.
 - **Don't** teamId 변경/비활성화에서 reconcile을 빠뜨리거나 teamId UPDATE와 **다른** 트랜잭션에 둔다. Reason: 팀을 떠난 사용자가 이전 팀 leadUserId로 남으면 알림이 교차팀으로 샌다(F3/D1). 또한 teamId UPDATE+reconcile이 같은 tx여야 task-03 팀장 지정의 후보 `FOR UPDATE`와 **직렬화**되어 lead 지정 race가 닫힌다(F-E).
 - **Don't** `department` 잔존 참조를 남긴다(주석 포함). Reason: task-07 F8 게이트(`\bdepartment\b` 0건)가 drop을 막는다.
+- **Don't** teamId를 검증 없이(non-empty string만 보고) 쓴다. Reason: API 직접 호출로 가짜 id는 FK 500, 비active 팀은 승인/캘린더/알림의 authz 경계가 된다(F-J). 쓰기 전 같은 tx에서 active 팀 검증(`assertActiveTeamTx`).
 - **Don't** 표시용에 `teamId`(cuid)를 노출. Reason: 사용자에겐 `teamName`. id는 select/PATCH 값으로만.

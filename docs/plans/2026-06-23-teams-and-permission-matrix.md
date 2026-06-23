@@ -170,6 +170,10 @@ rg -n "\bdepartment\b" src tests prisma --glob '!prisma/migrations/**'
 - **F-H**(high, R3) — 매트릭스 쓰기 OWNER authz(`assertOwner`)가 `setCell` 트랜잭션 **밖** → precheck 이후 강등돼도 stale 권한으로 god-power 변경. → `setCell` tx 내부에서 actor 행 `FOR UPDATE` 잠금 + OWNER 재확인(task-06 + stale-OWNER 회귀 테스트). (F-D/F-E와 동일 in-tx-authz 패턴, 최고위험 op.)
 - **F-F**(high, R3, **ACCEPTED**) — spec D8(`calendar.*`/`leave.*` scopeable)과 plan PD2(`leave.approval`만)의 교차문서 모순 재지목. **근거:** PD2가 의도된 보정이고, scopeable SSOT=`SCOPEABLE_RESOURCES`(task-02) + 매트릭스 가드 + 엔진 clamp(F-A)로 비-`leave.approval`은 3중 fail-closed. **보완:** PD2를 단일 SSOT로 명시 + spec D8에 보정 포인터 1줄. (D8 broader 열거를 따라도 발효 안 됨 → 안전.)
 
+- **F-I**(high, R4) — 최종 게이트(check:no-department/typecheck/lint/test/build)가 `db:seed`를 누락 → 기존 DB가 게이트 통과해도 catalog/nav/D10 grant 미생성, 위임 admin 잠김. → task-07에 배포 계약(migrate deploy → **db:seed** → smoke) 명시 + Permission/Nav/grant 존재 smoke AC.
+- **F-J**(high, R4) — user teamId 검증이 non-empty string만 → 임의 id FK 500·비active 팀이 authz 경계화. → 쓰기 전 같은 tx에서 active-team 검증(`assertActiveTeamTx`, task-04 create/approve/update) + UserValidation(400) + negative 테스트.
+- **F-K**(medium, R4) — `applyTeamsPermissionUpgrade`가 전제(admin 역할·grant 권한) 누락 시 skip하고도 플래그 set(fail-open) → 영구 미적용. → fail-closed throw + 플래그는 모든 upsert 후 + seed가 `$transaction`으로 원자화(task-06 + 누락 throw 테스트).
+
 **in-tx-authz 패턴(F-D/F-E/F-H) 관측:** "authz 점검을 mutating 트랜잭션 밖에서 함" 계열이 3개 surface(승인·팀장·매트릭스)에서 반복 → 가변 멤버십/권한 race. 모두 동일 패턴(행 `FOR UPDATE` 잠금 + tx 내부 재확인)으로 닫음. 추가 surface가 또 나오면 class 판정(ACCEPTED — 단일 인스턴스·admin-only·감사 가능).
 
-plan-phase 진행 중 — R4 재검으로 F-G/F-H 소거 확인.
+R1~R4에서 F-A~F-K(11건) 닫음(10 FIXED·1 ACCEPTED). 각 라운드 신규 finding은 다른 부위의 실제 갭(re-flag 아님 — 앞 라운드 finding은 후속 라운드에서 소거 확인). R5 재검으로 R4 FIXED(F-I/F-J/F-K) 소거 확인 후 종료 판정.
