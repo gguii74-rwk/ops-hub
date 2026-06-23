@@ -74,8 +74,15 @@ export interface NavRow {
 // 렌더 결정을 순수 계산으로 분리(DOM 없이 테스트). 펼침 토글은 컴포넌트 상태가 보강.
 export function computeNavRows(items: NavItem[], pathname: string): NavRow[] {
   return items.map((item) => {
+    // 형제 중 현재 경로와 매칭되는 "가장 긴(구체적) href"만 active(D8).
+    // 인덱스 자식(예: 대시보드 /leave)이 형제 하위경로(/leave/request)에서 prefix로 잡히는 충돌 방지.
+    const matchLen = item.children.reduce(
+      (max, c) => (isActiveHref(c.href, pathname) ? Math.max(max, c.href!.length) : max),
+      0,
+    );
     const children: NavChildRow[] = item.children.map((c) => ({
-      key: c.key, label: c.label, href: c.href, active: isActiveHref(c.href, pathname),
+      key: c.key, label: c.label, href: c.href,
+      active: isActiveHref(c.href, pathname) && c.href!.length === matchLen,
     }));
     const selfActive = isActiveHref(item.href, pathname);
     const childActive = children.some((c) => c.active);

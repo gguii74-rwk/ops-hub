@@ -37,10 +37,20 @@ export const NAV: readonly NavEntry[] = [
   { key: "dashboard", label: "대시보드", href: "/dashboard", permission: "dashboard:view" },
   { key: "calendar", label: "캘린더", href: "/calendar", permission: "calendar.work:view" },
   { key: "workflows", label: "업무", href: "/workflows", permission: "workflows.weekly:view" },
-  { key: "leave", label: "연차", href: "/leave", permission: "leave.request:view" },
+  {
+    key: "leave", label: "연차", href: "/leave", permission: "leave.request:view",
+    children: [
+      { key: "leave-dashboard", label: "대시보드", href: "/leave", permission: "leave.request:view" },
+      { key: "leave-request", label: "연차 신청", href: "/leave/request", permission: "leave.request:create" },
+      { key: "leave-calendar", label: "캘린더", href: "/leave/calendar", permission: "leave.request:view" },
+      { key: "leave-history", label: "연차 내역", href: "/leave/history", permission: "leave.request:view" },
+      { key: "leave-manage", label: "연차 관리", href: "/leave/manage", permission: "leave.approval:view" },
+    ],
+  },
   {
     key: "admin", label: "관리", href: "/admin", permission: "admin.users:view",
     children: [
+      { key: "admin-users", label: "사용자 관리", href: "/admin/users", permission: "admin.users:view" },
       { key: "admin-navigation", label: "메뉴 관리", href: "/admin/navigation", permission: "admin.navigation:view" },
     ],
   },
