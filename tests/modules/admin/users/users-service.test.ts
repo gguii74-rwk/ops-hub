@@ -15,7 +15,11 @@ vi.mock("bcryptjs", () => ({ default: { hash: vi.fn(async () => "HASHED") } }));
 // F-Q: vi.hoisted로 stableTx를 팩토리 호이스팅 전에 생성해 $transaction 콜백이 받는 객체를 외부에서 참조 가능하게 한다.
 // F-GG/F-FF: withAvailabilityLock의 advisory lock($executeRaw)·actor/target FOR UPDATE($queryRaw)·가드 team 읽기(user.findUnique).
 const { stableTx } = vi.hoisted(() => ({
-  stableTx: { $queryRaw: vi.fn(), $executeRaw: vi.fn(), user: { findUnique: vi.fn(async () => ({ teamId: null })) } },
+  stableTx: {
+    $queryRaw: vi.fn(), $executeRaw: vi.fn(),
+    // F-HH: 가드가 in-tx actor systemRole/status/mustChangePassword를 읽는다(owner1→OWNER, 그 외→ADMIN, ACTIVE).
+    user: { findUnique: vi.fn(async (a: { where: { id: string } }) => ({ systemRole: a.where.id === "owner1" ? "OWNER" : "ADMIN", status: "ACTIVE", mustChangePassword: false, teamId: null })) },
+  },
 }));
 vi.mock("@/lib/prisma", () => ({
   prisma: { $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(stableTx)) },

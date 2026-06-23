@@ -28,8 +28,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   // 기본: non-critical 권한에 대해 actor가 "all" scope 보유 → ALLOW 허용.
   mockGetEffectiveScope.mockResolvedValue("all");
-  // 기본: actor·target 같은 팀(team-team 분기 기본 통과). cross-team 테스트는 per-test 재설정.
-  mockUserFindUnique.mockResolvedValue({ teamId: "teamA" });
+  // 기본: id-aware 전체 user. F-HH가 actor systemRole/status/mustChangePassword를 in-tx로 읽고(owner1→OWNER, 그 외→ADMIN),
+  // F-EE가 teamId를 읽는다(기본 teamA — actor·target 동일 팀). cross-team/비활성 등은 per-test 재설정.
+  mockUserFindUnique.mockImplementation(async (a: { where: { id: string } }) => ({
+    systemRole: a.where.id === "owner1" ? "OWNER" : "ADMIN",
+    status: "ACTIVE", mustChangePassword: false, teamId: "teamA",
+  }));
 });
 
 const owner = (id = "owner1"): ActorContext => ({ userId: id, isOwner: true, permissionKeys: new Set() });
@@ -141,26 +145,39 @@ describe("assertOverrideWithinActorGrant (D13ⓒⓓ·F-N·F-EE — critical OWNE
   });
   it("F-EE: team-scope actor가 같은 팀 사용자에게 team-scope ALLOW 부여 → 허용", async () => {
     mockGetEffectiveScope.mockResolvedValue("team");
-    mockUserFindUnique.mockResolvedValue({ teamId: "teamA" }); // actor·target 동일 팀
+    // beforeEach 기본 mock: actor(admin1)·target(target1) 모두 teamA·ADMIN·ACTIVE = 동일 팀.
     await expect(assertOverrideWithinActorGrant(delegate([]), T, "leave.approval", "approve", "ALLOW", "team")).resolves.toBeUndefined();
   });
   it("F-EE: team-scope actor가 다른 팀 사용자에게 team-scope ALLOW 부여 → EscalationError(교차 팀 위임 금지)", async () => {
     mockGetEffectiveScope.mockResolvedValue("team");
-    mockUserFindUnique
-      .mockResolvedValueOnce({ teamId: "teamA" })  // actor
-      .mockResolvedValueOnce({ teamId: "teamB" }); // target — 다른 팀
+    mockUserFindUnique.mockImplementation(async (a: { where: { id: string } }) => ({
+      systemRole: "ADMIN", status: "ACTIVE", mustChangePassword: false,
+      teamId: a.where.id === T ? "teamB" : "teamA", // target만 다른 팀
+    }));
     await expect(assertOverrideWithinActorGrant(delegate([]), T, "leave.approval", "approve", "ALLOW", "team")).rejects.toBeInstanceOf(EscalationError);
   });
   it("F-EE: team-scope actor가 팀 미소속이면 team-scope ALLOW 부여 불가(teamId null)", async () => {
     mockGetEffectiveScope.mockResolvedValue("team");
-    mockUserFindUnique.mockResolvedValue({ teamId: null }); // actor·target 모두 null → 같은 팀 아님(null)
+    mockUserFindUnique.mockResolvedValue({ systemRole: "ADMIN", status: "ACTIVE", mustChangePassword: false, teamId: null });
     await expect(assertOverrideWithinActorGrant(delegate([]), T, "leave.approval", "approve", "ALLOW", "team")).rejects.toBeInstanceOf(EscalationError);
   });
   it("F-EE: all-scope actor는 어느 팀 사용자에게든 team-scope ALLOW 부여 가능(교차팀 검사 건너뜀)", async () => {
     mockGetEffectiveScope.mockResolvedValue("all"); // actor scope=all → 전 팀 커버
-    mockUserFindUnique.mockResolvedValue({ teamId: "teamZ" });
     await expect(assertOverrideWithinActorGrant(delegate([]), T, "leave.approval", "approve", "ALLOW", "team")).resolves.toBeUndefined();
-    expect(mockUserFindUnique).not.toHaveBeenCalled(); // all-scope면 팀 조회 자체를 안 함
+    expect(mockUserFindUnique).toHaveBeenCalledTimes(1); // F-HH actor read만; all-scope면 F-EE 팀 조회(actor+target) 건너뜀
+  });
+  // F-HH: 가드는 ActorContext.isOwner(stale)가 아니라 in-tx 최신 actor 행으로 권위를 판정한다.
+  it("F-HH: ActorContext.isOwner=true여도 in-tx systemRole이 OWNER 아니면 critical ALLOW 거부(강등 race)", async () => {
+    mockUserFindUnique.mockResolvedValue({ systemRole: "ADMIN", status: "ACTIVE", mustChangePassword: false, teamId: "teamA" });
+    await expect(assertOverrideWithinActorGrant(owner(), T, "admin.users", "update", "ALLOW", "all")).rejects.toBeInstanceOf(EscalationError);
+  });
+  it("F-HH: in-tx actor가 OWNER·DISABLED → EscalationError(비활성 OWNER bypass 차단)", async () => {
+    mockUserFindUnique.mockResolvedValue({ systemRole: "OWNER", status: "DISABLED", mustChangePassword: false, teamId: null });
+    await expect(assertOverrideWithinActorGrant(owner(), T, "admin.users", "update", "ALLOW", "all")).rejects.toBeInstanceOf(EscalationError);
+  });
+  it("F-HH: in-tx actor가 OWNER·ACTIVE·mustChangePassword=true → EscalationError", async () => {
+    mockUserFindUnique.mockResolvedValue({ systemRole: "OWNER", status: "ACTIVE", mustChangePassword: true, teamId: null });
+    await expect(assertOverrideWithinActorGrant(owner(), T, "admin.users", "update", "ALLOW", "all")).rejects.toBeInstanceOf(EscalationError);
   });
   it("F-N: assigned scope는 항상 EscalationError(미해석 scope)", async () => {
     mockGetEffectiveScope.mockResolvedValue("all");

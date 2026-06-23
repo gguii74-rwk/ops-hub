@@ -82,7 +82,18 @@ export async function assertOverrideWithinActorGrant(
   actor: ActorContext, targetUserId: string, resource: string, action: string, effect: "ALLOW" | "DENY", scope: string,
   tx?: Prisma.TransactionClient,
 ): Promise<void> {
-  if (actor.isOwner) return;
+  // F-HH: actor.isOwner는 route 시점 ActorContext(stale)다. 호출부가 actor 행을 FOR UPDATE로 잠근(F-Q) 뒤 호출하므로
+  //   in-tx 최신 systemRole/status/mustChangePassword를 다시 읽어 권위를 유도한다(F-H setCell 동형). route auth 이후
+  //   강등/비활성/must-change된 actor가 stale OWNER 권한으로 critical override를 만들거나 미보유 scope를 부여하는 race 차단(fail-closed).
+  const client = tx ?? prisma;
+  const fresh = await client.user.findUnique({
+    where: { id: actor.userId },
+    select: { systemRole: true, status: true, mustChangePassword: true },
+  });
+  if (!fresh || fresh.status !== "ACTIVE" || fresh.mustChangePassword) {
+    throw new EscalationError("비활성·임시 비밀번호 상태에서는 권한 예외를 변경할 수 없습니다.");
+  }
+  if (fresh.systemRole === "OWNER") return;
   const key = permissionKey(resource, action);
   // critical 권한은 effect와 무관하게 OWNER-only(actor가 보유하고 있어도 ALLOW 불가).
   if (isCriticalKey(key)) {

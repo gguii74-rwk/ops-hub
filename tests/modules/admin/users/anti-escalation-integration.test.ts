@@ -11,7 +11,8 @@ const mockGetEffectiveScope = vi.fn(async (_userId: string, _resource: string, _
 const txSpies = vi.hoisted(() => ({
   queryRaw: vi.fn(async () => [] as unknown[]),
   executeRaw: vi.fn(async () => 1),
-  userFindUnique: vi.fn(async () => ({ teamId: null }) as { teamId: string | null }),
+  // F-HH: 가드가 in-tx actor systemRole/status/mustChangePassword를 읽는다. id-aware 기본(owner1→OWNER, 그 외→ADMIN, ACTIVE).
+  userFindUnique: vi.fn(async (_a: { where: { id: string } }) => ({ systemRole: "ADMIN", status: "ACTIVE", mustChangePassword: false, teamId: null }) as Record<string, unknown>),
 }));
 const h = vi.hoisted(() => ({
   repo: {
@@ -99,6 +100,10 @@ beforeEach(() => {
   // getEffectiveScope: 기본값 "all"(actor가 해당 권한을 보유). 미보유 케이스는 각 테스트에서 mockResolvedValueOnce(null).
   mockGetEffectiveScope.mockResolvedValue("all");
   h.repo.getUserDetail.mockResolvedValue(userDetailFixture() as never);
+  // F-HH: in-tx actor 권위 기본(owner1→OWNER, 그 외→ADMIN, ACTIVE). 강등/비활성 케이스는 per-test 재설정.
+  txSpies.userFindUnique.mockImplementation(async (a: { where: { id: string } }) => ({
+    systemRole: a.where.id === "owner1" ? "OWNER" : "ADMIN", status: "ACTIVE", mustChangePassword: false, teamId: null,
+  }));
 });
 
 // ⓐ 자가 mutation 금지 — 본인 역할/override/systemRole/status
@@ -240,6 +245,14 @@ describe("F-GG/F-FF override mutation 동시성 가드", () => {
     expect(txSpies.executeRaw).toHaveBeenCalled();
     expect(txSpies.queryRaw).toHaveBeenCalledTimes(2);
     expect(h.repo.deleteOverride).toHaveBeenCalled();
+  });
+  it("F-HH: ActorContext.isOwner=true여도 in-tx actor가 강등(ADMIN)이면 critical override 거부, createOverride 미호출", async () => {
+    // route auth 이후 tx 전에 OWNER가 강등됨 → in-tx 최신 행은 ADMIN. critical(admin.*) override는 거부되어야 한다.
+    txSpies.userFindUnique.mockResolvedValue({ systemRole: "ADMIN", status: "ACTIVE", mustChangePassword: false, teamId: null });
+    await expect(upsertOverride(owner, "target1", {
+      resource: "admin.users", action: "update", effect: "ALLOW", scope: "all", reason: null, startsAt: null, endsAt: null,
+    })).rejects.toBeInstanceOf(EscalationError);
+    expect(h.repo.createOverride).not.toHaveBeenCalled();
   });
 });
 
