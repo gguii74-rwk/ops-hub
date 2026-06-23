@@ -1,9 +1,14 @@
-import { prisma } from "@/lib/prisma";
+import { prisma, type PrismaTx } from "@/lib/prisma";
 import { computeDecision, permissionKey } from "@/kernel/access/decision";
 import type { Action, PermissionRule, Scope } from "@/kernel/access/decision";
+import { effectiveScope, allowedScopes, type EnforceableScope } from "@/kernel/access/scope";
+
+// 엔진 함수가 트랜잭션/전역 클라이언트 양쪽을 받도록(F-O). PrismaClient 정밀 타입 대신 prisma 인스턴스 타입 재사용.
+type PrismaClientOrTx = typeof prisma | PrismaTx;
 
 export * from "@/kernel/access/decision";
 export * from "@/kernel/access/catalog";
+export * from "@/kernel/access/scope";
 
 export interface PermissionSummary {
   keys: string[];
@@ -31,8 +36,8 @@ interface UserContext {
   mustChangePassword: boolean; // 신규 — must-change 세션은 모든 권한 fail-closed(D17)
 }
 
-async function loadUserContext(userId: string, now: Date): Promise<UserContext | null> {
-  const user = await prisma.user.findUnique({
+async function loadUserContext(userId: string, now: Date, client: PrismaClientOrTx = prisma): Promise<UserContext | null> {
+  const user = await client.user.findUnique({
     where: { id: userId },
     select: {
       systemRole: true,
@@ -94,6 +99,75 @@ export async function requirePermission(userId: string, resource: string, action
   if (!ok) throw new ForbiddenError(`${permissionKey(resource, action)} 권한이 없습니다.`);
 }
 
+/**
+ * 허가된 가장 넓은 enforceable scope(all>team>own) 또는 null. computeDecision 우선순위의 일반화.
+ * OWNER→all, must-change·비활성→null(fail-closed). hasPermission/requirePermission 계약과 별개의 추가 함수.
+ * `client`(기본 prisma): 트랜잭션 내부에서 **현재** 권한 상태로 재해석하려면 tx 클라이언트를 넘긴다(F-O — 승인 tx가
+ * precheck 신뢰 대신 in-tx 재해석).
+ */
+export async function getEffectiveScope(
+  userId: string, resource: string, action: Action,
+  client: PrismaClientOrTx = prisma,
+): Promise<EnforceableScope | null> {
+  const now = new Date();
+  const ctx = await loadUserContext(userId, now, client);
+  if (!ctx) return null;
+  if (ctx.mustChangePassword) return null; // D17 하드 게이트
+  if (ctx.isOwner) return "all";
+
+  const permission = await client.permission.findUnique({
+    where: { resource_action: { resource, action } },
+    select: { id: true },
+  });
+  if (!permission) return null;
+
+  const [overrideRows, roleRows] = await Promise.all([
+    client.userPermissionOverride.findMany({
+      where: { userId, permissionId: permission.id },
+      select: { effect: true, scope: true, startsAt: true, endsAt: true },
+    }),
+    ctx.roleIds.length
+      ? client.rolePermission.findMany({
+          where: { permissionId: permission.id, roleId: { in: ctx.roleIds } },
+          select: { effect: true, scope: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const overrides: PermissionRule[] = overrideRows
+    .filter((r) => withinValidity(r.startsAt, r.endsAt, now))
+    .map((r) => ({ effect: r.effect, scope: r.scope as Scope }));
+  const roleRules: PermissionRule[] = roleRows.map((r) => ({ effect: r.effect, scope: r.scope as Scope }));
+
+  // F-A: resource가 허용하는 scope로 clamp. 비-scopeable resource는 ["all"]이라 team/own grant가 후보에서 빠진다
+  // (override-panel로 만든 비-scopeable team override가 메뉴/데이터로 새는 것 차단). requirePermissionForTarget도 이걸 상속.
+  return effectiveScope({ overrides, roleRules }, allowedScopes(resource));
+}
+
+/**
+ * 단건 액션 target 점검(목록 아님). all→허용, team→target.teamId가 actor.teamId와 일치, own→target.ownerUserId===userId.
+ * assigned/null/누락 target → fail-closed 거부(D13·§9). 무소속 team-scope actor는 target.teamId가 비-null이어도
+ * actor.teamId가 null이라 거부된다.
+ */
+export async function requirePermissionForTarget(
+  userId: string, resource: string, action: Action,
+  target: { teamId?: string | null; ownerUserId?: string | null },
+): Promise<void> {
+  const scope = await getEffectiveScope(userId, resource, action);
+  if (scope === "all") return;
+  if (scope === "own") {
+    if (target.ownerUserId != null && target.ownerUserId === userId) return;
+    throw new ForbiddenError(`${permissionKey(resource, action)} 권한이 없습니다.`);
+  }
+  if (scope === "team") {
+    if (target.teamId == null) throw new ForbiddenError(`${permissionKey(resource, action)} 권한이 없습니다.`);
+    const me = await prisma.user.findUnique({ where: { id: userId }, select: { teamId: true } });
+    if (me?.teamId != null && me.teamId === target.teamId) return;
+    throw new ForbiddenError(`${permissionKey(resource, action)} 권한이 없습니다.`);
+  }
+  throw new ForbiddenError(`${permissionKey(resource, action)} 권한이 없습니다.`); // null/assigned
+}
+
 /** UI 메뉴/버튼용 허용 키 목록. OWNER는 전체, 그 외는 결정 함수로 평가. */
 export async function getPermissionSummary(userId: string): Promise<PermissionSummary> {
   const now = new Date();
@@ -131,7 +205,11 @@ export async function getPermissionSummary(userId: string): Promise<PermissionSu
     const roles = roleRules
       .filter((r) => r.permissionId === p.id)
       .map((r) => ({ effect: r.effect, scope: r.scope as Scope }));
-    if (computeDecision({ isOwner: false, overrides: ovr, roleRules: roles })) {
+    // D5: 메뉴/useCan은 any enforceable scope면 노출(team/own grant도 메뉴는 보임). 실제 데이터 범위는 scoped 엔드포인트가 강제.
+    // F-A: allowedScopes(p.resource)로 clamp — 비-scopeable resource(admin.*/workflows.* 등)는 ["all"]이라
+    // team/own override가 메뉴 키를 만들지 못한다. 서버 페이지가 summary 키를 가드로 쓰고 직접 데이터를 읽어도(task-03/06 page.tsx)
+    // 비-scopeable resource의 team/own override로는 노출되지 않는다(이 clamp가 없으면 page-layer 데이터 누수, F-A high).
+    if (effectiveScope({ overrides: ovr, roleRules: roles }, allowedScopes(p.resource)) !== null) {
       keys.push(permissionKey(p.resource, p.action));
     }
   }
