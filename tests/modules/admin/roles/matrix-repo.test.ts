@@ -34,4 +34,17 @@ describe("setCell in-tx OWNER 재확인(F-H)", () => {
     expect(h.tx.rolePermission.create).toHaveBeenCalled();
     expect(h.tx.auditLog.create).toHaveBeenCalled();
   });
+  // F-H: status/mustChangePassword 분기 — OWNER여도 비활성·임시비번 상태면 거부
+  it("F-H: in-tx actor가 OWNER·DISABLED → ForbiddenError, 셀/감사 미기록", async () => {
+    h.tx.user.findUnique.mockResolvedValue({ systemRole: "OWNER", status: "DISABLED", mustChangePassword: false });
+    await expect(setCell("r1", "p1", "ALLOW", "all", "actor")).rejects.toBeInstanceOf(ForbiddenError);
+    expect(h.tx.rolePermission.deleteMany).not.toHaveBeenCalled();
+    expect(h.tx.auditLog.create).not.toHaveBeenCalled();
+  });
+  it("F-H: in-tx actor가 OWNER·ACTIVE·mustChangePassword=true → ForbiddenError, 셀/감사 미기록", async () => {
+    h.tx.user.findUnique.mockResolvedValue({ systemRole: "OWNER", status: "ACTIVE", mustChangePassword: true });
+    await expect(setCell("r1", "p1", "ALLOW", "all", "actor")).rejects.toBeInstanceOf(ForbiddenError);
+    expect(h.tx.rolePermission.deleteMany).not.toHaveBeenCalled();
+    expect(h.tx.auditLog.create).not.toHaveBeenCalled();
+  });
 });

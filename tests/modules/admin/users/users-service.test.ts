@@ -12,8 +12,10 @@ vi.mock("@/modules/leave/services/mail", () => ({ triggerLeaveMailDrain: vi.fn()
 // bcrypt 해시 — 고정값(임시비번/새 비번 해시는 서비스가 만든다).
 vi.mock("bcryptjs", () => ({ default: { hash: vi.fn(async () => "HASHED") } }));
 // prisma 모킹 — services/index.ts의 upsertOverride·removeOverride가 $transaction 사용.
+// F-Q: vi.hoisted로 stableTx를 팩토리 호이스팅 전에 생성해 $transaction 콜백이 받는 객체를 외부에서 참조 가능하게 한다.
+const { stableTx } = vi.hoisted(() => ({ stableTx: { $queryRaw: vi.fn() } }));
 vi.mock("@/lib/prisma", () => ({
-  prisma: { $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn({ $queryRaw: vi.fn() })) },
+  prisma: { $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(stableTx)) },
 }));
 // @/kernel/access — assertOverrideWithinActorGrant가 getEffectiveScope 호출.
 vi.mock("@/kernel/access", () => ({
@@ -28,6 +30,7 @@ import {
 import * as repo from "@/modules/admin/users/repositories";
 import { triggerLeaveMailDrain } from "@/modules/leave/services/mail";
 import { EscalationError, UserConflictError } from "@/modules/admin/users/errors";
+import * as kernelAccess from "@/kernel/access";
 import type { ActorContext } from "@/modules/admin/users/services/guards";
 
 const r = {
@@ -64,6 +67,8 @@ const detail = (over: Partial<Record<string, unknown>> = {}) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   r.getUserDetail.mockResolvedValue(detail() as never);
+  // F-Q: stableTx.$queryRaw는 vi.clearAllMocks()로 초기화되므로 기본 resolved 구현을 복구한다.
+  stableTx.$queryRaw.mockResolvedValue([]);
 });
 
 describe("approveUser", () => {
@@ -284,6 +289,38 @@ describe("upsertOverride / removeOverride", () => {
     r.getUserDetail.mockResolvedValue(detail({ overrides: [{ id: "ov4", resource: "admin.users", action: "update", effect: "DENY", scope: "all", reason: null, startsAt: null, endsAt: null }] }) as never);
     await removeOverride(owner, "u1", "ov4");
     expect(r.deleteOverride).toHaveBeenCalledWith("u1", "ov4", "owner1", expect.anything());
+  });
+
+  // F-Q (a): actor $queryRaw(FOR UPDATE 락)이 getEffectiveScope보다 먼저 호출되어야 한다(lock-before-guard 순서).
+  it("F-Q (a) grant: $queryRaw(락)은 getEffectiveScope(가드)보다 먼저 호출된다", async () => {
+    r.createOverride.mockResolvedValue({ id: "ov-fq" });
+    const callLog: string[] = [];
+    stableTx.$queryRaw.mockImplementation(async () => { callLog.push("queryRaw"); return []; });
+    vi.mocked(kernelAccess.getEffectiveScope).mockImplementation(async () => { callLog.push("getEffectiveScope"); return "all"; });
+    await upsertOverride(delegate(["leave.approval:view"]), "u1", ov);
+    const qrIdx = callLog.indexOf("queryRaw");
+    const gsIdx = callLog.indexOf("getEffectiveScope");
+    expect(qrIdx).toBeGreaterThanOrEqual(0); // 실제로 호출됨
+    expect(gsIdx).toBeGreaterThanOrEqual(0); // 실제로 호출됨
+    expect(qrIdx).toBeLessThan(gsIdx);       // 락이 먼저
+  });
+
+  // F-Q (b): createOverride(grant)·deleteOverride(revoke)에 전달되는 tx는 $transaction 콜백이 받은 객체와 동일해야 한다.
+  it("F-Q (b) grant: createOverride에 전달된 tx가 $transaction 콜백이 받은 stableTx와 동일 참조이다", async () => {
+    r.createOverride.mockResolvedValue({ id: "ov-fq2" });
+    await upsertOverride(delegate(["leave.approval:view"]), "u1", ov);
+    // createOverride 마지막 인수(4번째)가 tx
+    const callArgs = r.createOverride.mock.calls[0];
+    const passedTx = callArgs[callArgs.length - 1];
+    expect(passedTx).toBe(stableTx); // 새 $transaction이 중첩되지 않고 주입된 tx를 그대로 사용
+  });
+
+  it("F-Q (b) revoke: deleteOverride에 전달된 tx가 $transaction 콜백이 받은 stableTx와 동일 참조이다", async () => {
+    r.getUserDetail.mockResolvedValue(detail({ overrides: [{ id: "ov-fq3", resource: "leave.approval", action: "view", effect: "DENY", scope: "all", reason: null, startsAt: null, endsAt: null }] }) as never);
+    await removeOverride(delegate(["leave.approval:view"]), "u1", "ov-fq3");
+    const callArgs = r.deleteOverride.mock.calls[0];
+    const passedTx = callArgs[callArgs.length - 1];
+    expect(passedTx).toBe(stableTx);
   });
 });
 
