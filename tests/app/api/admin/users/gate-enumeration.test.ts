@@ -203,6 +203,9 @@ const knownProtected = new Set<string>([
   "/api/admin/navigation/[id]/reparent",
   "/api/admin/navigation/reorder",
   "/api/admin/navigation/roles",
+  // teams API (task-03) — requirePermission(admin.teams, view|configure) 중앙 게이트
+  "/api/admin/teams",
+  "/api/admin/teams/[id]",
 ]);
 
 beforeEach(() => {

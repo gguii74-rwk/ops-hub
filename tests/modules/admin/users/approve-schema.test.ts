@@ -1,26 +1,26 @@
 import { describe, it, expect } from "vitest";
 import { approveSchema } from "@/modules/admin/users/validations";
 
-describe("approveSchema — NF2 name/department guard", () => {
-  it("name·department 없이도 파싱된다(기존 호출 호환)", () => {
+describe("approveSchema — NF2 name/teamId guard", () => {
+  it("name·teamId 없이도 파싱된다(기존 호출 호환)", () => {
     const result = approveSchema.parse({ employmentType: "REGULAR", jobFunction: "DEVELOPER", systemRole: "MEMBER", roleKeys: [] });
     expect(result.employmentType).toBe("REGULAR");
     expect(result.name).toBeUndefined();
-    expect(result.department).toBeUndefined();
+    expect(result.teamId).toBeUndefined();
   });
-  it("name·department 포함 시 파싱되어 반환한다(NF2 승인이 권위)", () => {
+  it("name·teamId 포함 시 파싱되어 반환한다(NF2 승인이 권위)", () => {
     const result = approveSchema.parse({
       employmentType: "REGULAR", jobFunction: "DEVELOPER", systemRole: "MEMBER", roleKeys: [],
-      name: "홍길동", department: "플랫폼팀",
+      name: "홍길동", teamId: "team-abc",
     });
     expect(result.name).toBe("홍길동");
-    expect(result.department).toBe("플랫폼팀");
+    expect(result.teamId).toBe("team-abc");
   });
-  it("department=null 허용(부서 없음 명시)", () => {
+  it("teamId=null 허용(무소속 명시)", () => {
     const result = approveSchema.parse({
       employmentType: "REGULAR", jobFunction: "DEVELOPER", systemRole: "MEMBER", roleKeys: [],
-      name: "김철수", department: null,
+      name: "김철수", teamId: null,
     });
-    expect(result.department).toBeNull();
+    expect(result.teamId).toBeNull();
   });
 });

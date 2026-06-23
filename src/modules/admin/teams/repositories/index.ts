@@ -13,6 +13,11 @@ export function listActiveUsersWithTeam(): Promise<Array<{ id: string; name: str
   return prisma.user.findMany({ where: { status: "ACTIVE" }, orderBy: { name: "asc" }, select: { id: true, name: true, teamId: true } });
 }
 
+// 팀 배정 셀렉트용(사용자 관리 폼). active 팀만, 이름순.
+export function listActiveTeamOptions(): Promise<Array<{ id: string; name: string }>> {
+  return prisma.team.findMany({ where: { active: true }, orderBy: { name: "asc" }, select: { id: true, name: true } });
+}
+
 export async function listTeams(): Promise<TeamRow[]> {
   const teams = await prisma.team.findMany({
     orderBy: [{ active: "desc" }, { name: "asc" }],

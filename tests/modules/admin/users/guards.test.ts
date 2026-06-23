@@ -1,4 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+
+// getEffectiveScope는 guards.ts에서 import해 사용 — 테스트에서 모킹.
+const mockGetEffectiveScope = vi.fn();
+vi.mock("@/kernel/access", () => ({
+  getEffectiveScope: (...args: unknown[]) => mockGetEffectiveScope(...args),
+  SCOPE_RANK: { all: 3, team: 2, own: 1 },
+}));
+
 import {
   assertNotSelfMutation,
   assertCanAssignRoles,
@@ -10,6 +18,12 @@ import {
 } from "@/modules/admin/users/services/guards";
 import { EscalationError, MinAvailabilityError } from "@/modules/admin/users/errors";
 import type { PrismaTx } from "@/lib/prisma";
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  // 기본: non-critical 권한에 대해 actor가 "all" scope 보유 → ALLOW 허용.
+  mockGetEffectiveScope.mockResolvedValue("all");
+});
 
 const owner = (id = "owner1"): ActorContext => ({ userId: id, isOwner: true, permissionKeys: new Set() });
 const delegate = (keys: string[], id = "admin1"): ActorContext => ({
@@ -85,42 +99,45 @@ describe("assertCanSetSystemRole (D12 — 현재·원하는 systemRole 모두 �
   });
 });
 
-describe("assertOverrideWithinActorGrant (D13ⓒⓓ — critical은 effect 무관 OWNER-only)", () => {
-  it("ALLOW: 비-critical actor 보유 권한이면 허용", () => {
-    expect(() =>
-      assertOverrideWithinActorGrant(delegate(["leave.approval:approve"]), "leave.approval:approve", "ALLOW"),
-    ).not.toThrow();
+describe("assertOverrideWithinActorGrant (D13ⓒⓓ·F-N — critical OWNER-only·scope-aware ALLOW)", () => {
+  it("ALLOW: 비-critical actor scope=all 보유 권한이면 허용", async () => {
+    mockGetEffectiveScope.mockResolvedValue("all");
+    await expect(assertOverrideWithinActorGrant(delegate(["leave.approval:approve"]), "leave.approval", "approve", "ALLOW", "all")).resolves.toBeUndefined();
   });
-  it("ALLOW: 비-critical actor 미보유 권한이면 EscalationError(가진 것 이상 못 줌)", () => {
-    expect(() =>
-      assertOverrideWithinActorGrant(delegate([]), "leave.approval:approve", "ALLOW"),
-    ).toThrow(EscalationError);
+  it("ALLOW: 비-critical actor 미보유(getEffectiveScope=null)이면 EscalationError(가진 것 이상 못 줌)", async () => {
+    mockGetEffectiveScope.mockResolvedValue(null);
+    await expect(assertOverrideWithinActorGrant(delegate([]), "leave.approval", "approve", "ALLOW", "all")).rejects.toBeInstanceOf(EscalationError);
   });
-  it("DENY: 비-critical 권한은 위임 admin 허용", () => {
-    expect(() =>
-      assertOverrideWithinActorGrant(delegate([]), "leave.approval:approve", "DENY"),
-    ).not.toThrow();
+  it("DENY: 비-critical 권한은 위임 admin 허용(getEffectiveScope 호출 안 함)", async () => {
+    await expect(assertOverrideWithinActorGrant(delegate([]), "leave.approval", "approve", "DENY", "all")).resolves.toBeUndefined();
+    expect(mockGetEffectiveScope).not.toHaveBeenCalled();
   });
-  it("ALLOW: critical(admin.users:update)은 actor가 보유하고 있어도 비-OWNER 거부(finding D — 경계 우회 방지)", () => {
-    expect(() =>
-      assertOverrideWithinActorGrant(delegate(["admin.users:update"]), "admin.users:update", "ALLOW"),
-    ).toThrow(EscalationError);
+  it("ALLOW: critical(admin.users:update)은 actor가 보유하고 있어도 비-OWNER 거부(finding D)", async () => {
+    await expect(assertOverrideWithinActorGrant(delegate(["admin.users:update"]), "admin.users", "update", "ALLOW", "all")).rejects.toBeInstanceOf(EscalationError);
   });
-  it("ALLOW: critical(admin.audit:view)은 actor가 보유하고 있어도 비-OWNER 거부(finding D)", () => {
-    expect(() =>
-      assertOverrideWithinActorGrant(delegate(["admin.audit:view"]), "admin.audit:view", "ALLOW"),
-    ).toThrow(EscalationError);
+  it("ALLOW: critical(admin.audit:view)은 actor가 보유하고 있어도 비-OWNER 거부(finding D)", async () => {
+    await expect(assertOverrideWithinActorGrant(delegate(["admin.audit:view"]), "admin.audit", "view", "ALLOW", "all")).rejects.toBeInstanceOf(EscalationError);
   });
-  it("DENY: critical(admin.*) 권한은 비-OWNER 거부(lockout 방지)", () => {
-    expect(() =>
-      assertOverrideWithinActorGrant(delegate(["admin.users:update"]), "admin.users:update", "DENY"),
-    ).toThrow(EscalationError);
+  it("DENY: critical(admin.*) 권한은 비-OWNER 거부(lockout 방지)", async () => {
+    await expect(assertOverrideWithinActorGrant(delegate(["admin.users:update"]), "admin.users", "update", "DENY", "all")).rejects.toBeInstanceOf(EscalationError);
   });
-  it("OWNER는 critical ALLOW·critical DENY·비-critical 미보유 ALLOW 모두 허용", () => {
-    expect(() => assertOverrideWithinActorGrant(owner(), "admin.users:update", "ALLOW")).not.toThrow();
-    expect(() => assertOverrideWithinActorGrant(owner(), "admin.users:update", "DENY")).not.toThrow();
-    expect(() => assertOverrideWithinActorGrant(owner(), "admin.audit:view", "ALLOW")).not.toThrow();
-    expect(() => assertOverrideWithinActorGrant(owner(), "leave.approval:approve", "ALLOW")).not.toThrow();
+  it("OWNER는 critical ALLOW·critical DENY·비-critical 미보유 ALLOW 모두 허용", async () => {
+    await expect(assertOverrideWithinActorGrant(owner(), "admin.users", "update", "ALLOW", "all")).resolves.toBeUndefined();
+    await expect(assertOverrideWithinActorGrant(owner(), "admin.users", "update", "DENY", "all")).resolves.toBeUndefined();
+    await expect(assertOverrideWithinActorGrant(owner(), "admin.audit", "view", "ALLOW", "all")).resolves.toBeUndefined();
+    await expect(assertOverrideWithinActorGrant(owner(), "leave.approval", "approve", "ALLOW", "all")).resolves.toBeUndefined();
+  });
+  it("F-N: team-scope actor가 all-scope ALLOW 부여 시도 → EscalationError(scope 초과)", async () => {
+    mockGetEffectiveScope.mockResolvedValue("team"); // actor scope=team
+    await expect(assertOverrideWithinActorGrant(delegate([]), "leave.approval", "approve", "ALLOW", "all")).rejects.toBeInstanceOf(EscalationError);
+  });
+  it("F-N: team-scope actor가 team-scope ALLOW 부여 → 허용(scope 한도 내)", async () => {
+    mockGetEffectiveScope.mockResolvedValue("team");
+    await expect(assertOverrideWithinActorGrant(delegate([]), "leave.approval", "approve", "ALLOW", "team")).resolves.toBeUndefined();
+  });
+  it("F-N: assigned scope는 항상 EscalationError(미해석 scope)", async () => {
+    mockGetEffectiveScope.mockResolvedValue("all");
+    await expect(assertOverrideWithinActorGrant(delegate([]), "leave.approval", "approve", "ALLOW", "assigned")).rejects.toBeInstanceOf(EscalationError);
   });
 });
 

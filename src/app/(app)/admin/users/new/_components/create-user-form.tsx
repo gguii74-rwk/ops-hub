@@ -13,24 +13,24 @@ import type { SystemRole } from "@/lib/auth/types";
 const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
 
 export interface CreateUserState {
-  email: string; name: string; password: string; department: string;
+  email: string; name: string; password: string; teamId: string | null;
   employmentType: AttrState["employmentType"]; jobFunction: AttrState["jobFunction"];
   systemRole: SystemRole; roleKeys: string[];
 }
 
 export function toCreateUserPayload(s: CreateUserState) {
   return {
-    email: s.email, name: s.name, password: s.password, department: s.department || null,
+    email: s.email, name: s.name, password: s.password, teamId: s.teamId || null,
     employmentType: s.employmentType, jobFunction: s.jobFunction, systemRole: s.systemRole, roleKeys: s.roleKeys,
   };
 }
 
-export function CreateUserForm() {
+export function CreateUserForm({ teams }: { teams: Array<{ id: string; name: string }> }) {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
-  const [department, setDepartment] = useState("");
+  const [teamId, setTeamId] = useState<string | null>(null);
   const [systemRole, setSystemRole] = useState<SystemRole>("MEMBER");
   const [attr, setAttr] = useState<AttrState>(emptyAttrState);
   const set = <K extends keyof AttrState>(k: K, v: AttrState[K]) => setAttr((s) => ({ ...s, [k]: v }));
@@ -41,7 +41,7 @@ export function CreateUserForm() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(toCreateUserPayload({
-          email, name, password, department,
+          email, name, password, teamId,
           employmentType: attr.employmentType, jobFunction: attr.jobFunction, systemRole, roleKeys: attr.roleKeys,
         })),
       });
@@ -68,8 +68,11 @@ export function CreateUserForm() {
           <p className="text-xs text-muted-foreground">추가 후 사용자는 최초 로그인 시 비밀번호를 변경해야 합니다.</p>
         </div>
         <div className="grid gap-1.5">
-          <Label htmlFor="dept">부서(선택)</Label>
-          <Input id="dept" value={department} onChange={(e) => setDepartment(e.target.value)} />
+          <Label htmlFor="team">팀(선택)</Label>
+          <select id="team" className={selectCls} value={teamId ?? ""} onChange={(e) => setTeamId(e.target.value || null)}>
+            <option value="">무소속</option>
+            {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
         </div>
         <UserAttrFields state={attr} set={set} />
         <div className="space-y-1">

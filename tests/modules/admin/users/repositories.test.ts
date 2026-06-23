@@ -7,6 +7,7 @@ const h = vi.hoisted(() => {
       findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), count: vi.fn(),
       create: vi.fn(), update: vi.fn(), updateMany: vi.fn(),
     },
+    team: { findUnique: vi.fn(), updateMany: vi.fn(async () => ({ count: 0 })) },
     accessRole: { findMany: vi.fn() },
     userAccessRole: { findMany: vi.fn(), createMany: vi.fn(), deleteMany: vi.fn() },
     userPermissionOverride: { create: vi.fn(), deleteMany: vi.fn(), findUnique: vi.fn() },
@@ -37,7 +38,7 @@ import {
   setStatusTx, reactivateRejectedTx, resetPasswordTx, changePasswordTx,
   createActiveUserByAdminTx, createPendingSignup, setPasswordViaToken, refreshVerifyToken,
 } from "@/modules/admin/users/repositories";
-import { UserConflictError, RateLimitError, EscalationError } from "@/modules/admin/users/errors";
+import { UserConflictError, RateLimitError, EscalationError, UserValidationError } from "@/modules/admin/users/errors";
 import { Prisma } from "@prisma/client";
 
 // PENDING 상한은 라우트(task-06)가 주입하는 인자 — repository는 rate-limit.ts 상수에 의존하지 않는다(deps 역전 방지).
@@ -410,10 +411,32 @@ describe("updateUserTx (systemRole 강등 시 가용성)", () => {
   });
 });
 
+describe("assertActiveTeamTx (F-J — active team validation)", () => {
+  const updatedAt = new Date("2026-06-01T00:00:00Z");
+  it("비active 팀 배정은 UserValidationError, user.updateMany 미호출(F-J)", async () => {
+    h.db.team.findUnique.mockResolvedValue({ active: false });
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt });
+    await expect(updateUserTx("u1", { teamId: "team-x" }, "admin1", updatedAt)).rejects.toBeInstanceOf(UserValidationError);
+    expect(h.db.user.updateMany).not.toHaveBeenCalled();
+  });
+  it("미존재 팀은 UserValidationError, FK 500 전 400(F-J)", async () => {
+    h.db.team.findUnique.mockResolvedValue(null);
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt });
+    await expect(updateUserTx("u1", { teamId: "team-x" }, "admin1", updatedAt)).rejects.toBeInstanceOf(UserValidationError);
+    expect(h.db.user.updateMany).not.toHaveBeenCalled();
+  });
+  it("null teamId(무소속)는 assertActiveTeamTx를 건너뛰고 통과", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt });
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    await updateUserTx("u1", { teamId: null }, "admin1", updatedAt);
+    expect(h.db.team.findUnique).not.toHaveBeenCalled();
+  });
+});
+
 describe("createActiveUserByAdminTx (D4)", () => {
   const args = {
     email: "new@x.com", name: "신규", passwordHash: "h", employmentType: "REGULAR", jobFunction: "DEVELOPER",
-    department: null, systemRole: "MEMBER", roleKeys: ["developer"], actorId: "admin1",
+    teamId: null, systemRole: "MEMBER", roleKeys: ["developer"], actorId: "admin1",
   };
   it("ACTIVE + mustChangePassword=true + emailVerifiedAt=now + 역할부여 + 감사", async () => {
     h.db.user.create.mockResolvedValue({ id: "u-new" });
@@ -437,7 +460,7 @@ describe("createActiveUserByAdminTx (D4)", () => {
 describe("createPendingSignup (C안 — 비번 없이 PENDING, user+mail 원자성 #4)", () => {
   const args = {
     email: "self@x.com", name: "자가", employmentType: "REGULAR", jobFunction: "DEVELOPER",
-    department: null, tokenHash: "th", tokenExpiresAt: new Date("2026-07-01T00:00:00Z"),
+    tokenHash: "th", tokenExpiresAt: new Date("2026-07-01T00:00:00Z"),
     mail: { recipients: ["self@x.com"], subject: "verify", bodyHtml: "<a>link</a>" },
     pendingCap: PENDING_CAP, // 라우트가 주입하는 PENDING 상한 — repository는 인자로 받는다(deps 역전 방지)
   };

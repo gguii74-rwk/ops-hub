@@ -1,6 +1,8 @@
 import "server-only";
 import { prisma, type PrismaTx } from "@/lib/prisma";
-import { computeDecision, permissionKey, type PermissionRule, type Scope } from "@/kernel/access/decision";
+import { computeDecision, permissionKey, type PermissionRule, type Scope, type Action } from "@/kernel/access/decision";
+import { getEffectiveScope, SCOPE_RANK, type EnforceableScope } from "@/kernel/access";
+import type { Prisma } from "@prisma/client";
 import { EscalationError, MinAvailabilityError } from "@/modules/admin/users/errors";
 import {
   isPrivilegedRoleKey,
@@ -67,23 +69,29 @@ export function assertCanSetSystemRole(
   }
 }
 
-// D13ⓒ — 비-critical ALLOW override는 actor가 실제 보유한 권한 한도 내에서만(가진 것 이상 못 줌).
+// D13ⓒ — 비-critical ALLOW override는 actor가 실제 보유한 권한 한도 내에서만(가진 것 이상 못 줌, scope도 포함).
 // D13ⓓ — critical(admin.*) 권한 override는 effect 무관(ALLOW·DENY 모두) OWNER-only.
 //   ALLOW: 위임 admin이 `admin.users:update` 등을 보유하더라도 ALLOW override로 타인에게 동등 admin 권한을
 //          우회 부여하는 것 차단(보호된 역할/systemRole 부여 없이 OWNER-only 위임 경계 우회 방지 — finding D).
 //   DENY:  동료 관리자를 critical 권한에서 lockout 하는 것 차단.
-// 비-critical만 기존 로직(ALLOW=actor 보유 한도 내, DENY=허용).
-export function assertOverrideWithinActorGrant(
-  actor: ActorContext, key: string, effect: "ALLOW" | "DENY",
-): void {
+// F-N: ALLOW 부여 시 actor의 effectiveScope를 in-tx 재해석해 scope도 보유 한도 내인지 확인.
+export async function assertOverrideWithinActorGrant(
+  actor: ActorContext, resource: string, action: string, effect: "ALLOW" | "DENY", scope: string,
+  tx?: Prisma.TransactionClient,
+): Promise<void> {
   if (actor.isOwner) return;
+  const key = permissionKey(resource, action);
   // critical 권한은 effect와 무관하게 OWNER-only(actor가 보유하고 있어도 ALLOW 불가).
   if (isCriticalKey(key)) {
     throw new EscalationError(`critical 권한(${key})에 대한 override(${effect})는 OWNER만 가능합니다.`);
   }
   // 이하 비-critical 권한.
-  if (effect === "ALLOW" && !actor.permissionKeys.has(key)) {
-    throw new EscalationError(`보유하지 않은 권한(${key})은 ALLOW로 부여할 수 없습니다.`);
+  if (effect === "ALLOW") {
+    const actorScope = await getEffectiveScope(actor.userId, resource, action as Action, tx);
+    if (actorScope == null) throw new EscalationError(`보유하지 않은 권한(${key})은 ALLOW로 부여할 수 없습니다.`);
+    if (scope === "assigned" || SCOPE_RANK[scope as EnforceableScope] > SCOPE_RANK[actorScope]) {
+      throw new EscalationError(`보유 scope(${actorScope})를 넘는 ${scope} 권한은 부여할 수 없습니다.`);
+    }
   }
   // 비-critical DENY는 허용.
 }

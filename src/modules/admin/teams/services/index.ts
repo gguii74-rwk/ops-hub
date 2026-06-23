@@ -3,7 +3,7 @@ import { requirePermission } from "@/kernel/access";
 import { listTeams, createTeam, updateTeam, type TeamRow } from "../repositories";
 import type { CreateTeamInput, UpdateTeamInput } from "../validations";
 
-export { listActiveUsersWithTeam } from "../repositories";
+export { listActiveUsersWithTeam, listActiveTeamOptions } from "../repositories";
 
 const RESOURCE = "admin.teams";
 

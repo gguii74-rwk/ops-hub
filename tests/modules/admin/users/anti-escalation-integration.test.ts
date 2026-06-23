@@ -4,6 +4,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Drift 1: @/lib/auth/password 모듈은 존재하지 않는다. 서비스는 bcryptjs를 직접 사용하므로 그쪽을 모킹한다.
 // 가드 거부(EscalationError) 시나리오는 bcrypt가 호출되기 전에 throw하므로 대부분 bcrypt mock 불필요.
 // createUserByAdmin은 bcrypt.hash를 호출하므로 해당 모킹만 추가.
+// F-Q: upsertOverride/removeOverride가 prisma.$transaction으로 감싸져 실 DB 불필요 → prisma mock 추가.
+// assertOverrideWithinActorGrant가 getEffectiveScope(DB 호출)를 사용 → @/kernel/access mock 추가.
+const mockGetEffectiveScope = vi.fn(async (_userId: string, _resource: string, _action: string, _tx?: unknown): Promise<string | null> => "all");
 const h = vi.hoisted(() => ({
   repo: {
     approveTx: vi.fn(async () => undefined),
@@ -24,7 +27,7 @@ function userDetailFixture(over: Record<string, unknown> = {}) {
     id: "target1", systemRole: "MEMBER", roleKeys: [] as string[],
     updatedAt: new Date(), emailVerifiedAt: new Date(),
     email: "target@x.com", name: "대상", status: "ACTIVE",
-    department: null, employmentType: "REGULAR", jobFunction: "DEVELOPER",
+    teamId: null, teamName: null, employmentType: "REGULAR", jobFunction: "DEVELOPER",
     mustChangePassword: false, createdAt: new Date(), overrides: [] as never[],
     ...over,
   };
@@ -32,9 +35,23 @@ function userDetailFixture(over: Record<string, unknown> = {}) {
 
 vi.mock("@/modules/admin/users/repositories", () => h.repo);
 vi.mock("@/modules/leave/services/mail", () => ({ triggerLeaveMailDrain: vi.fn() }));
-// bcryptjs: createUserByAdmin이 임시비번을 해시한다. 거부 시나리오는 bcrypt 전에 throw하므로 mock 필요 없으나,
+// bcryptjs: createUserByAdmin이 임시비번을 해시한다. 거부 시나리오는 bcrypt 전에 throw하므로 mock 불필요하나,
 // 허용 시나리오(OWNER 대조군)에서 실제 bcrypt가 돌면 느리므로 고정값 반환.
 vi.mock("bcryptjs", () => ({ default: { hash: vi.fn(async () => "HASHED"), compare: vi.fn(async () => true) } }));
+// F-Q: upsertOverride/removeOverride는 prisma.$transaction으로 감쌈 — DB 없이 동작하도록 passthrough mock.
+vi.mock("@/lib/prisma", () => ({
+  prisma: { $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn({ $queryRaw: vi.fn() })) },
+}));
+// assertOverrideWithinActorGrant가 getEffectiveScope(DB 조회)를 사용 — "all"을 기본으로 반환(mock).
+vi.mock("@/kernel/access", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/kernel/access")>();
+  return {
+    ...actual,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getEffectiveScope: (userId: any, resource: any, action: any, tx?: any) =>
+      mockGetEffectiveScope(userId, resource, action, tx),
+  };
+});
 
 import {
   approveUser, createUserByAdmin, assignRoles, upsertOverride, resetPassword, updateUser,
@@ -62,12 +79,14 @@ const EXP = new Date("2026-06-01T00:00:00.000Z");
 const adminInput = (extra: Record<string, unknown> = {}) => ({
   email: "x@x.com", name: "n", password: "ValidPassword12!",
   employmentType: "REGULAR" as const, jobFunction: "DEVELOPER" as const,
-  department: null, systemRole: "MEMBER" as const, roleKeys: [] as string[],
+  teamId: null, systemRole: "MEMBER" as const, roleKeys: [] as string[],
   ...extra,
 });
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // getEffectiveScope: 기본값 "all"(actor가 해당 권한을 보유). 미보유 케이스는 각 테스트에서 mockResolvedValueOnce(null).
+  mockGetEffectiveScope.mockResolvedValue("all");
   h.repo.getUserDetail.mockResolvedValue(userDetailFixture() as never);
 });
 
@@ -165,6 +184,8 @@ describe("D12 OWNER/ADMIN systemRole 부여는 OWNER만 (create·approve·update
 // ⓒ 미보유 권한 ALLOW override 거부
 describe("D13ⓒ 미보유 권한 ALLOW override 거부 (가진 것 이상 못 줌)", () => {
   it("위임 admin이 미보유 leave.approval:approve ALLOW → EscalationError, createOverride 미호출", async () => {
+    // actor가 해당 권한을 미보유 → getEffectiveScope null 반환 → EscalationError.
+    mockGetEffectiveScope.mockResolvedValueOnce(null);
     await expect(upsertOverride(delegate, "target1", {
       resource: "leave.approval", action: "approve", effect: "ALLOW", scope: "all", reason: null, startsAt: null, endsAt: null,
     })).rejects.toBeInstanceOf(EscalationError);

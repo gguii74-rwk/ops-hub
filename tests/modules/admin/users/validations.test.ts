@@ -29,7 +29,7 @@ describe("rejectSchema", () => {
 describe("adminCreateSchema", () => {
   const ok = {
     email: "n@x.com", name: "신규", password: "abcdefghijkl",
-    employmentType: "REGULAR", jobFunction: "DEVELOPER", department: null,
+    employmentType: "REGULAR", jobFunction: "DEVELOPER", teamId: null,
     systemRole: "MEMBER", roleKeys: ["regular-developer"],
   };
   it("정상 통과", () => {

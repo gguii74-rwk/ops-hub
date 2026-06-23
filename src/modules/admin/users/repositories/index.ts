@@ -1,7 +1,7 @@
 import "server-only";
 import { Prisma, type UserStatus } from "@prisma/client";
 import { prisma, type PrismaTx } from "@/lib/prisma";
-import { UserConflictError, RateLimitError } from "../errors";
+import { UserConflictError, RateLimitError, UserValidationError } from "../errors";
 import { withAvailabilityLock, assertMinAvailability } from "../services/guards";
 import { writeAudit } from "@/kernel/audit";
 import { enqueueUserMail, type UserMailJob } from "./mail";
@@ -10,12 +10,19 @@ import { enqueueUserMail, type UserMailJob } from "./mail";
 export interface UserListFilter { status?: UserStatus; employmentType?: string; jobFunction?: string; q?: string; page: number; pageSize: number; }
 export interface UserRow {
   id: string; email: string; name: string; status: UserStatus;
-  employmentType: string; jobFunction: string; systemRole: string; department: string | null;
+  employmentType: string; jobFunction: string; systemRole: string; teamId: string | null; teamName: string | null;
   roleKeys: string[]; createdAt: Date; updatedAt: Date;
 }
 export interface OverrideRow { id: string; resource: string; action: string; effect: string; scope: string; reason: string | null; startsAt: Date | null; endsAt: Date | null; }
 export interface UserDetail extends UserRow { mustChangePassword: boolean; emailVerifiedAt: Date | null; updatedAt: Date; overrides: OverrideRow[]; }
 export interface OverrideInput { resource: string; action: string; effect: "ALLOW" | "DENY"; scope: string; reason: string | null; startsAt: Date | null; endsAt: Date | null; }
+
+// 팀 배정 전 active 팀 존재 확인(F-J). null/undefined이면 무소속 → 검사 생략.
+async function assertActiveTeamTx(tx: Prisma.TransactionClient, teamId: string | null | undefined): Promise<void> {
+  if (teamId == null) return;
+  const team = await tx.team.findUnique({ where: { id: teamId }, select: { active: true } });
+  if (!team || !team.active) throw new UserValidationError("배정할 팀이 없거나 비활성 상태입니다.");
+}
 
 // roleKeys → AccessRole.id 매핑. 모든 키가 존재해야 함(없으면 충돌). tx/전역 어느 클라이언트로도 호출 가능.
 async function resolveRoleIds(client: PrismaTx, roleKeys: string[]): Promise<string[]> {
@@ -50,7 +57,7 @@ export async function listUsers(f: UserListFilter): Promise<{ rows: UserRow[]; t
       where, orderBy: { createdAt: "desc" }, skip: (f.page - 1) * f.pageSize, take: f.pageSize,
       select: {
         id: true, email: true, name: true, status: true, employmentType: true, jobFunction: true,
-        systemRole: true, department: true, createdAt: true, updatedAt: true,
+        systemRole: true, teamId: true, team: { select: { name: true } }, createdAt: true, updatedAt: true,
         roleAssignments: { select: { role: { select: { key: true } } } },
       },
     }),
@@ -61,7 +68,7 @@ export async function listUsers(f: UserListFilter): Promise<{ rows: UserRow[]; t
     rows: rows.map((u) => ({
       id: u.id, email: u.email, name: u.name, status: u.status,
       employmentType: u.employmentType, jobFunction: u.jobFunction, systemRole: u.systemRole,
-      department: u.department, createdAt: u.createdAt, updatedAt: u.updatedAt, roleKeys: u.roleAssignments.map((ra) => ra.role.key),
+      teamId: u.teamId, teamName: u.team?.name ?? null, createdAt: u.createdAt, updatedAt: u.updatedAt, roleKeys: u.roleAssignments.map((ra) => ra.role.key),
     })),
     total, pendingCount,
   };
@@ -72,7 +79,7 @@ export async function getUserDetail(id: string): Promise<UserDetail | null> {
     where: { id },
     select: {
       id: true, email: true, name: true, status: true, employmentType: true, jobFunction: true,
-      systemRole: true, department: true, createdAt: true, updatedAt: true,
+      systemRole: true, teamId: true, team: { select: { name: true } }, createdAt: true, updatedAt: true,
       mustChangePassword: true, emailVerifiedAt: true,
       roleAssignments: { select: { role: { select: { key: true } } } },
       permissionOverrides: {
@@ -85,7 +92,7 @@ export async function getUserDetail(id: string): Promise<UserDetail | null> {
   return {
     id: u.id, email: u.email, name: u.name, status: u.status,
     employmentType: u.employmentType, jobFunction: u.jobFunction, systemRole: u.systemRole,
-    department: u.department, createdAt: u.createdAt, updatedAt: u.updatedAt,
+    teamId: u.teamId, teamName: u.team?.name ?? null, createdAt: u.createdAt, updatedAt: u.updatedAt,
     mustChangePassword: u.mustChangePassword, emailVerifiedAt: u.emailVerifiedAt,
     roleKeys: u.roleAssignments.map((ra) => ra.role.key),
     overrides: u.permissionOverrides.map((o) => ({
@@ -110,7 +117,7 @@ export async function getUserDetail(id: string): Promise<UserDetail | null> {
 // deps 역전 방지: 상한 값은 `PENDING_UNVERIFIED_CAP` 상수를 import하지 않고 `pendingCap` 인자로 주입받는다.
 //            상수는 task-06 rate-limit.ts가 소유하고, 라우트(task-06)가 호출 시 `pendingCap: PENDING_UNVERIFIED_CAP`로 넘긴다(정상 방향 06→03).
 export async function createPendingSignup(args: {
-  email: string; name: string; employmentType: string; jobFunction: string; department: string | null;
+  email: string; name: string; employmentType: string; jobFunction: string;
   tokenHash: string; tokenExpiresAt: Date; mail: UserMailJob; pendingCap: number;
 }): Promise<{ id: string }> {
   const now = new Date();
@@ -132,7 +139,6 @@ export async function createPendingSignup(args: {
       name: args.name,
       employmentType: args.employmentType as Prisma.UserCreateInput["employmentType"],
       jobFunction: args.jobFunction as Prisma.UserCreateInput["jobFunction"],
-      department: args.department,
       status: "PENDING" as const, passwordHash: null, emailVerifiedAt: null,
       emailVerifyTokenHash: args.tokenHash, emailVerifyExpiresAt: args.tokenExpiresAt,
     };
@@ -190,17 +196,18 @@ export async function refreshVerifyToken(email: string, tokenHash: string, token
 // ── 관리자 직접추가(D4) ──
 export async function createActiveUserByAdminTx(args: {
   email: string; name: string; passwordHash: string; employmentType: string; jobFunction: string;
-  department: string | null; systemRole: string; roleKeys: string[]; actorId: string;
+  teamId: string | null; systemRole: string; roleKeys: string[]; actorId: string;
 }): Promise<{ id: string }> {
   const now = new Date();
   try {
     return await prisma.$transaction(async (tx) => {
+      await assertActiveTeamTx(tx, args.teamId);
       const created = await tx.user.create({
         data: {
           email: args.email, name: args.name, passwordHash: args.passwordHash,
           employmentType: args.employmentType as Prisma.UserCreateInput["employmentType"],
           jobFunction: args.jobFunction as Prisma.UserCreateInput["jobFunction"],
-          department: args.department,
+          teamId: args.teamId,
           systemRole: args.systemRole as Prisma.UserCreateInput["systemRole"],
           status: "ACTIVE", mustChangePassword: true, emailVerifiedAt: now,
         },
@@ -222,7 +229,7 @@ export async function createActiveUserByAdminTx(args: {
 // throw 시 트랜잭션 롤백 — applyRoles·mail 미실행. setRoles의 finding-H recheck 패턴과 동형.
 export async function approveTx(
   id: string, actorId: string,
-  decision: { employmentType: string; jobFunction: string; systemRole: string; roleKeys: string[]; name?: string; department?: string | null },
+  decision: { employmentType: string; jobFunction: string; systemRole: string; roleKeys: string[]; name?: string; teamId?: string | null },
   mail: UserMailJob, expectedUpdatedAt: Date,
   recheck?: (currentRoleKeys: string[]) => void,
 ): Promise<void> {
@@ -234,6 +241,7 @@ export async function approveTx(
     if (!u) throw new UserConflictError("사용자를 찾을 수 없습니다.");
     if (u.status !== "PENDING") throw new UserConflictError("이미 처리된 신청입니다.");
     if (!u.emailVerifiedAt) throw new UserConflictError("이메일 검증(비밀번호 설정) 전에는 승인할 수 없습니다.");
+    if (decision.teamId !== undefined) await assertActiveTeamTx(tx, decision.teamId);
     const updated = await tx.user.updateMany({
       where: { id, status: "PENDING", updatedAt: expectedUpdatedAt },
       data: {
@@ -243,7 +251,7 @@ export async function approveTx(
         systemRole: decision.systemRole as Prisma.UserUpdateInput["systemRole"],
         // NF2: admin 확정값이 권위 — 제공된 경우만 덮어씀(없으면 사용자 자가입력 유지).
         ...(decision.name !== undefined ? { name: decision.name } : {}),
-        ...(decision.department !== undefined ? { department: decision.department } : {}),
+        ...(decision.teamId !== undefined ? { teamId: decision.teamId } : {}),
       },
     });
     if (updated.count === 0) throw new UserConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요.");
@@ -254,6 +262,10 @@ export async function approveTx(
     await applyRoles(tx, id, decision.roleKeys);
     await writeAudit(tx, { actorId, entityType: "User", entityId: id, action: "approve", metadata: { systemRole: decision.systemRole, roleKeys: decision.roleKeys } });
     await enqueueUserMail(tx, { eventType: "APPROVED", ...mail });
+    if (decision.teamId !== undefined) {
+      const { reconcileTeamLeadTx } = await import("@/modules/admin/teams/repositories");
+      await reconcileTeamLeadTx(tx, id);
+    }
   });
 }
 
@@ -276,7 +288,7 @@ export async function rejectTx(id: string, actorId: string, reason: string, mail
 // ── 편집(CAS + systemRole 강등 시 가용성) ──
 export async function updateUserTx(
   id: string,
-  patch: { name?: string; department?: string | null; employmentType?: string; jobFunction?: string; systemRole?: string },
+  patch: { name?: string; teamId?: string | null; employmentType?: string; jobFunction?: string; systemRole?: string },
   actorId: string, expectedUpdatedAt: Date,
 ): Promise<void> {
   // systemRole 변경은 가용성에 영향(OWNER/관리자 강등) → 락 + 커밋 전 재검사. 그 외 속성 patch는 가용성 무관.
@@ -284,11 +296,12 @@ export async function updateUserTx(
   const run = async (tx: PrismaTx) => {
     const u = await tx.user.findUnique({ where: { id }, select: { status: true, updatedAt: true } });
     if (!u) throw new UserConflictError("사용자를 찾을 수 없습니다.");
+    if (patch.teamId !== undefined) await assertActiveTeamTx(tx, patch.teamId);
     const updated = await tx.user.updateMany({
       where: { id, updatedAt: expectedUpdatedAt },
       data: {
         ...(patch.name !== undefined ? { name: patch.name } : {}),
-        ...(patch.department !== undefined ? { department: patch.department } : {}),
+        ...(patch.teamId !== undefined ? { teamId: patch.teamId } : {}),
         ...(patch.employmentType !== undefined ? { employmentType: patch.employmentType as Prisma.UserUpdateInput["employmentType"] } : {}),
         ...(patch.jobFunction !== undefined ? { jobFunction: patch.jobFunction as Prisma.UserUpdateInput["jobFunction"] } : {}),
         ...(patch.systemRole !== undefined ? { systemRole: patch.systemRole as Prisma.UserUpdateInput["systemRole"] } : {}),
@@ -297,6 +310,10 @@ export async function updateUserTx(
     if (updated.count === 0) throw new UserConflictError("처리 중 정보가 변경되었습니다. 다시 확인해 주세요.");
     await writeAudit(tx, { actorId, entityType: "User", entityId: id, action: "update", metadata: { patch } });
     if (affectsAvailability) await assertMinAvailability(tx);
+    if (patch.teamId !== undefined) {
+      const { reconcileTeamLeadTx } = await import("@/modules/admin/teams/repositories");
+      await reconcileTeamLeadTx(tx, id);
+    }
   };
   if (affectsAvailability) await withAvailabilityLock(run);
   else await prisma.$transaction(run);
@@ -327,8 +344,9 @@ export async function setRoles(
 }
 
 // override 생성(가용성 — DENY가 마지막 관리자를 lockout할 수 있음).
-export async function createOverride(id: string, o: OverrideInput, actorId: string): Promise<{ id: string }> {
-  return withAvailabilityLock(async (tx) => {
+// tx 주입 시 해당 트랜잭션에 합류(upsertOverride의 actor lock 트랜잭션과 공유). 없으면 withAvailabilityLock으로 자체 트랜잭션.
+export async function createOverride(id: string, o: OverrideInput, actorId: string, tx?: Prisma.TransactionClient): Promise<{ id: string }> {
+  const run = async (tx: PrismaTx) => {
     const perm = await tx.permission.findUnique({ where: { resource_action: { resource: o.resource, action: o.action } }, select: { id: true } });
     if (!perm) throw new UserConflictError("알 수 없는 권한입니다.");
     let created: { id: string };
@@ -344,17 +362,22 @@ export async function createOverride(id: string, o: OverrideInput, actorId: stri
     await writeAudit(tx, { actorId, entityType: "User", entityId: id, action: "create_override", metadata: { resource: o.resource, action: o.action, effect: o.effect, scope: o.scope } });
     await assertMinAvailability(tx);
     return { id: created.id };
-  });
+  };
+  if (tx) return run(tx);
+  return withAvailabilityLock(run);
 }
 
 // override 삭제(가용성 — ALLOW 제거가 관리자 권한을 떨어뜨릴 수 있음). 본인 소유 행만.
-export async function deleteOverride(id: string, overrideId: string, actorId: string): Promise<void> {
-  await withAvailabilityLock(async (tx) => {
+// tx 주입 시 해당 트랜잭션에 합류. 없으면 withAvailabilityLock으로 자체 트랜잭션.
+export async function deleteOverride(id: string, overrideId: string, actorId: string, tx?: Prisma.TransactionClient): Promise<void> {
+  const run = async (tx: PrismaTx) => {
     const { count } = await tx.userPermissionOverride.deleteMany({ where: { id: overrideId, userId: id } });
     if (count === 0) throw new UserConflictError("해당 권한 예외를 찾을 수 없습니다.");
     await writeAudit(tx, { actorId, entityType: "User", entityId: id, action: "delete_override", metadata: { overrideId } });
     await assertMinAvailability(tx);
-  });
+  };
+  if (tx) return run(tx);
+  return withAvailabilityLock(run);
 }
 
 // ── 상태 전이(세션 무효화 동반·가용성) ──
@@ -383,6 +406,10 @@ export async function setStatusTx(
     if (updated.count === 0) throw new UserConflictError("처리 중 상태가 변경되었습니다. 다시 확인해 주세요.");
     await writeAudit(tx, { actorId, entityType: "User", entityId: id, action: status === "DISABLED" ? "disable" : "enable", metadata: {} });
     await assertMinAvailability(tx);
+    if (status === "DISABLED") {
+      const { reconcileTeamLeadTx } = await import("@/modules/admin/teams/repositories");
+      await reconcileTeamLeadTx(tx, id);
+    }
   });
 }
 

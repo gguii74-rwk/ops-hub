@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import {
   assertNotSelfMutation, assertCanAssignRoles, assertCanSetSystemRole, assertOverrideWithinActorGrant,
-  permissionKey, type ActorContext,
+  type ActorContext,
 } from "./guards";
 import { isPrivilegedRoleKey, PRIVILEGED_SYSTEM_ROLES } from "../policy";
 import { EscalationError, UserConflictError } from "../errors";
@@ -13,6 +13,7 @@ import {
   createOverride, deleteOverride, setStatusTx, reactivateRejectedTx, resetPasswordTx,
   type UserListFilter, type UserDetail, type OverrideInput,
 } from "../repositories";
+import { prisma } from "@/lib/prisma";
 import type { UserMailJob } from "../repositories/mail";
 import { triggerLeaveMailDrain } from "@/modules/leave/services/mail";
 import type {
@@ -88,9 +89,9 @@ export async function approveUser(actor: ActorContext, id: string, input: Approv
   await approveTx(id, actor.userId, {
     employmentType: input.employmentType, jobFunction: input.jobFunction,
     systemRole: input.systemRole, roleKeys: input.roleKeys,
-    // NF2: name·department는 선택 — undefined면 사용자 자가입력 유지, 제공되면 admin 확정값이 권위.
+    // NF2: name·teamId는 선택 — undefined면 사용자 자가입력 유지, 제공되면 admin 확정값이 권위.
     ...(input.name !== undefined ? { name: input.name } : {}),
-    ...(input.department !== undefined ? { department: input.department ?? null } : {}),
+    ...(input.teamId !== undefined ? { teamId: input.teamId ?? null } : {}),
   }, mail, expectedUpdatedAt,
     (currentRoleKeys) => assertCanAssignRoles(actor, currentRoleKeys, input.roleKeys), // 락 안 권위 재검사(fresh)
   );
@@ -116,7 +117,7 @@ export async function createUserByAdmin(actor: ActorContext, input: AdminCreateI
   // email은 사용자 병합 키(canonical). 공개 signup/resend와 동일하게 소문자로 저장해 대소문자만 다른 중복 신원 분리를 막는다.
   return createActiveUserByAdminTx({
     email: input.email.toLowerCase(), name: input.name, passwordHash,
-    employmentType: input.employmentType, jobFunction: input.jobFunction, department: input.department ?? null,
+    employmentType: input.employmentType, jobFunction: input.jobFunction, teamId: input.teamId ?? null,
     systemRole: input.systemRole, roleKeys: input.roleKeys, actorId: actor.userId,
   });
 }
@@ -131,7 +132,7 @@ export async function updateUser(actor: ActorContext, id: string, patch: UpdateU
   // CAS는 클라가 본 버전(expectedUpdatedAt)으로 — target.updatedAt(서버 재로드)이 아니다(stale-tab 차단).
   await updateUserTx(id, {
     ...(patch.name !== undefined ? { name: patch.name } : {}),
-    ...(patch.department !== undefined ? { department: patch.department ?? null } : {}),
+    ...(patch.teamId !== undefined ? { teamId: patch.teamId ?? null } : {}),
     ...(patch.employmentType !== undefined ? { employmentType: patch.employmentType } : {}),
     ...(patch.jobFunction !== undefined ? { jobFunction: patch.jobFunction } : {}),
     ...(patch.systemRole !== undefined ? { systemRole: patch.systemRole } : {}),
@@ -154,18 +155,22 @@ export async function assignRoles(actor: ActorContext, id: string, roleKeys: str
   );
 }
 
-// ── override 생성(D13ⓐ ⓒ ⓓ): 자가 금지 + ALLOW 보유한도/critical DENY 가드 → createOverride. ──
+// ── override 생성(D13ⓐ ⓒ ⓓ): 자가 금지 + ALLOW 보유한도/scope/critical DENY 가드 → createOverride. ──
+// F-Q: actor lock(FOR UPDATE)을 먼저 잡아 assertOverrideWithinActorGrant(getEffectiveScope)와 createOverride를 같은 tx에서.
 export async function upsertOverride(actor: ActorContext, id: string, dto: OverrideInputDto): Promise<{ id: string }> {
   await loadTarget(id);
   assertNotSelfMutation(actor, id);
-  assertOverrideWithinActorGrant(actor, permissionKey(dto.resource, dto.action), dto.effect);
   const input: OverrideInput = {
     resource: dto.resource, action: dto.action, effect: dto.effect, scope: dto.scope,
     reason: dto.reason ?? null,
     startsAt: dto.startsAt ? new Date(dto.startsAt) : null,
     endsAt: dto.endsAt ? new Date(dto.endsAt) : null,
   };
-  return createOverride(id, input, actor.userId);
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${actor.userId} FOR UPDATE`;
+    await assertOverrideWithinActorGrant(actor, dto.resource, dto.action, dto.effect, dto.scope, tx);
+    return createOverride(id, input, actor.userId, tx);
+  });
 }
 
 // ── override 삭제(D13ⓐ ⓒ ⓓ): 자가 금지 + 생성과 동일한 grant 경계 → deleteOverride(가용성은 repo가 보장). ──
@@ -173,13 +178,17 @@ export async function upsertOverride(actor: ActorContext, id: string, dto: Overr
 // **반전 effect**로 assertOverrideWithinActorGrant를 호출한다. critical(admin.*)은 effect 무관 OWNER-only라, 위임 admin이
 // critical DENY를 삭제해 대상의 admin 권한을 OWNER 승인 없이 복원하는 것을 차단한다. override는 update 경로가 없어
 // (생성·삭제만) key/effect가 불변이므로 로드 스냅샷으로 가드해도 stale race가 없다.
+// F-Q: actor lock(FOR UPDATE)을 먼저 잡아 assertOverrideWithinActorGrant(getEffectiveScope)와 deleteOverride를 같은 tx에서.
 export async function removeOverride(actor: ActorContext, id: string, overrideId: string): Promise<void> {
   const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
   const ov = target.overrides.find((o) => o.id === overrideId);
   if (!ov) throw new UserConflictError("해당 권한 예외를 찾을 수 없습니다.");
-  assertOverrideWithinActorGrant(actor, permissionKey(ov.resource, ov.action), ov.effect === "DENY" ? "ALLOW" : "DENY");
-  await deleteOverride(id, overrideId, actor.userId);
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${actor.userId} FOR UPDATE`;
+    await assertOverrideWithinActorGrant(actor, ov.resource, ov.action, ov.effect === "DENY" ? "ALLOW" : "DENY", ov.scope, tx);
+    await deleteOverride(id, overrideId, actor.userId, tx);
+  });
 }
 
 // ── status 토글(D13ⓐ ⓔ): 자가 금지 + 특권 대상 OWNER-only → REJECTED→ACTIVE는 reactivate, 그 외 ACTIVE/DISABLED는 setStatus. ──

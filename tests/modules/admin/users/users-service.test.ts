@@ -11,6 +11,15 @@ vi.mock("@/modules/admin/users/repositories", () => ({
 vi.mock("@/modules/leave/services/mail", () => ({ triggerLeaveMailDrain: vi.fn() }));
 // bcrypt 해시 — 고정값(임시비번/새 비번 해시는 서비스가 만든다).
 vi.mock("bcryptjs", () => ({ default: { hash: vi.fn(async () => "HASHED") } }));
+// prisma 모킹 — services/index.ts의 upsertOverride·removeOverride가 $transaction 사용.
+vi.mock("@/lib/prisma", () => ({
+  prisma: { $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn({ $queryRaw: vi.fn() })) },
+}));
+// @/kernel/access — assertOverrideWithinActorGrant가 getEffectiveScope 호출.
+vi.mock("@/kernel/access", () => ({
+  getEffectiveScope: vi.fn(async () => "all"),
+  SCOPE_RANK: { all: 3, team: 2, own: 1 },
+}));
 
 import {
   approveUser, rejectUser, createUserByAdmin, updateUser, assignRoles,
@@ -46,7 +55,7 @@ const EXP = new Date("2026-06-01T00:00:00.000Z");
 // getUserDetail 기본 응답 헬퍼(승인/거절·편집 대상).
 const detail = (over: Partial<Record<string, unknown>> = {}) => ({
   id: "u1", email: "u@x.com", name: "대상", status: "PENDING",
-  employmentType: "REGULAR", jobFunction: "DEVELOPER", systemRole: "MEMBER", department: null,
+  employmentType: "REGULAR", jobFunction: "DEVELOPER", systemRole: "MEMBER", teamId: null, teamName: null,
   roleKeys: [] as string[], createdAt: new Date(), updatedAt: new Date("2026-06-01T00:00:00Z"),
   mustChangePassword: false, emailVerifiedAt: new Date(), overrides: [],
   ...over,
@@ -127,7 +136,7 @@ describe("rejectUser", () => {
 describe("createUserByAdmin", () => {
   const input = {
     email: "n@x.com", name: "신규", password: "abcdefghijkl",
-    employmentType: "REGULAR" as const, jobFunction: "DEVELOPER" as const, department: null,
+    employmentType: "REGULAR" as const, jobFunction: "DEVELOPER" as const, teamId: null,
     systemRole: "MEMBER" as const, roleKeys: ["regular-developer"],
   };
   it("정상: 비번 해시 후 createActiveUserByAdminTx(passwordHash) 호출", async () => {
@@ -222,9 +231,12 @@ describe("upsertOverride / removeOverride", () => {
     r.createOverride.mockResolvedValue({ id: "ov1" });
     const res = await upsertOverride(delegate(["leave.approval:view"]), "u1", ov);
     expect(res).toEqual({ id: "ov1" });
-    expect(r.createOverride).toHaveBeenCalledWith("u1", expect.objectContaining({ resource: "leave.approval", action: "view", effect: "ALLOW" }), "admin1");
+    expect(r.createOverride).toHaveBeenCalledWith("u1", expect.objectContaining({ resource: "leave.approval", action: "view", effect: "ALLOW" }), "admin1", expect.anything());
   });
   it("ALLOW: actor 미보유 권한이면 EscalationError, repo 미호출", async () => {
+    // getEffectiveScope가 null 반환 → 미보유
+    const { getEffectiveScope } = await import("@/kernel/access");
+    vi.mocked(getEffectiveScope).mockResolvedValueOnce(null);
     await expect(upsertOverride(delegate([]), "u1", ov)).rejects.toBeInstanceOf(EscalationError);
     expect(r.createOverride).not.toHaveBeenCalled();
   });
@@ -243,7 +255,7 @@ describe("upsertOverride / removeOverride", () => {
     // 삭제는 effect 반전: DENY 삭제=ALLOW 복원 → actor가 해당 권한 보유해야 함.
     r.getUserDetail.mockResolvedValue(detail({ overrides: [{ id: "ov1", resource: "leave.approval", action: "view", effect: "DENY", scope: "all", reason: null, startsAt: null, endsAt: null }] }) as never);
     await removeOverride(delegate(["leave.approval:view"]), "u1", "ov1");
-    expect(r.deleteOverride).toHaveBeenCalledWith("u1", "ov1", "admin1");
+    expect(r.deleteOverride).toHaveBeenCalledWith("u1", "ov1", "admin1", expect.anything());
   });
   it("removeOverride: 자가 mutation 거부", async () => {
     r.getUserDetail.mockResolvedValue(detail({ id: "admin1" }) as never);
@@ -257,6 +269,9 @@ describe("upsertOverride / removeOverride", () => {
     expect(r.deleteOverride).not.toHaveBeenCalled();
   });
   it("finding 2: 비-critical DENY 삭제인데 actor가 해당 권한 미보유 → EscalationError(복원 권한 없음)", async () => {
+    // getEffectiveScope가 null → 미보유
+    const { getEffectiveScope } = await import("@/kernel/access");
+    vi.mocked(getEffectiveScope).mockResolvedValueOnce(null);
     r.getUserDetail.mockResolvedValue(detail({ overrides: [{ id: "ov3", resource: "leave.approval", action: "view", effect: "DENY", scope: "all", reason: null, startsAt: null, endsAt: null }] }) as never);
     await expect(removeOverride(delegate([]), "u1", "ov3")).rejects.toBeInstanceOf(EscalationError);
     expect(r.deleteOverride).not.toHaveBeenCalled();
@@ -268,7 +283,7 @@ describe("upsertOverride / removeOverride", () => {
   it("OWNER는 critical DENY override 삭제 허용", async () => {
     r.getUserDetail.mockResolvedValue(detail({ overrides: [{ id: "ov4", resource: "admin.users", action: "update", effect: "DENY", scope: "all", reason: null, startsAt: null, endsAt: null }] }) as never);
     await removeOverride(owner, "u1", "ov4");
-    expect(r.deleteOverride).toHaveBeenCalledWith("u1", "ov4", "owner1");
+    expect(r.deleteOverride).toHaveBeenCalledWith("u1", "ov4", "owner1", expect.anything());
   });
 });
 

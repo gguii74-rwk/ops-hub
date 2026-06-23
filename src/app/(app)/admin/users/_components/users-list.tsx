@@ -18,7 +18,7 @@ const PAGE_SIZE = 20;
 interface Row {
   id: string; email: string; name: string; status: UserStatusKey;
   employmentType: keyof typeof EMPLOYMENT_LABEL; jobFunction: keyof typeof JOB_LABEL;
-  systemRole: string; department: string | null; roleKeys: string[];
+  systemRole: string; teamId: string | null; teamName: string | null; roleKeys: string[];
   updatedAt: string; // 낙관락(approve mutation body로 전달 — stale-tab lost-update 차단)
 }
 interface ListResponse { rows: Row[]; total: number; pendingCount: number; }
@@ -31,7 +31,7 @@ async function fetchUsers(params: URLSearchParams): Promise<ListResponse> {
   return res.json();
 }
 
-export function UsersList({ canCreate, canUpdate, canApprove }: { canCreate: boolean; canUpdate: boolean; canApprove: boolean }) {
+export function UsersList({ canCreate, canUpdate, canApprove, teams }: { canCreate: boolean; canUpdate: boolean; canApprove: boolean; teams: Array<{ id: string; name: string }> }) {
   const [status, setStatus] = useState<"ALL" | UserStatusKey>("ALL");
   const [employmentType, setEmploymentType] = useState("");
   const [jobFunction, setJobFunction] = useState("");
@@ -137,7 +137,7 @@ export function UsersList({ canCreate, canUpdate, canApprove }: { canCreate: boo
       </div>
 
       {approveTarget ? (
-        <ApproveModal target={approveTarget} onClose={() => setApproveTarget(null)} onDone={() => { setApproveTarget(null); void refetch(); }} />
+        <ApproveModal target={approveTarget} teams={teams} onClose={() => setApproveTarget(null)} onDone={() => { setApproveTarget(null); void refetch(); }} />
       ) : null}
     </div>
   );

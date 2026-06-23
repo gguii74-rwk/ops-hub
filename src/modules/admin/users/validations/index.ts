@@ -13,7 +13,7 @@ const overrideScope = z.enum(["own", "team", "assigned", "all"]);
 
 const email = z.string().email("올바른 이메일 형식이 아닙니다.");
 const name = z.string().trim().min(1, "이름은 필수입니다.").max(100);
-const department = z.string().trim().max(100).nullish();
+const teamId = z.string().min(1).nullish(); // 팀 배정(관리자 확정). null=무소속, undefined=미변경
 // 토큰·datetime은 문자열로 받고(라우트가 Date로 파싱), 빈 문자열은 거부.
 const isoDateTime = z.string().datetime({ offset: true }).nullish();
 
@@ -23,7 +23,7 @@ const isoDateTime = z.string().datetime({ offset: true }).nullish();
 // ── 관리자 직접추가(D4): 임시비번 + 확정 속성·역할. ──
 export const adminCreateSchema = z.object({
   email, name, password,
-  employmentType, jobFunction, department,
+  employmentType, jobFunction, teamId,
   systemRole,
   roleKeys: z.array(z.string()).default([]),
 });
@@ -34,7 +34,7 @@ export const approveSchema = z.object({
   employmentType, jobFunction, systemRole,
   roleKeys: z.array(z.string()).default([]),
   name: name.optional(),
-  department: department,
+  teamId: teamId,
 });
 
 // ── 거절: 사유 필수(trim 후 비어있으면 거부). ──
@@ -45,7 +45,7 @@ export const rejectSchema = z.object({
 // ── 편집(부분 patch): 전부 선택. systemRole 가드는 서비스가 강제(D12). ──
 export const updateUserSchema = z.object({
   name: name.optional(),
-  department,
+  teamId,
   employmentType: employmentType.optional(),
   jobFunction: jobFunction.optional(),
   systemRole: systemRole.optional(),
