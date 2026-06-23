@@ -18,14 +18,14 @@ export async function GET(req: Request) {
     ws.columns = [
       { header: "이름", key: "name", width: 15 },
       { header: "이메일", key: "email", width: 30 },
-      { header: "부서", key: "department", width: 15 },
+      { header: "팀", key: "teamName", width: 15 },
       { header: "총 연차", key: "totalDays", width: 12 },
       { header: "사용 연차", key: "usedDays", width: 12 },
       { header: "대기 중", key: "pendingDays", width: 12 },
       { header: "잔여 연차", key: "remainingDays", width: 12 },
     ];
     ws.getRow(1).font = { bold: true };
-    rows.forEach((r) => ws.addRow({ ...r, department: r.department ?? "-" }));
+    rows.forEach((r) => ws.addRow({ ...r, teamName: r.teamName ?? "-" }));
 
     const buf = await wb.xlsx.writeBuffer();
     return new NextResponse(buf as ArrayBuffer, {

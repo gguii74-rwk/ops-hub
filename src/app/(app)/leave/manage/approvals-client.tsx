@@ -12,7 +12,7 @@ interface Req {
   endDate: string;
   days: string;
   reason: string | null;
-  user: { id: string; name: string; department: string | null; email: string } | null;
+  user: { id: string; name: string; team?: { name: string } | null; email: string } | null;
 }
 
 async function fetchPending(): Promise<Req[]> {

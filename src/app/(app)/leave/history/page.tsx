@@ -1,5 +1,5 @@
 import { auth } from "@/lib/auth";
-import { getPermissionSummary } from "@/kernel/access";
+import { getPermissionSummary, getEffectiveScope } from "@/kernel/access";
 import { HistoryClient } from "../_components/history-client";
 
 export default async function LeaveHistoryPage() {
@@ -8,12 +8,13 @@ export default async function LeaveHistoryPage() {
   const set = new Set(keys);
   if (!set.has("leave.request:view"))
     return <p className="text-sm text-muted-foreground">연차 내역 권한이 없습니다.</p>;
+  const approvalScope = session?.user ? await getEffectiveScope(session.user.id, "leave.approval", "approve") : null;
   return (
     <HistoryClient
       canAdminView={set.has("leave.admin:view")}
       canUpdate={set.has("leave.request:update")}
       canDelete={set.has("leave.request:delete")}
-      canApprove={set.has("leave.approval:approve")}
+      canApprove={approvalScope === "all"}
     />
   );
 }

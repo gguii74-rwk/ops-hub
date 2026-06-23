@@ -10,7 +10,7 @@ interface Row {
   id: string;
   name: string;
   email: string;
-  department: string | null;
+  teamName: string | null;
   totalDays: number;
   usedDays: number;
   pendingDays: number;
@@ -27,7 +27,7 @@ async function fetchStatus(year: number): Promise<{ items: Row[] }> {
 
 export function StatusClient() {
   const [year, setYear] = useState(new Date().getFullYear());
-  const [dept, setDept] = useState("");
+  const [team, setTeam] = useState("");
   const [q, setQ] = useState("");
 
   const { data, isLoading, isError } = useQuery({
@@ -36,13 +36,13 @@ export function StatusClient() {
   });
 
   const rows = useMemo(() => data?.items ?? [], [data]);
-  const depts = useMemo(
-    () => [...new Set(rows.map((r) => r.department).filter(Boolean) as string[])],
+  const teams = useMemo(
+    () => [...new Set(rows.map((r) => r.teamName).filter(Boolean) as string[])],
     [rows],
   );
   const filtered = useMemo(
-    () => rows.filter((r) => (!dept || r.department === dept) && (!q || r.name.includes(q))),
-    [rows, dept, q],
+    () => rows.filter((r) => (!team || r.teamName === team) && (!q || r.name.includes(q))),
+    [rows, team, q],
   );
 
   return (
@@ -56,13 +56,13 @@ export function StatusClient() {
         />
         <select
           className="h-9 rounded-md border border-border bg-background px-3 text-sm"
-          value={dept}
-          onChange={(e) => setDept(e.target.value)}
+          value={team}
+          onChange={(e) => setTeam(e.target.value)}
         >
-          <option value="">전체 부서</option>
-          {depts.map((d) => (
-            <option key={d} value={d}>
-              {d}
+          <option value="">전체 팀</option>
+          {teams.map((t) => (
+            <option key={t} value={t}>
+              {t}
             </option>
           ))}
         </select>
@@ -92,7 +92,7 @@ export function StatusClient() {
               <thead className="bg-muted/50 text-left text-muted-foreground">
                 <tr>
                   <th className="p-2">이름</th>
-                  <th className="p-2">부서</th>
+                  <th className="p-2">팀</th>
                   <th className="p-2 text-right">총</th>
                   <th className="p-2 text-right">사용</th>
                   <th className="p-2 text-right">대기</th>
@@ -110,7 +110,7 @@ export function StatusClient() {
                   filtered.map((r) => (
                     <tr key={r.id} className="border-t border-border">
                       <td className="p-2">{r.name}</td>
-                      <td className="p-2 text-muted-foreground">{r.department ?? "-"}</td>
+                      <td className="p-2 text-muted-foreground">{r.teamName ?? "-"}</td>
                       <td className="p-2 text-right tabular-nums">{r.totalDays}</td>
                       <td className="p-2 text-right tabular-nums">{r.usedDays}</td>
                       <td className="p-2 text-right tabular-nums">{r.pendingDays}</td>

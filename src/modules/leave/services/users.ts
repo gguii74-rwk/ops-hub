@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 export function listActiveUsers() {
   return prisma.user.findMany({
     where: { status: "ACTIVE" },
-    select: { id: true, name: true, department: true, email: true },
+    select: { id: true, name: true, teamId: true, team: { select: { name: true } }, email: true },
     orderBy: { name: "asc" },
   });
 }

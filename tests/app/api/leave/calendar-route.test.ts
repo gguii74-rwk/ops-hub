@@ -52,27 +52,27 @@ describe("GET /api/leave/calendar", () => {
     expect(res.status).toBe(403);
   });
 
-  it("일반 사용자는 canViewAllStatuses=false·canCrossDepartment=false, department 무시", async () => {
+  it("일반 사용자는 canViewAllStatuses=false·canCrossTeam=false, teamId 무시", async () => {
     h.getPermissionSummary.mockResolvedValueOnce({ keys: [] });
-    await GET(new Request("http://x/api/leave/calendar?department=개발"));
+    await GET(new Request("http://x/api/leave/calendar?teamId=team1"));
     expect(h.getLeaveCalendar).toHaveBeenCalledWith(
-      expect.objectContaining({ canViewAllStatuses: false, canCrossDepartment: false, filterDepartment: null }),
+      expect.objectContaining({ canViewAllStatuses: false, canCrossTeam: false, filterTeamId: null }),
     );
   });
 
-  it("status:view는 canCrossDepartment=true이지만 canViewAllStatuses=false(전상태·마스킹 해제 금지)", async () => {
+  it("status:view는 canCrossTeam=true이지만 canViewAllStatuses=false(전상태·마스킹 해제 금지)", async () => {
     h.getPermissionSummary.mockResolvedValueOnce({ keys: ["leave.status:view"] });
-    await GET(new Request("http://x/api/leave/calendar?department=개발"));
+    await GET(new Request("http://x/api/leave/calendar?teamId=team1"));
     expect(h.getLeaveCalendar).toHaveBeenCalledWith(
-      expect.objectContaining({ canViewAllStatuses: false, canCrossDepartment: true, filterDepartment: "개발" }),
+      expect.objectContaining({ canViewAllStatuses: false, canCrossTeam: true, filterTeamId: "team1" }),
     );
   });
 
-  it("admin:view는 canViewAllStatuses=true·canCrossDepartment=true", async () => {
+  it("admin:view는 canViewAllStatuses=true·canCrossTeam=true", async () => {
     h.getPermissionSummary.mockResolvedValueOnce({ keys: ["leave.admin:view"] });
     await GET(new Request("http://x/api/leave/calendar"));
     expect(h.getLeaveCalendar).toHaveBeenCalledWith(
-      expect.objectContaining({ canViewAllStatuses: true, canCrossDepartment: true }),
+      expect.objectContaining({ canViewAllStatuses: true, canCrossTeam: true }),
     );
   });
 });

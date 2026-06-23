@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // 신청자/대상 이메일·이름 조회용 user.findUnique를 가진 fake prisma.
-const { userFindUnique } = vi.hoisted(() => ({ userFindUnique: vi.fn((..._a: unknown[]) => Promise.resolve({ name: "직원", email: "u@x.com" })) }));
-vi.mock("@/lib/prisma", () => ({ prisma: { user: { findUnique: (...a: unknown[]) => userFindUnique(...a) } } }));
+const { userFindUnique, userFindMany } = vi.hoisted(() => ({
+  userFindUnique: vi.fn((..._a: unknown[]) => Promise.resolve({ name: "직원", email: "u@x.com", teamId: "t1" })),
+  userFindMany: vi.fn((..._a: unknown[]) => Promise.resolve([])),
+}));
+vi.mock("@/lib/prisma", () => ({ prisma: { user: { findUnique: (...a: unknown[]) => userFindUnique(...a), findMany: (...a: unknown[]) => userFindMany(...a) } } }));
 vi.mock("@/kernel/holidays", () => ({
   getHolidaysInRange: vi.fn(async () => new Set<string>()),
   ensureYearsSynced: vi.fn(async () => {}),
@@ -20,7 +23,20 @@ vi.mock("@/modules/leave/services/mail", () => ({
 }));
 vi.mock("@/modules/leave/authz", () => ({ assertTargetUser: vi.fn(async () => {}) }));
 
-import { createLeaveRequest, createLeaveRequestByAdmin, cancel, getRequest, updateByAdmin } from "@/modules/leave/services/requests";
+// kernel/access 모킹: getEffectiveScope, requirePermissionForTarget, ForbiddenError
+const { getEffectiveScope, requirePermissionForTarget } = vi.hoisted(() => ({
+  getEffectiveScope: vi.fn(),
+  requirePermissionForTarget: vi.fn(async () => {}),
+}));
+vi.mock("@/kernel/access", () => ({
+  ForbiddenError: class ForbiddenError extends Error {
+    constructor(m = "권한이 없습니다.") { super(m); this.name = "ForbiddenError"; }
+  },
+  getEffectiveScope: (...a: unknown[]) => (getEffectiveScope as (...args: unknown[]) => unknown)(...a),
+  requirePermissionForTarget: (...a: unknown[]) => (requirePermissionForTarget as (...args: unknown[]) => unknown)(...a),
+}));
+
+import { createLeaveRequest, createLeaveRequestByAdmin, cancel, getRequest, updateByAdmin, listApprovalQueue } from "@/modules/leave/services/requests";
 import { LeaveConflictError, LeaveValidationError } from "@/modules/leave/errors";
 import { ForbiddenError } from "@/kernel/access";
 import * as holidaysMod from "@/kernel/holidays";
@@ -49,7 +65,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   holidays.mockResolvedValue(new Set());
   getUnsyncedYears.mockResolvedValue([]);
-  userFindUnique.mockResolvedValue({ name: "직원", email: "u@x.com" });
+  userFindUnique.mockResolvedValue({ name: "직원", email: "u@x.com", teamId: "t1" });
+  userFindMany.mockResolvedValue([]);
+  requirePermissionForTarget.mockResolvedValue(undefined);
 });
 
 describe("createLeaveRequest", () => {
@@ -168,9 +186,14 @@ describe("updateByAdmin (effective-state 교차검증)", () => {
   });
 });
 
-describe("getRequest", () => {
+describe("getRequest (PD3 — scope-aware)", () => {
   const approverCtx = { userId: "ap", isOwner: false, permissionKeys: new Set(["leave.approval:view"]) };
   const adminViewCtx = { userId: "av", isOwner: false, permissionKeys: new Set(["leave.admin:view"]) };
+
+  beforeEach(() => {
+    // 기본: getEffectiveScope → null (권한 없음)
+    getEffectiveScope.mockResolvedValue(null);
+  });
 
   it("타인 신청을 권한 없이 조회 → ForbiddenError", async () => {
     repo.getRequestById.mockResolvedValue({ id: "r1", userId: "other", status: "PENDING" } as any);
@@ -180,12 +203,14 @@ describe("getRequest", () => {
     repo.getRequestById.mockResolvedValue({ id: "r1", userId: "u1", status: "REJECTED" } as any);
     await expect(getRequest("r1", employeeCtx)).resolves.toMatchObject({ id: "r1" });
   });
-  it("approval:view는 타인 PENDING(승인 큐) 조회 가능", async () => {
+  it("all-scope approval:view는 타인 PENDING(승인 큐) 조회 가능", async () => {
     repo.getRequestById.mockResolvedValue({ id: "r1", userId: "other", status: "PENDING" } as any);
+    getEffectiveScope.mockResolvedValue("all");
     await expect(getRequest("r1", approverCtx)).resolves.toMatchObject({ id: "r1" });
   });
-  it("approval:view가 타인 non-PENDING(APPROVED) 조회 → ForbiddenError(읽기-전체 자격 아님)", async () => {
+  it("all-scope approval:view가 타인 non-PENDING(APPROVED) 조회 → ForbiddenError(읽기-전체 자격 아님)", async () => {
     repo.getRequestById.mockResolvedValue({ id: "r1", userId: "other", status: "APPROVED" } as any);
+    getEffectiveScope.mockResolvedValue("all");
     await expect(getRequest("r1", approverCtx)).rejects.toBeInstanceOf(ForbiddenError);
   });
   it("admin:view는 타인 전 상태(APPROVED 등) 조회 가능", async () => {
@@ -195,5 +220,66 @@ describe("getRequest", () => {
   it("시스템 OWNER는 타인 전 상태 조회 가능", async () => {
     repo.getRequestById.mockResolvedValue({ id: "r1", userId: "other", status: "CANCELLED" } as any);
     await expect(getRequest("r1", adminCtx)).resolves.toMatchObject({ id: "r1" });
+  });
+});
+
+describe("listApprovalQueue (F9, F-R scope-aware)", () => {
+  beforeEach(() => {
+    // 기본: 각 테스트에서 직접 모킹
+    getEffectiveScope.mockResolvedValue(null);
+  });
+
+  it("scope=null → ForbiddenError(권한 없음)", async () => {
+    getEffectiveScope.mockResolvedValue(null);
+    await expect(listApprovalQueue("u1")).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("scope=all → 전체 PENDING 반환", async () => {
+    getEffectiveScope.mockResolvedValue("all");
+    repo.listRequests.mockResolvedValue([{ id: "r1", userId: "u1" }, { id: "r2", userId: "u2" }] as any);
+    userFindMany.mockResolvedValue([
+      { id: "u1", name: "김", teamId: "t1", team: { name: "팀1" }, email: "k@x.com" },
+      { id: "u2", name: "이", teamId: "t2", team: { name: "팀2" }, email: "l@x.com" },
+    ] as any);
+    const result = await listApprovalQueue("u1");
+    expect(result).toHaveLength(2);
+  });
+
+  it("scope=team, 팀 소속 없음 → ForbiddenError(F9)", async () => {
+    getEffectiveScope.mockResolvedValue("team");
+    repo.listRequests.mockResolvedValue([{ id: "r1", userId: "u2" }] as any);
+    userFindMany.mockResolvedValue([
+      { id: "u2", name: "이", teamId: "t2", team: { name: "팀2" }, email: "l@x.com" },
+    ] as any);
+    // listApprovalQueue에서 actor 조회(findUnique)
+    userFindUnique.mockResolvedValue({ teamId: null, team: null } as any);
+    await expect(listApprovalQueue("u1")).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("scope=team, 팀 비활성 → ForbiddenError(F-R)", async () => {
+    getEffectiveScope.mockResolvedValue("team");
+    repo.listRequests.mockResolvedValue([{ id: "r1", userId: "u2" }] as any);
+    userFindMany.mockResolvedValue([
+      { id: "u2", name: "이", teamId: "t1", team: { name: "팀1" }, email: "l@x.com" },
+    ] as any);
+    // actor: 팀은 있지만 비활성
+    userFindUnique.mockResolvedValue({ teamId: "t1", team: { active: false } } as any);
+    await expect(listApprovalQueue("u1")).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("scope=team, 같은 팀만 필터링(F9)", async () => {
+    getEffectiveScope.mockResolvedValue("team");
+    repo.listRequests.mockResolvedValue([
+      { id: "r1", userId: "u2" }, { id: "r2", userId: "u3" },
+    ] as any);
+    userFindMany.mockResolvedValue([
+      { id: "u2", name: "이", teamId: "t1", team: { name: "팀1" }, email: "l@x.com" },
+      { id: "u3", name: "박", teamId: "t2", team: { name: "팀2" }, email: "p@x.com" },
+    ] as any);
+    // actor: 팀1에 소속, 활성
+    userFindUnique.mockResolvedValue({ teamId: "t1", team: { active: true } } as any);
+    const result = await listApprovalQueue("u1");
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("r1");
   });
 });

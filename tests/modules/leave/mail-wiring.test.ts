@@ -22,6 +22,18 @@ vi.mock("@/modules/leave/repositories", () => ({
   cancelTx: vi.fn(), updateByAdminTx: vi.fn(), deleteByAdminTx: vi.fn(),
 }));
 
+// kernel/access mock: requirePermissionForTarget는 기본적으로 통과
+const { requirePermissionForTarget } = vi.hoisted(() => ({
+  requirePermissionForTarget: vi.fn(async () => {}),
+}));
+vi.mock("@/kernel/access", () => ({
+  ForbiddenError: class ForbiddenError extends Error {
+    constructor(m = "권한이 없습니다.") { super(m); this.name = "ForbiddenError"; }
+  },
+  getEffectiveScope: vi.fn(async () => "all"),
+  requirePermissionForTarget: (...a: unknown[]) => (requirePermissionForTarget as (...args: unknown[]) => unknown)(...a),
+}));
+
 import {
   createLeaveRequest, createLeaveRequestByAdmin, approve, reject,
 } from "@/modules/leave/services/requests";
@@ -44,7 +56,8 @@ const input = { leaveType: "ANNUAL" as const, startDate: "2999-08-14", endDate: 
 beforeEach(() => {
   vi.clearAllMocks();
   getLeaveAdminRecipients.mockResolvedValue(["admin@x.com"]);
-  userFindUnique.mockResolvedValue({ name: "직원", email: "u@x.com", status: "ACTIVE" });
+  userFindUnique.mockResolvedValue({ name: "직원", email: "u@x.com", status: "ACTIVE", teamId: "t1" });
+  requirePermissionForTarget.mockResolvedValue(undefined);
 });
 
 describe("createLeaveRequest mail wiring", () => {
@@ -57,6 +70,8 @@ describe("createLeaveRequest mail wiring", () => {
     expect(mailJob).toEqual(expect.objectContaining({ recipients: ["admin@x.com"] }));
     expect(mailJob).toHaveProperty("bodyHtml");
     expect(triggerLeaveMailDrain).toHaveBeenCalledTimes(1);
+    // getLeaveAdminRecipients는 applicantTeamId를 인자로 받음
+    expect(getLeaveAdminRecipients).toHaveBeenCalledWith(expect.anything());
   });
   it("승인권한자 0명(recipients [])이어도 REQUESTED 행은 항상 적재(mailJob null 아님)", async () => {
     getLeaveAdminRecipients.mockResolvedValue([]);
@@ -83,7 +98,7 @@ describe("createLeaveRequestByAdmin mail wiring", () => {
   it("sendNotification=true → ADMIN_CREATED mailJob(대상 이메일) + triggerLeaveMailDrain", async () => {
     repo.findOverlap.mockResolvedValue(null);
     repo.createApprovedRequestTx.mockResolvedValue({ id: "r1" } as any);
-    userFindUnique.mockResolvedValue({ email: "target@x.com", status: "ACTIVE" });
+    userFindUnique.mockResolvedValue({ email: "target@x.com", status: "ACTIVE", teamId: "t1" });
     await createLeaveRequestByAdmin("admin1", "u2", input, null, true);
     const [, mailJob] = repo.createApprovedRequestTx.mock.calls[0];
     expect(mailJob).toEqual(expect.objectContaining({ recipients: ["target@x.com"] }));
@@ -92,33 +107,37 @@ describe("createLeaveRequestByAdmin mail wiring", () => {
 });
 
 describe("approve/reject mail wiring (pre-flight #4)", () => {
-  it("approve → approveTx에 APPROVED mailJob 전달 + triggerLeaveMailDrain 호출", async () => {
+  it("approve → requirePermissionForTarget 호출 후 approveTx에 APPROVED mailJob + authz 전달 + triggerLeaveMailDrain", async () => {
     repo.getRequestById.mockResolvedValue({
       id: "r1", userId: "u1", leaveType: "ANNUAL", leaveSubType: null, quarterStartTime: null,
       startDate: new Date("2999-08-14T00:00:00Z"), endDate: new Date("2999-08-14T00:00:00Z"), reason: null,
     } as any);
-    userFindUnique.mockResolvedValue({ email: "u@x.com" });
+    userFindUnique.mockResolvedValue({ email: "u@x.com", teamId: "t1" });
     repo.approveTx.mockResolvedValue(undefined as any);
     await approve("r1", "admin1");
-    const [reqId, adminId, mailJob] = repo.approveTx.mock.calls[0];
+    expect(requirePermissionForTarget).toHaveBeenCalledWith("admin1", "leave.approval", "approve", { teamId: "t1" });
+    const [reqId, adminId, mailJob, authz] = repo.approveTx.mock.calls[0];
     expect(reqId).toBe("r1");
     expect(adminId).toBe("admin1");
     expect(mailJob).toEqual(expect.objectContaining({ recipients: ["u@x.com"] }));
+    expect(authz).toEqual({ actorId: "admin1", applicantId: "u1" });
     expect(triggerLeaveMailDrain).toHaveBeenCalledTimes(1);
   });
-  it("reject → rejectRequest에 REJECTED mailJob 전달 + triggerLeaveMailDrain 호출", async () => {
+  it("reject → requirePermissionForTarget 호출 후 rejectRequest에 REJECTED mailJob + authz 전달 + triggerLeaveMailDrain", async () => {
     repo.getRequestById.mockResolvedValue({
       id: "r1", userId: "u1", leaveType: "ANNUAL", leaveSubType: null, quarterStartTime: null,
       startDate: new Date("2999-08-14T00:00:00Z"), endDate: new Date("2999-08-14T00:00:00Z"), reason: null,
     } as any);
-    userFindUnique.mockResolvedValue({ email: "u@x.com" });
+    userFindUnique.mockResolvedValue({ email: "u@x.com", teamId: "t1" });
     repo.rejectRequest.mockResolvedValue(undefined as any);
     await reject("r1", "admin1", "사유");
-    const [reqId, adminId, reason, mailJob] = repo.rejectRequest.mock.calls[0];
+    expect(requirePermissionForTarget).toHaveBeenCalledWith("admin1", "leave.approval", "approve", { teamId: "t1" });
+    const [reqId, adminId, reason, mailJob, authz] = repo.rejectRequest.mock.calls[0];
     expect(reqId).toBe("r1");
     expect(adminId).toBe("admin1");
     expect(reason).toBe("사유");
     expect(mailJob).toEqual(expect.objectContaining({ recipients: ["u@x.com"] }));
+    expect(authz).toEqual({ actorId: "admin1", applicantId: "u1" });
     expect(triggerLeaveMailDrain).toHaveBeenCalledTimes(1);
   });
   it("신청자 이메일 없으면 mailJob null이지만 triggerLeaveMailDrain은 호출(backstop)", async () => {
@@ -126,12 +145,22 @@ describe("approve/reject mail wiring (pre-flight #4)", () => {
       id: "r1", userId: "u1", leaveType: "ANNUAL", leaveSubType: null, quarterStartTime: null,
       startDate: new Date("2999-08-14T00:00:00Z"), endDate: new Date("2999-08-14T00:00:00Z"), reason: null,
     } as any);
-    userFindUnique.mockResolvedValue({ email: null });
+    userFindUnique.mockResolvedValue({ email: null, teamId: null });
     repo.approveTx.mockResolvedValue(undefined as any);
     await approve("r1", "admin1");
     const [, , mailJob] = repo.approveTx.mock.calls[0];
     expect(mailJob).toBeNull();
     expect(triggerLeaveMailDrain).toHaveBeenCalledTimes(1);
+  });
+  it("requirePermissionForTarget가 ForbiddenError → approve 실패", async () => {
+    repo.getRequestById.mockResolvedValue({
+      id: "r1", userId: "u1", leaveType: "ANNUAL", leaveSubType: null, quarterStartTime: null,
+      startDate: new Date("2999-08-14T00:00:00Z"), endDate: new Date("2999-08-14T00:00:00Z"), reason: null,
+    } as any);
+    userFindUnique.mockResolvedValue({ email: "u@x.com", teamId: "t1" });
+    requirePermissionForTarget.mockRejectedValueOnce(new ForbiddenError("팀 외"));
+    await expect(approve("r1", "admin1")).rejects.toBeInstanceOf(ForbiddenError);
+    expect(repo.approveTx).not.toHaveBeenCalled();
   });
 });
 

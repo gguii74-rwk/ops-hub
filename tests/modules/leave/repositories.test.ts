@@ -15,10 +15,14 @@ const h = vi.hoisted(() => {
     leaveAllocationHistory: { create: vi.fn(), findMany: vi.fn() },
     mailDelivery: { create: vi.fn(), updateMany: vi.fn() },
     auditLog: { create: vi.fn() },
+    team: { findUnique: vi.fn() },
     $executeRaw: vi.fn(),
+    $queryRaw: vi.fn(),
   };
   const prisma = { ...db, $transaction: vi.fn(async (cb: (tx: typeof db) => unknown) => cb(db)) };
-  return { db, prisma };
+  // getEffectiveScope mock — F-O/F-D in-tx 재해석용
+  const getEffectiveScopeMock = vi.fn();
+  return { db, prisma, getEffectiveScopeMock };
 });
 
 vi.mock("@/lib/prisma", () => ({ prisma: h.prisma }));
@@ -31,9 +35,16 @@ vi.mock("@/modules/leave/repositories/mail", () => ({
   cancelPendingDeliveries: (...a: unknown[]) => cancelPendingDeliveriesMock(...a),
 }));
 vi.mock("@/kernel/audit", () => ({ writeAudit: (...a: unknown[]) => writeAuditMock(...a) }));
+vi.mock("@/kernel/access", () => ({
+  getEffectiveScope: (...a: unknown[]) => (h.getEffectiveScopeMock as (...args: unknown[]) => unknown)(...a),
+  ForbiddenError: class ForbiddenError extends Error {
+    constructor(m = "권한이 없습니다.") { super(m); this.name = "ForbiddenError"; }
+  },
+}));
 
-import { approveTx, cancelTx, updateByAdminTx, adjustAllocationTx, findOverlap, createPendingRequest, createApprovedRequestTx, deleteByAdminTx, recalculateUsedDaysTx } from "@/modules/leave/repositories";
+import { approveTx, rejectRequest, cancelTx, updateByAdminTx, adjustAllocationTx, findOverlap, createPendingRequest, createApprovedRequestTx, deleteByAdminTx, recalculateUsedDaysTx } from "@/modules/leave/repositories";
 import { LeaveConflictError } from "@/modules/leave/errors";
+import { ForbiddenError } from "@/kernel/access";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -294,5 +305,126 @@ describe("recalculateUsedDaysTx", () => {
     h.db.leaveRequest.aggregate.mockResolvedValue({ _sum: { days: 2 } });
     h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 0 });
     await expect(recalculateUsedDaysTx("u1", 2026)).rejects.toBeInstanceOf(LeaveConflictError);
+  });
+});
+
+// ─────────────────────────────────────────────
+// F-O/F-D/F-P/F-R: approveTx/rejectRequest in-tx 권위 재해석 + 락 순서 불변식
+// ─────────────────────────────────────────────
+
+const updatedAt2 = new Date("2026-08-01T00:00:00Z");
+
+function setupHappyPath() {
+  // 기본 happy-path: leaveRequest PENDING + allocation ok
+  h.db.leaveRequest.findUnique.mockResolvedValue({ status: "PENDING", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1, updatedAt: updatedAt2 });
+  h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
+  h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 1 });
+}
+
+describe("approveTx — F-O/F-D in-tx 권위 재해석", () => {
+  it("authz 없으면 기존 동작(getEffectiveScope 호출 없음, CAS 진행)", async () => {
+    setupHappyPath();
+    await approveTx("r1", "admin1");
+    expect(h.getEffectiveScopeMock).not.toHaveBeenCalled();
+    expect(h.db.leaveRequest.updateMany).toHaveBeenCalled();
+  });
+
+  it("F-O: in-tx getEffectiveScope=null(revoke/disable/must-change) → ForbiddenError, status updateMany 미호출", async () => {
+    h.getEffectiveScopeMock.mockResolvedValue(null);
+    // $queryRaw FOR UPDATE는 호출되어야 함(락 먼저, 그 뒤 scope 재해석)
+    h.db.$queryRaw.mockResolvedValue([]);
+    await expect(approveTx("r1", "admin1", null, { actorId: "actor1", applicantId: "applicant1" }))
+      .rejects.toBeInstanceOf(ForbiddenError);
+    expect(h.db.leaveRequest.updateMany).not.toHaveBeenCalled();
+    expect(insertPendingDeliveryMock).not.toHaveBeenCalled();
+  });
+
+  it("F-O: scope=all → 팀 비교 건너뛰고 정상 진행", async () => {
+    setupHappyPath();
+    h.getEffectiveScopeMock.mockResolvedValue("all");
+    h.db.$queryRaw.mockResolvedValue([]);
+    await approveTx("r1", "admin1", null, { actorId: "actor1", applicantId: "u1" });
+    expect(h.db.leaveRequest.updateMany).toHaveBeenCalled();
+  });
+
+  it("F-D: scope=team, actor/applicant 동일팀 → 정상 진행", async () => {
+    setupHappyPath();
+    h.getEffectiveScopeMock.mockResolvedValue("team");
+    // $queryRaw: 1) 락(actor) 2) 락(applicant) 3) SELECT 팀 — 순서대로 응답
+    h.db.$queryRaw
+      .mockResolvedValueOnce([]) // actor FOR UPDATE
+      .mockResolvedValueOnce([]) // applicant FOR UPDATE (sorted)
+      .mockResolvedValueOnce([{ id: "actor1", teamId: "teamA" }, { id: "u1", teamId: "teamA" }]); // 팀 조회
+    h.db.team.findUnique.mockResolvedValue({ active: true });
+    await approveTx("r1", "admin1", null, { actorId: "actor1", applicantId: "u1" });
+    expect(h.db.leaveRequest.updateMany).toHaveBeenCalled();
+  });
+
+  it("F-D: scope=team, 신청자 재배정(타 팀) → ForbiddenError, status 미변경", async () => {
+    h.getEffectiveScopeMock.mockResolvedValue("team");
+    h.db.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "actor1", teamId: "teamA" }, { id: "u1", teamId: "teamB" }]); // 다른 팀
+    await expect(approveTx("r1", "admin1", null, { actorId: "actor1", applicantId: "u1" }))
+      .rejects.toBeInstanceOf(ForbiddenError);
+    expect(h.db.leaveRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("F-R: scope=team, 같은 팀이지만 팀 비활성 → ForbiddenError", async () => {
+    h.getEffectiveScopeMock.mockResolvedValue("team");
+    h.db.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "actor1", teamId: "teamA" }, { id: "u1", teamId: "teamA" }]);
+    h.db.team.findUnique.mockResolvedValue({ active: false }); // 비활성 팀
+    await expect(approveTx("r1", "admin1", null, { actorId: "actor1", applicantId: "u1" }))
+      .rejects.toBeInstanceOf(ForbiddenError);
+    expect(h.db.leaveRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("F-P: 락 순서 불변식 — actor='zzz', applicant='aaa' → 정렬 순서 aaa,zzz로 $queryRaw FOR UPDATE", async () => {
+    setupHappyPath();
+    h.getEffectiveScopeMock.mockResolvedValue("all"); // all이면 팀 비교 없이 진행
+    const queryRawCalls: string[] = [];
+    h.db.$queryRaw.mockImplementation((tpl: TemplateStringsArray, ...vals: unknown[]) => {
+      queryRawCalls.push(String(vals[0]));
+      return Promise.resolve([]);
+    });
+    await approveTx("r1", "admin1", null, { actorId: "zzz", applicantId: "aaa" });
+    // 정렬 순서: aaa < zzz → 첫 번째 락이 aaa여야 한다
+    expect(queryRawCalls[0]).toBe("aaa");
+    expect(queryRawCalls[1]).toBe("zzz");
+  });
+});
+
+describe("rejectRequest — F-O in-tx 권위 재해석", () => {
+  it("F-O: in-tx getEffectiveScope=null → ForbiddenError, status updateMany 미호출", async () => {
+    h.getEffectiveScopeMock.mockResolvedValue(null);
+    h.db.$queryRaw.mockResolvedValue([]);
+    await expect(rejectRequest("r1", "admin1", "사유", null, { actorId: "actor1", applicantId: "u1" }))
+      .rejects.toBeInstanceOf(ForbiddenError);
+    expect(h.db.leaveRequest.updateMany).not.toHaveBeenCalled();
+    expect(insertPendingDeliveryMock).not.toHaveBeenCalled();
+  });
+
+  it("authz 없으면 기존 동작(scope 재해석 없이 CAS 진행)", async () => {
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
+    await rejectRequest("r1", "admin1", "사유");
+    expect(h.getEffectiveScopeMock).not.toHaveBeenCalled();
+    expect(h.db.leaveRequest.updateMany).toHaveBeenCalled();
+  });
+
+  it("F-P: 락 순서 불변식 — rejectRequest도 정렬 순서로 잠금", async () => {
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
+    h.getEffectiveScopeMock.mockResolvedValue("all");
+    const queryRawCalls: string[] = [];
+    h.db.$queryRaw.mockImplementation((tpl: TemplateStringsArray, ...vals: unknown[]) => {
+      queryRawCalls.push(String(vals[0]));
+      return Promise.resolve([]);
+    });
+    await rejectRequest("r1", "admin1", "사유", null, { actorId: "zzz", applicantId: "aaa" });
+    expect(queryRawCalls[0]).toBe("aaa");
+    expect(queryRawCalls[1]).toBe("zzz");
   });
 });

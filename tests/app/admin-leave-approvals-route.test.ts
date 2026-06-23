@@ -1,16 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { authMock, requirePermissionMock } = vi.hoisted(() => ({
+const { authMock, listApprovalQueueMock } = vi.hoisted(() => ({
   authMock: vi.fn(),
-  requirePermissionMock: vi.fn(),
+  listApprovalQueueMock: vi.fn(async () => []),
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: authMock }));
 vi.mock("@/kernel/access", () => ({
-  requirePermission: requirePermissionMock,
-  ForbiddenError: class ForbiddenError extends Error {},
+  ForbiddenError: class ForbiddenError extends Error { constructor(m?: string) { super(m); this.name = "ForbiddenError"; } },
 }));
-vi.mock("@/modules/leave/services/requests", () => ({ listAllRequestsWithUser: vi.fn(async () => []) }));
+vi.mock("@/modules/leave/services/requests", () => ({
+  listApprovalQueue: (...a: unknown[]) => (listApprovalQueueMock as (...args: unknown[]) => unknown)(...a),
+}));
 
 import { GET } from "@/app/api/admin/leave/approvals/route";
 
@@ -22,17 +23,24 @@ describe("GET /api/admin/leave/approvals", () => {
     const res = await GET();
     expect(res.status).toBe(401);
   });
-  it("leave.approval:view로 가드한다", async () => {
+  it("listApprovalQueue(session.user.id)를 호출하고 200 반환", async () => {
     authMock.mockResolvedValue({ user: { id: "u1" } });
-    requirePermissionMock.mockResolvedValue(undefined);
+    listApprovalQueueMock.mockResolvedValue([]);
     const res = await GET();
-    expect(requirePermissionMock).toHaveBeenCalledWith("u1", "leave.approval", "view");
+    expect(listApprovalQueueMock).toHaveBeenCalledWith("u1");
     expect(res.status).toBe(200);
+  });
+  it("leave.approval:view로 가드한다 — listApprovalQueue가 ForbiddenError 던지면 403", async () => {
+    const { ForbiddenError } = await import("@/kernel/access");
+    authMock.mockResolvedValue({ user: { id: "u1" } });
+    listApprovalQueueMock.mockRejectedValue(new ForbiddenError("no"));
+    const res = await GET();
+    expect(res.status).toBe(403);
   });
   it("권한 없으면 403", async () => {
     const { ForbiddenError } = await import("@/kernel/access");
     authMock.mockResolvedValue({ user: { id: "u1" } });
-    requirePermissionMock.mockRejectedValue(new ForbiddenError("no"));
+    listApprovalQueueMock.mockRejectedValue(new ForbiddenError("no"));
     const res = await GET();
     expect(res.status).toBe(403);
   });

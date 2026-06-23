@@ -28,7 +28,7 @@ interface Row {
   updatedAt: string; // 낙관락(수정 mutation body로 전달 — stale-tab lost-update 차단)
   createdByAdminId: string | null;
   modifiedByAdminId: string | null;
-  user: { name: string; department: string | null } | null;
+  user: { name: string; team?: { name: string } | null } | null;
 }
 
 const STATUSES: ("ALL" | LeaveStatus)[] = ["ALL", "PENDING", "APPROVED", "REJECTED", "CANCELLED"];
@@ -69,7 +69,7 @@ export function AdminHistory({
     () =>
       data.filter((r) => {
         if (year && new Date(r.startDate).getFullYear() !== Number(year)) return false;
-        if (q && !(r.user?.name.includes(q) || (r.user?.department ?? "").includes(q)))
+        if (q && !(r.user?.name.includes(q) || (r.user?.team?.name ?? "").includes(q)))
           return false;
         return true;
       }),
@@ -101,7 +101,7 @@ export function AdminHistory({
         />
         <Input
           className="w-40"
-          placeholder="이름/부서 검색"
+          placeholder="이름/팀 검색"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
@@ -122,7 +122,7 @@ export function AdminHistory({
             <thead className="bg-muted/50 text-left text-muted-foreground">
               <tr>
                 <th className="p-2">이름</th>
-                <th className="p-2">부서</th>
+                <th className="p-2">팀</th>
                 <th className="p-2">유형</th>
                 <th className="p-2">기간</th>
                 <th className="p-2">상태</th>
@@ -133,7 +133,7 @@ export function AdminHistory({
               {filtered.map((r) => (
                 <tr key={r.id} className="border-t border-border">
                   <td className="p-2">{r.user?.name ?? r.userId}</td>
-                  <td className="p-2 text-muted-foreground">{r.user?.department ?? "-"}</td>
+                  <td className="p-2 text-muted-foreground">{r.user?.team?.name ?? "-"}</td>
                   <td className="p-2">
                     <Badge variant="outline">{TYPE_LABEL[r.leaveType] ?? r.leaveType}</Badge>{" "}
                     {getFullLeaveText(r.leaveType, r.leaveSubType, r.quarterStartTime)}
