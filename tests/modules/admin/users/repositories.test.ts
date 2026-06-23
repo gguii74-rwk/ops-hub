@@ -14,9 +14,11 @@ const h = vi.hoisted(() => {
     permission: { findUnique: vi.fn() },
     mailDelivery: { create: vi.fn() },
     auditLog: { create: vi.fn() },
+    // $executeRaw: cap advisory lock(pg_advisory_xact_lock) — no-op. $queryRaw: F-MM Team active FOR UPDATE / actor·user FOR UPDATE 락.
+    // 기본 [{active:true}](Team 검사 통과; User 락은 반환 무시). F-J 비active/미존재 케이스는 per-test override.
+    $executeRaw: vi.fn(async () => 1),
+    $queryRaw: vi.fn(async (..._a: unknown[]) => [{ active: true }] as Array<{ active: boolean }>),
   };
-  // $executeRaw: cap advisory lock(pg_advisory_xact_lock) 호출 — 테스트에선 no-op. tx에도 동일 객체가 노출되므로 db에 둔다.
-  (db as Record<string, unknown>).$executeRaw = vi.fn(async () => 1);
   const prisma = { ...db, $transaction: vi.fn(async (cb: (tx: typeof db) => unknown) => cb(db)) };
   return { db, prisma };
 });
@@ -52,6 +54,9 @@ beforeEach(() => {
   // 직전 테스트의 미소비 once가 누수되는 것을 막는다(각 테스트는 필요 시 mockResolvedValue(Once)로 override).
   h.db.userAccessRole.findMany.mockReset();
   h.db.userAccessRole.findMany.mockResolvedValue([]);
+  // F-MM: $queryRaw 기본값 복구(F-J 케이스가 override하므로 누수 방지). Team active 검사 통과(User 락은 반환 무시).
+  h.db.$queryRaw.mockReset();
+  h.db.$queryRaw.mockResolvedValue([{ active: true }]);
   withAvailabilityLockMock.mockImplementation(async (fn: (tx: unknown) => unknown) => fn(h.db));
   assertMinAvailabilityMock.mockResolvedValue(undefined);
 });
@@ -411,25 +416,40 @@ describe("updateUserTx (systemRole 강등 시 가용성)", () => {
   });
 });
 
-describe("assertActiveTeamTx (F-J — active team validation)", () => {
+describe("assertActiveTeamTx (F-J active team validation · F-MM 락)", () => {
   const updatedAt = new Date("2026-06-01T00:00:00Z");
   it("비active 팀 배정은 UserValidationError, user.updateMany 미호출(F-J)", async () => {
-    h.db.team.findUnique.mockResolvedValue({ active: false });
+    h.db.$queryRaw.mockResolvedValue([{ active: false }]); // Team active FOR UPDATE → 비active
     h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt });
     await expect(updateUserTx("u1", { teamId: "team-x" }, "admin1", updatedAt)).rejects.toBeInstanceOf(UserValidationError);
     expect(h.db.user.updateMany).not.toHaveBeenCalled();
   });
   it("미존재 팀은 UserValidationError, FK 500 전 400(F-J)", async () => {
-    h.db.team.findUnique.mockResolvedValue(null);
+    h.db.$queryRaw.mockResolvedValue([]); // Team 행 없음 → rows[0] undefined
     h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt });
     await expect(updateUserTx("u1", { teamId: "team-x" }, "admin1", updatedAt)).rejects.toBeInstanceOf(UserValidationError);
     expect(h.db.user.updateMany).not.toHaveBeenCalled();
   });
-  it("null teamId(무소속)는 assertActiveTeamTx를 건너뛰고 통과", async () => {
+  it("null teamId(무소속)는 Team 검사 없이 통과(user.updateMany 진행)", async () => {
     h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt });
     h.db.user.updateMany.mockResolvedValue({ count: 1 });
     await updateUserTx("u1", { teamId: null }, "admin1", updatedAt);
-    expect(h.db.team.findUnique).not.toHaveBeenCalled();
+    expect(h.db.user.updateMany).toHaveBeenCalled(); // 통과(throw 없음)
+  });
+  it("F-MM: teamId 배정 시 Team을 FOR UPDATE로 잠그고, 대상 User 락을 Team 락보다 먼저 잡는다(데드락 안전 순서)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt });
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    const sqls: string[] = [];
+    h.db.$queryRaw.mockImplementation((...args: unknown[]) => {
+      sqls.push((args[0] as TemplateStringsArray).join("?"));
+      return Promise.resolve([{ active: true }]);
+    });
+    await updateUserTx("u1", { teamId: "team-x" }, "admin1", updatedAt);
+    const userLockIdx = sqls.findIndex((s) => /FROM "kernel"\."User"/.test(s) && /FOR UPDATE/.test(s));
+    const teamLockIdx = sqls.findIndex((s) => /FROM "kernel"\."Team"/.test(s) && /FOR UPDATE/.test(s));
+    expect(userLockIdx).toBeGreaterThanOrEqual(0); // User FOR UPDATE 발생
+    expect(teamLockIdx).toBeGreaterThanOrEqual(0); // Team FOR UPDATE 발생
+    expect(userLockIdx).toBeLessThan(teamLockIdx);  // User → Team 순서(updateTeam과 일치 → 데드락 회피)
   });
 });
 

@@ -18,10 +18,15 @@ export interface UserDetail extends UserRow { mustChangePassword: boolean; email
 export interface OverrideInput { resource: string; action: string; effect: "ALLOW" | "DENY"; scope: string; reason: string | null; startsAt: Date | null; endsAt: Date | null; }
 
 // 팀 배정 전 active 팀 존재 확인(F-J). null/undefined이면 무소속 → 검사 생략.
+// F-MM: team을 배정 경계로 쓰므로 Team 행을 FOR UPDATE로 잠가 동시 비활성화(updateTeam)와 직렬화한다(F-CC 동형).
+// plain read면 active=true를 읽은 뒤 user write 전에 비활성화가 커밋돼 ACTIVE 사용자가 비활성 팀에 배정된다(TOCTOU).
+// 락 순서: teamId 변경 호출부(approveTx/updateUserTx)가 대상 User를 먼저 FOR UPDATE → 여기서 Team을 잠가 User→Team
+// (updateTeam lead 경로·leave approveTx F-CC와 동일) → 데드락 없음. createActiveUserByAdminTx는 신규 user라 잠글
+// 기존 행이 없어 Team-only(updateTeam이 잡는 기존 User 행과 겹치지 않아 사이클 불가).
 async function assertActiveTeamTx(tx: Prisma.TransactionClient, teamId: string | null | undefined): Promise<void> {
   if (teamId == null) return;
-  const team = await tx.team.findUnique({ where: { id: teamId }, select: { active: true } });
-  if (!team || !team.active) throw new UserValidationError("배정할 팀이 없거나 비활성 상태입니다.");
+  const rows = await tx.$queryRaw<Array<{ active: boolean }>>`SELECT "active" FROM "kernel"."Team" WHERE "id" = ${teamId} FOR UPDATE`;
+  if (!rows[0]?.active) throw new UserValidationError("배정할 팀이 없거나 비활성 상태입니다.");
 }
 
 // roleKeys → AccessRole.id 매핑. 모든 키가 존재해야 함(없으면 충돌). tx/전역 어느 클라이언트로도 호출 가능.
@@ -241,7 +246,11 @@ export async function approveTx(
     if (!u) throw new UserConflictError("사용자를 찾을 수 없습니다.");
     if (u.status !== "PENDING") throw new UserConflictError("이미 처리된 신청입니다.");
     if (!u.emailVerifiedAt) throw new UserConflictError("이메일 검증(비밀번호 설정) 전에는 승인할 수 없습니다.");
-    if (decision.teamId !== undefined) await assertActiveTeamTx(tx, decision.teamId);
+    if (decision.teamId !== undefined) {
+      // F-MM: 대상 User를 먼저 FOR UPDATE로 잠가 락 순서를 User→Team으로 고정(assertActiveTeamTx의 Team 락이 뒤따름).
+      await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${id} FOR UPDATE`;
+      await assertActiveTeamTx(tx, decision.teamId);
+    }
     const updated = await tx.user.updateMany({
       where: { id, status: "PENDING", updatedAt: expectedUpdatedAt },
       data: {
@@ -296,7 +305,11 @@ export async function updateUserTx(
   const run = async (tx: PrismaTx) => {
     const u = await tx.user.findUnique({ where: { id }, select: { status: true, updatedAt: true } });
     if (!u) throw new UserConflictError("사용자를 찾을 수 없습니다.");
-    if (patch.teamId !== undefined) await assertActiveTeamTx(tx, patch.teamId);
+    if (patch.teamId !== undefined) {
+      // F-MM: 대상 User를 먼저 FOR UPDATE로 잠가 락 순서를 User→Team으로 고정(updateTeam과 동일 → 데드락 회피).
+      await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${id} FOR UPDATE`;
+      await assertActiveTeamTx(tx, patch.teamId);
+    }
     const updated = await tx.user.updateMany({
       where: { id, updatedAt: expectedUpdatedAt },
       data: {
