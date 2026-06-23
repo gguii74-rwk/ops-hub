@@ -144,9 +144,22 @@ export async function getRequest(id: string, ctx: LeaveCtx) {
   throw new ForbiddenError("본인 신청만 조회할 수 있습니다.");
 }
 
-export async function approve(requestId: string, adminId: string) {
+// F-DD: 객체 조회 전에 approve scope를 선검사하고, scoped actor는 not-found(409)와 out-of-scope(403)를 동일 403으로
+// 합친다. 검사가 조회 뒤에 오면 권한 없는 사용자가 없는 ID(409)/존재하나 권한없음(403)을 구분해 신청 ID 존재를
+// 식별할 수 있다(존재 오라클 — route-level 검사 제거의 회귀). all-scope는 전 신청 가시라 not-found 노출에 추가 정보 없음.
+async function preflightApproveScope(requestId: string, adminId: string) {
+  const scope = await getEffectiveScope(adminId, "leave.approval", "approve");
+  if (scope == null) throw new ForbiddenError("승인 권한이 없습니다.");
   const req = await getRequestById(requestId);
-  if (!req) throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
+  if (!req) {
+    if (scope === "all") throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
+    throw new ForbiddenError("해당 신청에 대한 승인 권한이 없습니다.");
+  }
+  return req;
+}
+
+export async function approve(requestId: string, adminId: string) {
+  const req = await preflightApproveScope(requestId, adminId);
   const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { email: true, teamId: true } });
   await requirePermissionForTarget(adminId, "leave.approval", "approve", { teamId: user?.teamId ?? null });
   const mailJob = user?.email ? toMailJob([user.email], buildApprovedNotification(req)) : null;
@@ -155,8 +168,7 @@ export async function approve(requestId: string, adminId: string) {
 }
 
 export async function reject(requestId: string, adminId: string, rejectionReason: string) {
-  const req = await getRequestById(requestId);
-  if (!req) throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
+  const req = await preflightApproveScope(requestId, adminId);
   const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { email: true, teamId: true } });
   await requirePermissionForTarget(adminId, "leave.approval", "approve", { teamId: user?.teamId ?? null });
   const mailJob = user?.email ? toMailJob([user.email], buildRejectedNotification(req, rejectionReason)) : null;

@@ -138,9 +138,12 @@ export async function approveTx(requestId: string, adminId: string, mailJob?: Ma
         if (actorTeam == null || actorTeam !== applicantTeam) {
           throw new ForbiddenError("해당 신청에 대한 승인 권한이 없습니다.");
         }
-        // F-R: inactive team
-        const team = await tx.team.findUnique({ where: { id: actorTeam }, select: { active: true } });
-        if (!team?.active) throw new ForbiddenError("비활성 팀에서는 team-scope 승인을 할 수 없습니다.");
+        // F-R + F-CC: team을 authz 경계로 쓰므로 Team 행을 FOR UPDATE로 잠가 동시 비활성화 UPDATE와 직렬화한다.
+        // plain read면 active=true를 읽은 뒤 status update 전에 비활성화가 커밋돼 stale 경계로 승인된다(TOCTOU).
+        // 락 순서 User→Team은 updateTeam(lead 지정 경로)과 동일 → 데드락 없음. 비활성화 경로는 Team만 잠그므로 사이클 불가.
+        const teamRows = await tx.$queryRaw<Array<{ active: boolean }>>`
+          SELECT "active" FROM "kernel"."Team" WHERE "id" = ${actorTeam} FOR UPDATE`;
+        if (!teamRows[0]?.active) throw new ForbiddenError("비활성 팀에서는 team-scope 승인을 할 수 없습니다.");
       }
     }
     // updatedAt을 함께 읽어 CAS where에 건다 — PENDING 신청을 admin이 수정(days/연도 변경)할 수 있으므로
@@ -190,9 +193,10 @@ export async function rejectRequest(requestId: string, adminId: string, rejectio
         if (actorTeam == null || actorTeam !== applicantTeam) {
           throw new ForbiddenError("해당 신청에 대한 승인 권한이 없습니다.");
         }
-        // F-R: inactive team
-        const team = await tx.team.findUnique({ where: { id: actorTeam }, select: { active: true } });
-        if (!team?.active) throw new ForbiddenError("비활성 팀에서는 team-scope 승인을 할 수 없습니다.");
+        // F-R + F-CC: approveTx와 동형 — Team 행 FOR UPDATE로 동시 비활성화와 직렬화(TOCTOU 차단).
+        const teamRows = await tx.$queryRaw<Array<{ active: boolean }>>`
+          SELECT "active" FROM "kernel"."Team" WHERE "id" = ${actorTeam} FOR UPDATE`;
+        if (!teamRows[0]?.active) throw new ForbiddenError("비활성 팀에서는 team-scope 승인을 할 수 없습니다.");
       }
     }
     const updated = await tx.leaveRequest.updateMany({

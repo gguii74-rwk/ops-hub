@@ -354,8 +354,8 @@ describe("approveTx — F-O/F-D in-tx 권위 재해석", () => {
     h.db.$queryRaw
       .mockResolvedValueOnce([]) // actor FOR UPDATE
       .mockResolvedValueOnce([]) // applicant FOR UPDATE (sorted)
-      .mockResolvedValueOnce([{ id: "actor1", teamId: "teamA" }, { id: "u1", teamId: "teamA" }]); // 팀 조회
-    h.db.team.findUnique.mockResolvedValue({ active: true });
+      .mockResolvedValueOnce([{ id: "actor1", teamId: "teamA" }, { id: "u1", teamId: "teamA" }]) // 팀 조회
+      .mockResolvedValueOnce([{ active: true }]); // F-CC: Team active FOR UPDATE
     await approveTx("r1", "admin1", null, { actorId: "actor1", applicantId: "u1" });
     expect(h.db.leaveRequest.updateMany).toHaveBeenCalled();
   });
@@ -376,11 +376,30 @@ describe("approveTx — F-O/F-D in-tx 권위 재해석", () => {
     h.db.$queryRaw
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ id: "actor1", teamId: "teamA" }, { id: "u1", teamId: "teamA" }]);
-    h.db.team.findUnique.mockResolvedValue({ active: false }); // 비활성 팀
+      .mockResolvedValueOnce([{ id: "actor1", teamId: "teamA" }, { id: "u1", teamId: "teamA" }])
+      .mockResolvedValueOnce([{ active: false }]); // F-CC: 비활성 팀(FOR UPDATE)
     await expect(approveTx("r1", "admin1", null, { actorId: "actor1", applicantId: "u1" }))
       .rejects.toBeInstanceOf(ForbiddenError);
     expect(h.db.leaveRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("F-CC: scope=team 승인 시 Team 행을 FOR UPDATE로 잠근 뒤 active 확인(동시 비활성화 직렬화)", async () => {
+    setupHappyPath();
+    h.getEffectiveScopeMock.mockResolvedValue("team");
+    const sqls: string[] = [];
+    h.db.$queryRaw.mockImplementation((tpl: TemplateStringsArray, ...vals: unknown[]) => {
+      void vals;
+      const sql = tpl.join("?");
+      sqls.push(sql);
+      if (/FROM "kernel"\."Team"/.test(sql)) return Promise.resolve([{ active: true }]);
+      if (/teamId/.test(sql)) return Promise.resolve([{ id: "actor1", teamId: "teamA" }, { id: "u1", teamId: "teamA" }]);
+      return Promise.resolve([]); // User FOR UPDATE 락
+    });
+    await approveTx("r1", "admin1", null, { actorId: "actor1", applicantId: "u1" });
+    const teamLock = sqls.find((s) => /FROM "kernel"\."Team"/.test(s));
+    expect(teamLock).toBeDefined();
+    expect(teamLock).toMatch(/FOR UPDATE/);
+    expect(h.db.leaveRequest.updateMany).toHaveBeenCalled();
   });
 
   it("F-P: 락 순서 불변식 — actor='zzz', applicant='aaa' → 정렬 순서 aaa,zzz로 $queryRaw FOR UPDATE", async () => {
@@ -427,6 +446,20 @@ describe("rejectRequest — F-O in-tx 권위 재해석", () => {
     expect(queryRawCalls[0]).toBe("aaa");
     expect(queryRawCalls[1]).toBe("zzz");
   });
+
+  it("F-CC: scope=team 거절 시 Team 행을 FOR UPDATE로 잠그고 비활성이면 ForbiddenError", async () => {
+    h.getEffectiveScopeMock.mockResolvedValue("team");
+    h.db.$queryRaw.mockImplementation((tpl: TemplateStringsArray, ...vals: unknown[]) => {
+      void vals;
+      const sql = tpl.join("?");
+      if (/FROM "kernel"\."Team"/.test(sql)) return Promise.resolve([{ active: false }]); // 비활성
+      if (/teamId/.test(sql)) return Promise.resolve([{ id: "actor1", teamId: "teamA" }, { id: "u1", teamId: "teamA" }]);
+      return Promise.resolve([]);
+    });
+    await expect(rejectRequest("r1", "admin1", "사유", null, { actorId: "actor1", applicantId: "u1" }))
+      .rejects.toBeInstanceOf(ForbiddenError);
+    expect(h.db.leaveRequest.updateMany).not.toHaveBeenCalled();
+  });
 });
 
 // ─────────────────────────────────────────────
@@ -437,6 +470,8 @@ describe("approveTx — F-S auditLog 보상 통제", () => {
   const updatedAt3 = new Date("2026-08-01T00:00:00Z");
 
   it("성공 시 writeAudit(leave.approve) 호출", async () => {
+    h.getEffectiveScopeMock.mockResolvedValue("all"); // authz 제공 → in-tx 재해석. all이면 팀 비교 건너뜀(누수 의존 제거)
+    h.db.$queryRaw.mockResolvedValue([]);
     h.db.leaveRequest.findUnique.mockResolvedValue({ status: "PENDING", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1, updatedAt: updatedAt3 });
     h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
     h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 1 });

@@ -36,7 +36,7 @@ vi.mock("@/kernel/access", () => ({
   requirePermissionForTarget: (...a: unknown[]) => (requirePermissionForTarget as (...args: unknown[]) => unknown)(...a),
 }));
 
-import { createLeaveRequest, createLeaveRequestByAdmin, cancel, getRequest, updateByAdmin, listApprovalQueue } from "@/modules/leave/services/requests";
+import { createLeaveRequest, createLeaveRequestByAdmin, cancel, getRequest, updateByAdmin, listApprovalQueue, approve, reject } from "@/modules/leave/services/requests";
 import { LeaveConflictError, LeaveValidationError } from "@/modules/leave/errors";
 import { ForbiddenError } from "@/kernel/access";
 import * as holidaysMod from "@/kernel/holidays";
@@ -310,5 +310,34 @@ describe("listApprovalQueue (F9, F-R scope-aware)", () => {
     const result = await listApprovalQueue("u1");
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("r1");
+  });
+});
+
+describe("approve/reject — F-DD 존재 오라클 차단(객체 조회 전 scope 선검사)", () => {
+  it("approve: scope=null이면 조회 전 ForbiddenError — getRequestById/approveTx 미호출(없는 ID/있는 ID 구분 불가)", async () => {
+    getEffectiveScope.mockResolvedValue(null);
+    await expect(approve("r1", "actor1")).rejects.toBeInstanceOf(ForbiddenError);
+    expect(repo.getRequestById).not.toHaveBeenCalled();
+    expect(repo.approveTx).not.toHaveBeenCalled();
+  });
+
+  it("approve: scope=team + 없는 ID → ForbiddenError(403)로 합침(not-found 409를 노출하지 않음)", async () => {
+    getEffectiveScope.mockResolvedValue("team");
+    repo.getRequestById.mockResolvedValue(null);
+    await expect(approve("r1", "actor1")).rejects.toBeInstanceOf(ForbiddenError);
+    expect(repo.approveTx).not.toHaveBeenCalled();
+  });
+
+  it("approve: scope=all + 없는 ID → LeaveConflictError(409 — 전체 가시라 추가 정보 없음)", async () => {
+    getEffectiveScope.mockResolvedValue("all");
+    repo.getRequestById.mockResolvedValue(null);
+    await expect(approve("r1", "actor1")).rejects.toBeInstanceOf(LeaveConflictError);
+  });
+
+  it("reject: scope=null이면 조회 전 ForbiddenError — getRequestById/rejectRequest 미호출", async () => {
+    getEffectiveScope.mockResolvedValue(null);
+    await expect(reject("r1", "actor1", "사유")).rejects.toBeInstanceOf(ForbiddenError);
+    expect(repo.getRequestById).not.toHaveBeenCalled();
+    expect(repo.rejectRequest).not.toHaveBeenCalled();
   });
 });
