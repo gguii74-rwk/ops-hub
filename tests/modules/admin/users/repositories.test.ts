@@ -414,6 +414,23 @@ describe("updateUserTx (systemRole 강등 시 가용성)", () => {
     h.db.user.updateMany.mockResolvedValue({ count: 0 });
     await expect(updateUserTx("u1", { name: "x" }, "admin1", updatedAt)).rejects.toBeInstanceOf(UserConflictError);
   });
+  // F-OO: team-scope override는 grantee의 현재 팀 기준 상대값이라, 부여 시점(F-EE 교차팀 가드 통과)과 다른 팀으로
+  //   이동하면 새 팀에 권능이 생겨 교차팀 위임 가드가 우회된다 → 팀이 실제 바뀌면 정리(D1/F3 팀장 reconcile과 동형).
+  it("F-OO: 팀 이동(teamId 실제 변경)이면 team-scope override를 정리한다(교차팀 위임 가드 우회 차단)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", systemRole: "MEMBER", teamId: "team-old", updatedAt });
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    h.db.userPermissionOverride.deleteMany.mockResolvedValue({ count: 1 });
+    await updateUserTx("u1", { teamId: "team-new" }, "admin1", updatedAt);
+    expect(h.db.userPermissionOverride.deleteMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ userId: "u1", scope: "team" }),
+    }));
+  });
+  it("F-OO: 같은 팀으로 재저장(teamId 불변)이면 team-scope override를 지우지 않는다(정상 부여 보존)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", systemRole: "MEMBER", teamId: "team-x", updatedAt });
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    await updateUserTx("u1", { teamId: "team-x" }, "admin1", updatedAt);
+    expect(h.db.userPermissionOverride.deleteMany).not.toHaveBeenCalled();
+  });
 });
 
 describe("assertActiveTeamTx (F-J active team validation · F-MM 락)", () => {
@@ -431,7 +448,7 @@ describe("assertActiveTeamTx (F-J active team validation · F-MM 락)", () => {
     expect(h.db.user.updateMany).not.toHaveBeenCalled();
   });
   it("null teamId(무소속)는 Team 검사 없이 통과(user.updateMany 진행)", async () => {
-    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt });
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", teamId: null, updatedAt });
     h.db.user.updateMany.mockResolvedValue({ count: 1 });
     await updateUserTx("u1", { teamId: null }, "admin1", updatedAt);
     expect(h.db.user.updateMany).toHaveBeenCalled(); // 통과(throw 없음)

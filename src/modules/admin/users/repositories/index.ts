@@ -303,7 +303,7 @@ export async function updateUserTx(
   // systemRole 변경은 가용성에 영향(OWNER/관리자 강등) → 락 + 커밋 전 재검사. 그 외 속성 patch는 가용성 무관.
   const affectsAvailability = patch.systemRole !== undefined;
   const run = async (tx: PrismaTx) => {
-    const u = await tx.user.findUnique({ where: { id }, select: { status: true, updatedAt: true } });
+    const u = await tx.user.findUnique({ where: { id }, select: { status: true, teamId: true, updatedAt: true } });
     if (!u) throw new UserConflictError("사용자를 찾을 수 없습니다.");
     if (patch.teamId !== undefined) {
       // F-MM: 대상 User를 먼저 FOR UPDATE로 잠가 락 순서를 User→Team으로 고정(updateTeam과 동일 → 데드락 회피).
@@ -326,6 +326,13 @@ export async function updateUserTx(
     if (patch.teamId !== undefined) {
       const { reconcileTeamLeadTx } = await import("@/modules/admin/teams/repositories");
       await reconcileTeamLeadTx(tx, id);
+      // F-OO: 팀이 실제로 바뀌면 team-scope override를 정리한다. team-scope 권한은 grantee의 *현재* 팀 기준 상대값이라
+      //   부여 시점(F-EE 교차팀 가드 통과)과 다른 팀으로 이동하면 actor가 권한 없는 새 팀에 권능이 생겨 교차팀 위임 가드가
+      //   우회된다(override 행 자체는 그대로). 팀에 묶인 것은 이동 시 정리하는 D1/F3(팀장 reconcile)과 동형. own/all scope는
+      //   팀에 무관하므로 team scope만 삭제. 같은 팀 재저장은 정상 부여 보존을 위해 건드리지 않는다.
+      if (patch.teamId !== u.teamId) {
+        await tx.userPermissionOverride.deleteMany({ where: { userId: id, scope: "team" } });
+      }
     }
   };
   if (affectsAvailability) await withAvailabilityLock(run);
