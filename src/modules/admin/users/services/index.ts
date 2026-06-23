@@ -168,7 +168,7 @@ export async function upsertOverride(actor: ActorContext, id: string, dto: Overr
   };
   return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${actor.userId} FOR UPDATE`;
-    await assertOverrideWithinActorGrant(actor, dto.resource, dto.action, dto.effect, dto.scope, tx);
+    await assertOverrideWithinActorGrant(actor, id, dto.resource, dto.action, dto.effect, dto.scope, tx);
     return createOverride(id, input, actor.userId, tx);
   });
 }
@@ -186,7 +186,7 @@ export async function removeOverride(actor: ActorContext, id: string, overrideId
   if (!ov) throw new UserConflictError("해당 권한 예외를 찾을 수 없습니다.");
   await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${actor.userId} FOR UPDATE`;
-    await assertOverrideWithinActorGrant(actor, ov.resource, ov.action, ov.effect === "DENY" ? "ALLOW" : "DENY", ov.scope, tx);
+    await assertOverrideWithinActorGrant(actor, id, ov.resource, ov.action, ov.effect === "DENY" ? "ALLOW" : "DENY", ov.scope, tx);
     await deleteOverride(id, overrideId, actor.userId, tx);
   });
 }

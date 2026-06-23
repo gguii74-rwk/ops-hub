@@ -75,8 +75,11 @@ export function assertCanSetSystemRole(
 //          우회 부여하는 것 차단(보호된 역할/systemRole 부여 없이 OWNER-only 위임 경계 우회 방지 — finding D).
 //   DENY:  동료 관리자를 critical 권한에서 lockout 하는 것 차단.
 // F-N: ALLOW 부여 시 actor의 effectiveScope를 in-tx 재해석해 scope도 보유 한도 내인지 확인.
+// F-EE: team scope는 grantee 팀 기준 상대값이라 rank 검사만으론 부족하다. team-scope actor가 team-scope ALLOW를
+//   부여하면 grantee의 *grantee 팀*에 대한 권능이 생긴다 — grantee가 다른 팀이면 actor가 권한 없는 팀에 권능을
+//   만들어내는 cross-team 위임(상승). 그래서 targetUserId를 받아 actorScope==="team"일 때 같은 팀만 허용한다.
 export async function assertOverrideWithinActorGrant(
-  actor: ActorContext, resource: string, action: string, effect: "ALLOW" | "DENY", scope: string,
+  actor: ActorContext, targetUserId: string, resource: string, action: string, effect: "ALLOW" | "DENY", scope: string,
   tx?: Prisma.TransactionClient,
 ): Promise<void> {
   if (actor.isOwner) return;
@@ -91,6 +94,18 @@ export async function assertOverrideWithinActorGrant(
     if (actorScope == null) throw new EscalationError(`보유하지 않은 권한(${key})은 ALLOW로 부여할 수 없습니다.`);
     if (scope === "assigned" || SCOPE_RANK[scope as EnforceableScope] > SCOPE_RANK[actorScope]) {
       throw new EscalationError(`보유 scope(${actorScope})를 넘는 ${scope} 권한은 부여할 수 없습니다.`);
+    }
+    // F-EE: actor가 team scope만 보유하고 team scope를 부여하면, grantee가 actor와 같은 팀일 때만 허용한다.
+    // actorScope="all"이면 전 팀을 커버하므로 무관. team-scope actor의 cross-team ALLOW만 차단(교차 팀 권한 위임 금지).
+    if (scope === "team" && actorScope === "team") {
+      const client = tx ?? prisma;
+      const [actorRow, targetRow] = await Promise.all([
+        client.user.findUnique({ where: { id: actor.userId }, select: { teamId: true } }),
+        client.user.findUnique({ where: { id: targetUserId }, select: { teamId: true } }),
+      ]);
+      if (actorRow?.teamId == null || actorRow.teamId !== targetRow?.teamId) {
+        throw new EscalationError(`team scope 권한(${key})은 같은 팀 사용자에게만 부여할 수 있습니다(교차 팀 위임 금지).`);
+      }
     }
   }
   // 비-critical DENY는 허용.
