@@ -147,6 +147,31 @@ describe("approveTx", () => {
     await approveTx("u1", "admin1", decision, mail, updatedAt);
     expect(withAvailabilityLockMock).toHaveBeenCalled();
   });
+  // F-PP: 승인도 decision.teamId로 팀을 배정하는 경로다 — updateUserTx와 동형으로 팀이 실제 바뀌면
+  //   team-scope override를 정리해야 한다(안 하면 PENDING 때 받은 team-scope override가 다른 팀으로 승인되며 살아남아 F-OO 재현).
+  it("F-PP: 승인 시 팀이 바뀌면(decision.teamId ≠ 기존) team-scope override 정리(교차팀 우회 차단)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "PENDING", emailVerifiedAt: new Date(), teamId: "team-old", updatedAt });
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    h.db.accessRole.findMany.mockResolvedValue([{ id: "role-dev", key: "developer" }]);
+    h.db.userAccessRole.createMany.mockResolvedValue({ count: 1 });
+    h.db.userAccessRole.deleteMany.mockResolvedValue({ count: 0 });
+    h.db.userPermissionOverride.deleteMany.mockResolvedValue({ count: 1 });
+    h.db.mailDelivery.create.mockResolvedValue({ id: "md1" });
+    await approveTx("u1", "admin1", { ...decision, teamId: "team-new" }, mail, updatedAt);
+    expect(h.db.userPermissionOverride.deleteMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ userId: "u1", scope: "team" }),
+    }));
+  });
+  it("F-PP: 승인 시 같은 팀(decision.teamId === 기존)이면 override를 지우지 않는다(정상 부여 보존)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "PENDING", emailVerifiedAt: new Date(), teamId: "team-x", updatedAt });
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    h.db.accessRole.findMany.mockResolvedValue([{ id: "role-dev", key: "developer" }]);
+    h.db.userAccessRole.createMany.mockResolvedValue({ count: 1 });
+    h.db.userAccessRole.deleteMany.mockResolvedValue({ count: 0 });
+    h.db.mailDelivery.create.mockResolvedValue({ id: "md1" });
+    await approveTx("u1", "admin1", { ...decision, teamId: "team-x" }, mail, updatedAt);
+    expect(h.db.userPermissionOverride.deleteMany).not.toHaveBeenCalled();
+  });
 });
 
 describe("rejectTx", () => {

@@ -242,7 +242,7 @@ export async function approveTx(
   // 락 없이 $transaction만 쓰면 recheck와 applyRoles 사이에 setRoles가 특권 역할을 커밋할 수 있고,
   // applyRoles가 그 역할을 결정 목록에 없다는 이유로 삭제하는 erase race가 발생한다.
   await withAvailabilityLock(async (tx) => {
-    const u = await tx.user.findUnique({ where: { id }, select: { status: true, emailVerifiedAt: true, updatedAt: true } });
+    const u = await tx.user.findUnique({ where: { id }, select: { status: true, teamId: true, emailVerifiedAt: true, updatedAt: true } });
     if (!u) throw new UserConflictError("사용자를 찾을 수 없습니다.");
     if (u.status !== "PENDING") throw new UserConflictError("이미 처리된 신청입니다.");
     if (!u.emailVerifiedAt) throw new UserConflictError("이메일 검증(비밀번호 설정) 전에는 승인할 수 없습니다.");
@@ -274,6 +274,11 @@ export async function approveTx(
     if (decision.teamId !== undefined) {
       const { reconcileTeamLeadTx } = await import("@/modules/admin/teams/repositories");
       await reconcileTeamLeadTx(tx, id);
+      // F-PP: 승인도 팀 배정 경로다 — updateUserTx(F-OO)와 동형으로, 팀이 실제 바뀌면 team-scope override를 정리한다.
+      //   PENDING 때 한 팀에서 받은 team-scope override가 다른 팀으로 승인되며 살아남으면 새 팀에 권능이 생겨 교차팀 위임 가드가 우회된다.
+      if (decision.teamId !== u.teamId) {
+        await tx.userPermissionOverride.deleteMany({ where: { userId: id, scope: "team" } });
+      }
     }
   });
 }
