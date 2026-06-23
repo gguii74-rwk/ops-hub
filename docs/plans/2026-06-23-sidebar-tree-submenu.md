@@ -11,10 +11,10 @@
 
 | # | title | status | file | deps | outcome |
 |---|-------|--------|------|------|---------|
-| 01 | NAV 카탈로그 트리 확장 + 구조 테스트 | [ ] | [task-01](2026-06-23-sidebar-tree-submenu/task-01-nav-catalog.md) | — | |
-| 02 | app-nav active 판정 정밀화(형제 최장 매칭) | [ ] | [task-02](2026-06-23-sidebar-tree-submenu/task-02-active-precedence.md) | — | |
-| 03 | 연차 관리 라우트 이동 + ManageTabs + LeaveTabs 제거 | [ ] | [task-03](2026-06-23-sidebar-tree-submenu/task-03-leave-manage-restructure.md) | — | |
-| 04 | 관리 랜딩 정리(AdminLinks 제거) | [ ] | [task-04](2026-06-23-sidebar-tree-submenu/task-04-admin-landing-cleanup.md) | — | |
+| 01 | NAV 카탈로그 트리 확장 + 구조 테스트 | [x] | [task-01](2026-06-23-sidebar-tree-submenu/task-01-nav-catalog.md) | — | 8dce3c8 |
+| 02 | app-nav active 판정 정밀화(형제 최장 매칭) | [x] | [task-02](2026-06-23-sidebar-tree-submenu/task-02-active-precedence.md) | — | 2eaeab2 |
+| 03 | 연차 관리 라우트 이동 + ManageTabs + LeaveTabs 제거 | [x] | [task-03](2026-06-23-sidebar-tree-submenu/task-03-leave-manage-restructure.md) | — | c1bdd29 |
+| 04 | 관리 랜딩 정리(AdminLinks 제거) | [x] | [task-04](2026-06-23-sidebar-tree-submenu/task-04-admin-landing-cleanup.md) | — | 44d06d7 |
 
 권장 실행 순서: 01 → 02 → 03 → 04. 태스크 간 강한 의존은 없으나(각 태스크가 lint/typecheck/build/test 그린을 유지), 03 이후 04를 두면 admin 정리가 마지막에 깔끔히 닫힌다.
 
@@ -121,3 +121,14 @@ codex 적대검증(`--base main`) 1라운드 — finding 3건 모두 **ACCEPTED*
 ### 배포 순서 노트 (F1 보완)
 
 `/leave/manage/*` 트리 노출은 **재시드(`npm run db:seed`)에 의존**한다. task-03/04가 fallback nav(`LeaveTabs`/`AdminLinks`)를 제거하므로, **배포 시 코드 반영과 재시드를 함께** 수행해야 사이드바 회귀(이동 페이지 미발견)가 없다. dev 배포 절차(CLAUDE.md)에 `npm run db:seed`가 이미 포함됨 — 누락 금지. (신선 설치는 무관, 기존 dev DB는 연차 자식 0→5 신규 생성.)
+
+## 적대검증 판정 (review-loop, impl phase)
+
+impl 완료 후 codex 적대검증(`--base main`) 1라운드 — 게이트(typecheck/lint/test 1132/build) 전부 그린. finding 2건(둘 다 medium) 모두 **plan-phase F2/F3과 동일 fingerprint** → DUPLICATE로 닫음(미판정 blocking 0, 코드 수정 없음). codex는 spec 미인지로 이미 닫힌 설계 결정을 재지목.
+
+| # | finding (sev) | 판정 | 근거(impl 증거 포함) |
+| --- | --- | --- | --- |
+| 1 | 관리 nav가 `leave.approval:view` 단일 게이트로 allocation/status-only 접근 숨김 (medium) | DUPLICATE → F3(ACCEPTED) | spec D4/D9 의도. **impl 증거:** 이동된 3페이지가 각자 `leave.approval/allocation/status:view`로 독립 서버 가드 유지(노출=실행 → 보안 무해, nav 발견성 갭만). 3권한은 `pm:["*"]`·OWNER로 **항상 함께 부여**, 부분 보유는 수동 override-only 희귀 케이스. |
+| 2 | 구 `/leave/{approvals,allocations,status}` 404·redirect 없음 (medium, plan에선 high) | DUPLICATE → F2(ACCEPTED) | spec D5 + 사용자 R1 결정(컷오버 전 내부 dev/test, 외부 북마크 표면 없음, 탐색=사이드바 트리). severity high→medium 흔들림은 fingerprint 무관(severity는 key 제외). Simplicity-first → redirect shim 미추가. |
+
+**impl 게이트 결과:** typecheck 0 · lint 0 · test 1132/1132 · build 성공(라우트 트리 `/leave/manage{,/allocations,/status}` 반영, 구 경로 제거). **배포 follow-up:** F1 배포 순서 노트(재시드 동반) 준수.
