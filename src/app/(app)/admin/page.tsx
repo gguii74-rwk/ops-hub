@@ -1,7 +1,6 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { hasPermission } from "@/kernel/access";
-import { AdminLinks } from "./admin-links";
 
 export default async function AdminPage() {
   const session = await auth();
@@ -12,7 +11,7 @@ export default async function AdminPage() {
   return (
     <section className="grid gap-4">
       <h1 className="text-xl font-semibold">관리</h1>
-      <AdminLinks />
+      <p className="text-sm text-muted-foreground">좌측 메뉴에서 사용자 관리·메뉴 관리를 선택하세요.</p>
     </section>
   );
 }
