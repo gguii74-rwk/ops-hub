@@ -42,7 +42,7 @@ export async function POST(req: Request) {
       // PENDING 상한 상수는 라우트가 pendingCap 인자로 주입한다(deps 역전 방지 — repository는 rate-limit.ts를 import하지 않음).
       await createPendingSignup({
         email, name: input.name, employmentType: input.employmentType,
-        jobFunction: input.jobFunction, department: input.department, tokenHash, tokenExpiresAt,
+        jobFunction: input.jobFunction, tokenHash, tokenExpiresAt,
         mail: { recipients: [email], subject, bodyHtml }, pendingCap: PENDING_UNVERIFIED_CAP,
       });
     } catch (e) {

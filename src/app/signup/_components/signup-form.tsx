@@ -23,7 +23,6 @@ const JOB_OPTIONS: Array<{ value: JobFunction; label: string }> = [
 export function SignupForm() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
-  const [department, setDepartment] = useState("");
   const [employmentType, setEmploymentType] = useState<EmploymentType>("REGULAR");
   const [jobFunction, setJobFunction] = useState<JobFunction>("DEVELOPER");
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
@@ -45,7 +44,7 @@ export function SignupForm() {
       const res = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, name, department: department || null, employmentType, jobFunction }),
+        body: JSON.stringify({ email, name, employmentType, jobFunction }),
       });
       if (res.status === 202 || res.ok) {
         setStatus("done");
@@ -69,10 +68,6 @@ export function SignupForm() {
       <div className="grid gap-1.5">
         <Label htmlFor="s-name">이름</Label>
         <Input id="s-name" value={name} onChange={(e) => setName(e.target.value)} />
-      </div>
-      <div className="grid gap-1.5">
-        <Label htmlFor="s-dept">부서(선택)</Label>
-        <Input id="s-dept" value={department} onChange={(e) => setDepartment(e.target.value)} />
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">

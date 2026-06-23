@@ -1,6 +1,6 @@
 import "server-only";
 import type { LeaveRequestStatus, LeaveType, LeaveSubType } from "@prisma/client";
-import { ForbiddenError } from "@/kernel/access";
+import { ForbiddenError, getEffectiveScope, requirePermissionForTarget } from "@/kernel/access";
 import { prisma } from "@/lib/prisma";
 import { getHolidaysInRange, ensureYearsSynced, getUnsyncedYears } from "@/kernel/holidays";
 import type { CreateLeaveInput, LeaveCtx } from "../types";
@@ -50,10 +50,10 @@ export async function createLeaveRequest(userId: string, input: CreateLeaveInput
   if (!(await findActiveAllocation(userId, year))) throw new LeaveValidationError(`${year}년도 연차 할당 정보가 없습니다.`);
   if (await findOverlap(userId, start, end)) throw new LeaveConflictError("해당 기간에 이미 신청된 연차가 있습니다.");
 
-  const applicant = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
+  const applicant = await prisma.user.findUnique({ where: { id: userId }, select: { name: true, teamId: true } });
   // enqueue 스냅샷: REQUESTED 행을 항상 적재하기 위한 durable 기록. 단 **실제 발송 수신자 결정의 SSOT는 drain**이며,
   // worker가 REQUESTED 발송 직전 getLeaveAdminRecipients()로 재확정한다(결정 A) — claim~발송 사이 권한 변동 반영.
-  const recipients = await getLeaveAdminRecipients();
+  const recipients = await getLeaveAdminRecipients(applicant?.teamId ?? null);
   const reqLike: MailReqLike = { leaveType: input.leaveType, leaveSubType: input.leaveSubType ?? null, quarterStartTime: input.quarterStartTime ?? null, startDate: start, endDate: end, reason: input.reason ?? null };
   // 수신자 0명(승인권한자 없음/조회 저하)이어도 REQUESTED 행은 **항상** 적재 — durable 기록(spec §8). worker가 "수신자 없음" FAILED로 종결해 운영자가 누락을 본다.
   const mailJob = toMailJob(recipients, buildRequestNotification(applicant?.name ?? "직원", reqLike));
@@ -104,10 +104,23 @@ export async function listAllRequestsWithUser(filter: { userId?: string; statuse
   const items = await listRequests(filter);
   const userIds = [...new Set(items.map((i) => i.userId))];
   const users = userIds.length
-    ? await prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true, department: true, email: true } })
+    ? await prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true, teamId: true, team: { select: { name: true } }, email: true } })
     : [];
   const byId = new Map(users.map((u) => [u.id, u]));
   return items.map((i) => ({ ...i, user: byId.get(i.userId) ?? null }));
+}
+
+// 스코프 인식 승인 대기 큐. team-scope 승인권한자는 자기 팀만, all-scope는 전체.
+export async function listApprovalQueue(actorId: string) {
+  const scope = await getEffectiveScope(actorId, "leave.approval", "view");
+  if (!scope) throw new ForbiddenError("leave.approval:view 권한이 없습니다.");
+  const items = await listAllRequestsWithUser({ statuses: ["PENDING"] });
+  if (scope === "all") return items;
+  // team-scope
+  const me = await prisma.user.findUnique({ where: { id: actorId }, select: { teamId: true, team: { select: { active: true } } } });
+  if (me?.teamId == null) throw new ForbiddenError("팀 소속이 없어 승인 대기 목록을 볼 수 없습니다."); // F9
+  if (!me.team?.active) throw new ForbiddenError("비활성 팀에서는 승인 대기 목록을 볼 수 없습니다."); // F-R
+  return items.filter((i) => (i.user as { teamId?: string | null } | null)?.teamId === me.teamId);
 }
 
 export async function getRequest(id: string, ctx: LeaveCtx) {
@@ -115,28 +128,51 @@ export async function getRequest(id: string, ctx: LeaveCtx) {
   if (!req) return null;
   if (req.userId === ctx.userId) return req; // 본인 → 전 상태
   // 타인 신청의 cross-user 가시성 경계(spec §4): 전체이력 권한(admin:view/시스템 OWNER) → 전 상태,
-  // 승인 큐 권한(approval:view)은 처리 대상인 PENDING만. approval:view는 read-all 자격이 아니다
-  // (전체이력 목록은 task-05가 admin:view로 잠갔으나 단건 상세 경로가 누락돼 있었음).
-  const canViewAll = ctx.isOwner || ctx.permissionKeys.has("leave.admin:view");
-  const canViewPending = ctx.permissionKeys.has("leave.approval:view") && req.status === "PENDING";
-  if (canViewAll || canViewPending) return req;
+  // 승인 큐 권한(approval:view)은 처리 대상인 PENDING만 — 스코프 인식(PD3).
+  if (ctx.isOwner || ctx.permissionKeys.has("leave.admin:view")) return req;
+  if (req.status === "PENDING") {
+    const scope = await getEffectiveScope(ctx.userId, "leave.approval", "view");
+    if (scope === "all") return req;
+    if (scope === "team") {
+      const [applicant, me] = await Promise.all([
+        prisma.user.findUnique({ where: { id: req.userId }, select: { teamId: true } }),
+        prisma.user.findUnique({ where: { id: ctx.userId }, select: { teamId: true, team: { select: { active: true } } } }),
+      ]);
+      if (me?.teamId != null && me.team?.active && applicant?.teamId === me.teamId) return req;
+    }
+  }
   throw new ForbiddenError("본인 신청만 조회할 수 있습니다.");
 }
 
-export async function approve(requestId: string, adminId: string) {
+// F-DD: 객체 조회 전에 approve scope를 선검사하고, scoped actor는 not-found(409)와 out-of-scope(403)를 동일 403으로
+// 합친다. 검사가 조회 뒤에 오면 권한 없는 사용자가 없는 ID(409)/존재하나 권한없음(403)을 구분해 신청 ID 존재를
+// 식별할 수 있다(존재 오라클 — route-level 검사 제거의 회귀). all-scope는 전 신청 가시라 not-found 노출에 추가 정보 없음.
+async function preflightApproveScope(requestId: string, adminId: string) {
+  const scope = await getEffectiveScope(adminId, "leave.approval", "approve");
+  if (scope == null) throw new ForbiddenError("승인 권한이 없습니다.");
   const req = await getRequestById(requestId);
-  if (!req) throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
-  const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { email: true } });
+  if (!req) {
+    if (scope === "all") throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
+    throw new ForbiddenError("해당 신청에 대한 승인 권한이 없습니다.");
+  }
+  return req;
+}
+
+export async function approve(requestId: string, adminId: string) {
+  const req = await preflightApproveScope(requestId, adminId);
+  const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { email: true, teamId: true } });
+  await requirePermissionForTarget(adminId, "leave.approval", "approve", { teamId: user?.teamId ?? null });
   const mailJob = user?.email ? toMailJob([user.email], buildApprovedNotification(req)) : null;
-  await approveTx(requestId, adminId, mailJob);
+  await approveTx(requestId, adminId, mailJob, { actorId: adminId, applicantId: req.userId });
   triggerLeaveMailDrain();
 }
+
 export async function reject(requestId: string, adminId: string, rejectionReason: string) {
-  const req = await getRequestById(requestId);
-  if (!req) throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
-  const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { email: true } });
+  const req = await preflightApproveScope(requestId, adminId);
+  const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { email: true, teamId: true } });
+  await requirePermissionForTarget(adminId, "leave.approval", "approve", { teamId: user?.teamId ?? null });
   const mailJob = user?.email ? toMailJob([user.email], buildRejectedNotification(req, rejectionReason)) : null;
-  await rejectRequest(requestId, adminId, rejectionReason, mailJob);
+  await rejectRequest(requestId, adminId, rejectionReason, mailJob, { actorId: adminId, applicantId: req.userId });
   triggerLeaveMailDrain();
 }
 

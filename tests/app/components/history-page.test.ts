@@ -178,21 +178,21 @@ describe("AdminHistory fetch", () => {
 
 type Row = {
   startDate: string;
-  user: { name: string; department: string | null } | null;
+  user: { name: string; team?: { name: string } | null } | null;
 };
 
 function applyAdminFilter(data: Row[], year: string, q: string): Row[] {
   return data.filter((r) => {
     if (year && new Date(r.startDate).getFullYear() !== Number(year)) return false;
-    if (q && !(r.user?.name.includes(q) || (r.user?.department ?? "").includes(q))) return false;
+    if (q && !(r.user?.name.includes(q) || (r.user?.team?.name ?? "").includes(q))) return false;
     return true;
   });
 }
 
 const sampleRows: Row[] = [
-  { startDate: "2026-01-10T00:00:00.000Z", user: { name: "김철수", department: "개발팀" } },
-  { startDate: "2026-03-05T00:00:00.000Z", user: { name: "이영희", department: "기획팀" } },
-  { startDate: "2025-12-20T00:00:00.000Z", user: { name: "박민준", department: "개발팀" } },
+  { startDate: "2026-01-10T00:00:00.000Z", user: { name: "김철수", team: { name: "개발팀" } } },
+  { startDate: "2026-03-05T00:00:00.000Z", user: { name: "이영희", team: { name: "기획팀" } } },
+  { startDate: "2025-12-20T00:00:00.000Z", user: { name: "박민준", team: { name: "개발팀" } } },
   { startDate: "2026-06-01T00:00:00.000Z", user: null },
 ];
 
@@ -240,5 +240,46 @@ describe("AdminHistory 클라이언트 필터", () => {
     for (const r of result) {
       expect(r.user).not.toBeNull();
     }
+  });
+});
+
+// ─────────────────────────────────────────────
+// F-G: canApprove/canManage = getEffectiveScope === "all"
+// team-scope approver는 canApprove/canManage = false (직접입력·전체관리 불가)
+// ─────────────────────────────────────────────
+
+type EffectiveScope = "all" | "team" | null;
+
+function resolveCanApprove(scope: EffectiveScope): boolean {
+  return scope === "all";
+}
+
+function resolveCanManage(scope: EffectiveScope): boolean {
+  return scope === "all";
+}
+
+describe("F-G: canApprove/canManage — effective scope 기반", () => {
+  it("scope=all → canApprove=true", () => {
+    expect(resolveCanApprove("all")).toBe(true);
+  });
+
+  it("scope=team → canApprove=false (직접입력·전체관리 불가)", () => {
+    expect(resolveCanApprove("team")).toBe(false);
+  });
+
+  it("scope=null → canApprove=false", () => {
+    expect(resolveCanApprove(null)).toBe(false);
+  });
+
+  it("scope=all → canManage=true", () => {
+    expect(resolveCanManage("all")).toBe(true);
+  });
+
+  it("scope=team → canManage=false (캘린더 관리 불가)", () => {
+    expect(resolveCanManage("team")).toBe(false);
+  });
+
+  it("scope=null → canManage=false", () => {
+    expect(resolveCanManage(null)).toBe(false);
   });
 });

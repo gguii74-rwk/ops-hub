@@ -16,7 +16,7 @@ const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3
 interface UserDetail {
   id: string; email: string; name: string; status: string;
   employmentType: string; jobFunction: string; systemRole: string;
-  department: string | null; mustChangePassword: boolean;
+  teamId: string | null; teamName: string | null; mustChangePassword: boolean;
   roleKeys: string[];
   updatedAt: string; // 낙관락(mutation body로 전달 — stale-tab lost-update 차단)
   overrides: Array<{ id: string; resource: string; action: string; effect: string; scope: string; reason: string | null; startsAt: Date | null; endsAt: Date | null }>;
@@ -28,7 +28,7 @@ async function fetchUser(id: string): Promise<UserDetail> {
   return res.json();
 }
 
-export function UserEdit({ userId, canUpdate }: { userId: string; canUpdate: boolean }) {
+export function UserEdit({ userId, canUpdate, teams }: { userId: string; canUpdate: boolean; teams: Array<{ id: string; name: string }> }) {
   const qc = useQueryClient();
   const { data, isLoading, isError } = useQuery({
     queryKey: ["admin-user", userId],
@@ -36,7 +36,7 @@ export function UserEdit({ userId, canUpdate }: { userId: string; canUpdate: boo
   });
 
   const [name, setName] = useState("");
-  const [department, setDepartment] = useState("");
+  const [teamId, setTeamId] = useState<string | null>(null);
   const [systemRole, setSystemRole] = useState<SystemRole>("MEMBER");
   const [attr, setAttr] = useState<AttrState>({ employmentType: "REGULAR", jobFunction: "DEVELOPER", roleKeys: [] });
   const [initialized, setInitialized] = useState(false);
@@ -45,7 +45,7 @@ export function UserEdit({ userId, canUpdate }: { userId: string; canUpdate: boo
   // 데이터 로드 후 초기화(1회)
   if (data && !initialized) {
     setName(data.name);
-    setDepartment(data.department ?? "");
+    setTeamId(data.teamId ?? null);
     setSystemRole(data.systemRole as SystemRole);
     setAttr({ employmentType: data.employmentType as AttrState["employmentType"], jobFunction: data.jobFunction as AttrState["jobFunction"], roleKeys: data.roleKeys });
     setInitialized(true);
@@ -63,7 +63,7 @@ export function UserEdit({ userId, canUpdate }: { userId: string; canUpdate: boo
       const res = await fetch(`/api/admin/users/${userId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, department: department || null, employmentType: attr.employmentType, jobFunction: attr.jobFunction, systemRole, updatedAt: data?.updatedAt }),
+        body: JSON.stringify({ name, teamId: teamId || null, employmentType: attr.employmentType, jobFunction: attr.jobFunction, systemRole, updatedAt: data?.updatedAt }),
       });
       if (!res.ok) { reloadOnConflict(res); throw new Error((await res.json().catch(() => ({}))).error ?? `수정 실패 (${res.status})`); }
     },
@@ -123,8 +123,11 @@ export function UserEdit({ userId, canUpdate }: { userId: string; canUpdate: boo
                   <Input id="edit-name" value={name} onChange={(e) => setName(e.target.value)} />
                 </div>
                 <div className="space-y-1">
-                  <Label htmlFor="edit-dept">부서</Label>
-                  <Input id="edit-dept" value={department} onChange={(e) => setDepartment(e.target.value)} placeholder="없음" />
+                  <Label htmlFor="edit-team">팀</Label>
+                  <select id="edit-team" className={selectCls} value={teamId ?? ""} onChange={(e) => setTeamId(e.target.value || null)}>
+                    <option value="">무소속</option>
+                    {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
                 </div>
               </div>
               <UserAttrFields state={attr} set={set} />
@@ -143,7 +146,7 @@ export function UserEdit({ userId, canUpdate }: { userId: string; canUpdate: boo
           ) : (
             <div className="space-y-1 text-sm">
               <div><span className="text-muted-foreground">이름: </span>{data.name}</div>
-              <div><span className="text-muted-foreground">부서: </span>{data.department ?? "-"}</div>
+              <div><span className="text-muted-foreground">팀: </span>{data.teamName ?? "-"}</div>
               <div><span className="text-muted-foreground">고용형태: </span>{data.employmentType}</div>
               <div><span className="text-muted-foreground">직무: </span>{data.jobFunction}</div>
               <div><span className="text-muted-foreground">systemRole: </span>{data.systemRole}</div>

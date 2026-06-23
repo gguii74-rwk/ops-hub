@@ -4,7 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 export interface LeaveUser {
   id: string;
   name: string;
-  department: string | null;
+  teamId: string | null;
+  team: { name: string } | null;
   email: string;
 }
 
@@ -38,7 +39,7 @@ export function UserSelect({
       <option value="">{isLoading ? "불러오는 중…" : "사용자를 선택하세요"}</option>
       {data.map((u) => (
         <option key={u.id} value={u.id}>
-          {u.name} - {u.department ?? "-"} ({u.email})
+          {u.name} - {u.team?.name ?? "-"} ({u.email})
         </option>
       ))}
     </select>

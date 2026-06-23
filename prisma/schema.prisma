@@ -176,7 +176,6 @@ model User {
   email          String         @unique
   passwordHash   String?        // 변경: nullable — 자가가입은 set-password 전까지 null(C안). 관리자추가/시드는 즉시 설정
   name           String
-  department     String?
   position       String?
   joinDate       DateTime?
   employmentType EmploymentType
@@ -196,10 +195,30 @@ model User {
   permissionOverrides UserPermissionOverride[]
   auditLogs           AuditLog[]               @relation("AuditActor")
 
+  teamId   String?                                                   // 신규 — 1인 1팀(D1)
+  team     Team?   @relation("TeamMembers", fields: [teamId], references: [id], onDelete: SetNull)
+  ledTeams Team[]  @relation("TeamLead")                             // 팀장으로 있는 팀들
+
   @@index([employmentType, jobFunction])
   @@index([systemRole])
   @@index([status])
   @@index([emailVerifyTokenHash])
+  @@index([teamId])
+  @@schema("kernel")
+}
+
+model Team {
+  id         String   @id @default(cuid())
+  name       String
+  leadUserId String?
+  lead       User?    @relation("TeamLead", fields: [leadUserId], references: [id], onDelete: SetNull)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  members    User[]   @relation("TeamMembers")
+
+  @@index([leadUserId])
   @@schema("kernel")
 }
 

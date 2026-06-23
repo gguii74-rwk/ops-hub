@@ -20,7 +20,7 @@ describe("override 폼 페이로드 변환", () => {
 
 describe("직접추가 폼 페이로드 변환 (finding 3 — 비번 필드 계약)", () => {
   const state = {
-    email: "n@x.com", name: "신규", password: "abcdefghijkl", department: "",
+    email: "n@x.com", name: "신규", password: "abcdefghijkl", teamId: null,
     employmentType: "REGULAR" as const, jobFunction: "DEVELOPER" as const,
     systemRole: "MEMBER" as const, roleKeys: ["regular-developer"],
   };
@@ -30,8 +30,8 @@ describe("직접추가 폼 페이로드 변환 (finding 3 — 비번 필드 계�
     expect(p).not.toHaveProperty("tempPassword");
     expect(p).not.toHaveProperty("temporaryPassword");
   });
-  it("빈 department는 null로 정규화한다", () => {
-    expect(toCreateUserPayload(state).department).toBeNull();
-    expect(toCreateUserPayload({ ...state, department: "플랫폼" }).department).toBe("플랫폼");
+  it("teamId=null은 null로 전달된다(무소속)", () => {
+    expect(toCreateUserPayload(state).teamId).toBeNull();
+    expect(toCreateUserPayload({ ...state, teamId: "team-abc" }).teamId).toBe("team-abc");
   });
 });

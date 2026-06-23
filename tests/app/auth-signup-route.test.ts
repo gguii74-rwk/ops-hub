@@ -33,7 +33,7 @@ import { POST } from "@/app/api/auth/signup/route";
 const body = (b: object) => new Request("http://localhost/api/auth/signup", {
   method: "POST", body: JSON.stringify(b), headers: { "Content-Type": "application/json", "x-forwarded-for": "1.2.3.4" },
 });
-const valid = { email: "self@x.com", name: "자가", employmentType: "REGULAR", jobFunction: "DEVELOPER", department: null };
+const valid = { email: "self@x.com", name: "자가", employmentType: "REGULAR", jobFunction: "DEVELOPER" };
 
 beforeEach(() => {
   vi.clearAllMocks();

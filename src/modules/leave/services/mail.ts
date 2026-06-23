@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import type { LeaveRequestStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { hasPermission } from "@/kernel/access";
+import { getEffectiveScope } from "@/kernel/access";
 import { sendMail } from "@/lib/integrations/mail";
 import { listDueDeliveryIds, claimDelivery, finalizeDelivery, deadLetterStaleSending } from "../repositories/mail";
 
@@ -16,21 +16,31 @@ const LEAVE_EVENT_EXPECTED_STATUS: Record<string, LeaveRequestStatus> = {
   ADMIN_CREATED: "APPROVED",
 };
 
-// 통지 수신자(REQUESTED용): **permission 기반**(결정) — leave.approval:view 유효 보유자 전원.
+// 통지 수신자(REQUESTED용): **scope 기반**(결정) — leave.approval:view 유효 보유자 전원.
+// all-scope → 무조건 포함. team-scope → 신청자와 같은 팀(팀 active)이고 team.active인 경우 포함.
+// F-II: 팀장도 **예외 없이 leave.approval:view 보유 시에만** 포함한다(사용자 결정). 팀장은 F3 불변식상 그 팀의 active
+//   소속원이므로 team-scope leave.approval:view를 보유하면 아래 후보 루프가 이미 포함한다. leadUserId만으로 무조건
+//   추가하면(과거 동작) approval 권한 없는 팀장이 휴가 상세를 받고, 위임 admin이 팀장 임명으로 매트릭스 밖에서
+//   휴가데이터 접근을 간접 부여하게 된다 → lead 단축 경로 제거. 알림 수신은 전적으로 leave.approval:view가 결정.
 // **발송 시점 재확정의 SSOT**: drain이 REQUESTED 발송 직전 이 함수를 다시 호출해 '현재' 권한 보유자에게만 보낸다
-// (enqueue 시 저장된 스냅샷을 신뢰하지 않음 — claim~발송 사이 권한을 잃은 사람에게 상세가 새는 것 차단, finding/high).
-// 전 active 사용자에 hasPermission을 평가 → role/override로 권한 받은 MEMBER도 포함, 승인권한 없는 MANAGER는 제외.
-// (systemRole prefilter는 role/override 부여자를 누락시켜 알림 유실 — finding, 제거.) hasPermission이 fail-closed 우선순위(override DENY/ALLOW)를 그대로 적용하므로 권한 로직을 재구현하지 않는다.
+// (enqueue 시 저장된 스냅샷을 신뢰하지 않음 — claim~발송 사이 권한을 잃은 사람에게 상세가 새는 것 차단).
 // 규모 전제: 사내 도구라 active 사용자 수가 작다(수십). 인원이 크게 늘면 권한 테이블 직접 조회로 단일 쿼리화.
-export async function getLeaveAdminRecipients(): Promise<string[]> {
+export async function getLeaveAdminRecipients(applicantTeamId: string | null): Promise<string[]> {
+  const teamActive = applicantTeamId != null
+    ? (await prisma.team.findUnique({ where: { id: applicantTeamId }, select: { active: true } }))?.active === true
+    : false;
   const candidates = await prisma.user.findMany({
     where: { status: "ACTIVE" },
-    select: { id: true, email: true },
+    select: { id: true, email: true, teamId: true },
   });
-  const allowed = await Promise.all(
-    candidates.map(async (u) => ((await hasPermission(u.id, "leave.approval", "view")) ? u.email : null)),
-  );
-  return allowed.filter((e): e is string => e !== null);
+  const emails = new Set<string>();
+  await Promise.all(candidates.map(async (u) => {
+    if (!u.email) return;
+    const scope = await getEffectiveScope(u.id, "leave.approval", "view");
+    if (scope === "all") emails.add(u.email);
+    else if (scope === "team" && teamActive && applicantTeamId != null && u.teamId === applicantTeamId) emails.add(u.email);
+  }));
+  return [...emails];
 }
 
 // 하이브리드 worker의 drain 1회. claim→(leave면 재확인)→발송→조건부 finalize. SMTP 실패만 FAILED, finalize 0행은 폐기.
@@ -47,7 +57,7 @@ export async function drainLeaveMailOutbox(workerId: string = randomUUID()): Pro
     if (claimed.leaveRequestId) {
       // 발송 직전 재확인: claim 후 요청이 soft-delete됐거나(결정 A — "claim 후 삭제" 윈도) FK 없는 leaveRequestId라
       // 요청 자체가 없으면(롤백·수동복구·부분마이그레이션 → 고아 행) 미발송 종결(finding).
-      const req = await prisma.leaveRequest.findUnique({ where: { id: claimed.leaveRequestId }, select: { deletedAt: true, status: true } });
+      const req = await prisma.leaveRequest.findUnique({ where: { id: claimed.leaveRequestId }, select: { deletedAt: true, status: true, userId: true } });
       if (!req || req.deletedAt) {
         await finalizeDelivery(id, workerId, { status: "CANCELLED", errorMessage: req ? "요청 삭제됨(발송 전 확인)" : "요청 없음(고아 outbox)" });
         skipped++; continue;
@@ -62,7 +72,10 @@ export async function drainLeaveMailOutbox(workerId: string = randomUUID()): Pro
       // 권한 경계는 '발송 시점'에 강제(결정 A): REQUESTED 통지 수신자(승인권한자)는 enqueue 스냅샷이 아니라
       // 발송 직전 getLeaveAdminRecipients()로 재확정 — claim 후 그 사이 leave.approval:view를 잃은 사람에겐 안 보낸다(finding/high).
       // APPROVED/REJECTED/ADMIN_CREATED는 신청 당사자 대상이라 스냅샷(claimed.recipients) 그대로.
-      if (claimed.eventType === "REQUESTED") recipients = await getLeaveAdminRecipients();
+      if (claimed.eventType === "REQUESTED") {
+        const applicant = await prisma.user.findUnique({ where: { id: req.userId }, select: { teamId: true } });
+        recipients = await getLeaveAdminRecipients(applicant?.teamId ?? null);
+      }
     }
     // ── 사용자 메일(leaveRequestId=null): 재확인 없이 스냅샷 수신자로 바로 발송 ──
 

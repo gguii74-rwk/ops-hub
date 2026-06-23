@@ -15,16 +15,16 @@ import { prisma } from "@/lib/prisma";
 beforeEach(() => vi.clearAllMocks());
 
 describe("listAllRequestsWithUser", () => {
-  it("요청에 user(name/department/email)를 병합", async () => {
+  it("요청에 user(name/teamId/team/email)를 병합", async () => {
     vi.mocked(repo.listRequests).mockResolvedValue([
       { id: "r1", userId: "u1" }, { id: "r2", userId: "u2" },
     ] as never);
     vi.mocked(prisma.user.findMany).mockResolvedValue([
-      { id: "u1", name: "김", department: "개발", email: "k@x.com" },
-      { id: "u2", name: "이", department: "기획", email: "l@x.com" },
+      { id: "u1", name: "김", teamId: "t1", team: { name: "개발팀" }, email: "k@x.com" },
+      { id: "u2", name: "이", teamId: "t2", team: { name: "기획팀" }, email: "l@x.com" },
     ] as never);
     const out = await listAllRequestsWithUser({ statuses: ["PENDING"] });
-    expect(out[0]).toMatchObject({ id: "r1", user: { name: "김", department: "개발" } });
+    expect(out[0]).toMatchObject({ id: "r1", user: { name: "김", teamId: "t1", team: { name: "개발팀" } } });
     expect(out[1].user?.name).toBe("이");
   });
   it("user 못 찾으면 user=null", async () => {

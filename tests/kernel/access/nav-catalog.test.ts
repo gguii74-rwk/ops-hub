@@ -21,10 +21,12 @@ describe("NAV 카탈로그 트리 구조", () => {
     ]);
   });
 
-  it("관리(admin) 자식 2개 — 사용자 관리 먼저, 메뉴 관리 다음", () => {
+  it("관리(admin) 자식 4개 — 사용자 관리·팀 관리·권한 매트릭스·메뉴 관리 순서", () => {
     const admin = byKey(NAV, "admin");
     expect((admin.children ?? []).map((c) => [c.key, c.href, c.permission])).toEqual([
       ["admin-users", "/admin/users", "admin.users:view"],
+      ["admin-teams", "/admin/teams", "admin.teams:view"],
+      ["admin-roles", "/admin/roles", "admin.roles:view"],
       ["admin-navigation", "/admin/navigation", "admin.navigation:view"],
     ]);
   });

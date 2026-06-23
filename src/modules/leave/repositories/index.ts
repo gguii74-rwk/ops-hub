@@ -1,9 +1,12 @@
 import "server-only";
 import type { LeaveRequestStatus, Prisma } from "@prisma/client";
+import { ForbiddenError, getEffectiveScope } from "@/kernel/access";
 import { prisma } from "@/lib/prisma";
 import { LeaveConflictError } from "../errors";
 import { insertPendingDelivery, cancelPendingDeliveries, type MailJob } from "./mail";
 import { writeAudit } from "@/kernel/audit";
+
+export type ApprovalAuthz = { actorId: string; applicantId: string };
 
 // ── 조회 ──
 
@@ -116,8 +119,33 @@ export async function createApprovedRequestTx(data: {
 
 // ── 전이 tx (상태 가드 + 원자 증감) ──
 
-export async function approveTx(requestId: string, adminId: string, mailJob?: MailJob | null) {
+export async function approveTx(requestId: string, adminId: string, mailJob?: MailJob | null, authz?: ApprovalAuthz) {
   await prisma.$transaction(async (tx) => {
+    // F-P: lock actor+applicant in sorted order(데드락 방지)
+    if (authz) {
+      const lockIds = [...new Set([authz.actorId, authz.applicantId])].sort();
+      for (const uid of lockIds) {
+        await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${uid} FOR UPDATE`;
+      }
+      // F-O: re-resolve scope in-tx(권한이 claim~발송 사이 변경됐을 때 fail-closed)
+      const scope = await getEffectiveScope(authz.actorId, "leave.approval", "approve", tx);
+      if (scope == null) throw new ForbiddenError("승인 권한이 없습니다.");
+      if (scope === "team") {
+        const rows = await tx.$queryRaw<Array<{ id: string; teamId: string | null }>>`
+          SELECT "id", "teamId" FROM "kernel"."User" WHERE "id" IN (${authz.actorId}, ${authz.applicantId})`;
+        const actorTeam = rows.find((r) => r.id === authz.actorId)?.teamId ?? null;
+        const applicantTeam = rows.find((r) => r.id === authz.applicantId)?.teamId ?? null;
+        if (actorTeam == null || actorTeam !== applicantTeam) {
+          throw new ForbiddenError("해당 신청에 대한 승인 권한이 없습니다.");
+        }
+        // F-R + F-CC: team을 authz 경계로 쓰므로 Team 행을 FOR UPDATE로 잠가 동시 비활성화 UPDATE와 직렬화한다.
+        // plain read면 active=true를 읽은 뒤 status update 전에 비활성화가 커밋돼 stale 경계로 승인된다(TOCTOU).
+        // 락 순서 User→Team은 updateTeam(lead 지정 경로)과 동일 → 데드락 없음. 비활성화 경로는 Team만 잠그므로 사이클 불가.
+        const teamRows = await tx.$queryRaw<Array<{ active: boolean }>>`
+          SELECT "active" FROM "kernel"."Team" WHERE "id" = ${actorTeam} FOR UPDATE`;
+        if (!teamRows[0]?.active) throw new ForbiddenError("비활성 팀에서는 team-scope 승인을 할 수 없습니다.");
+      }
+    }
     // updatedAt을 함께 읽어 CAS where에 건다 — PENDING 신청을 admin이 수정(days/연도 변경)할 수 있으므로
     // status-only CAS만으론 stale days로 usedDays가 증가할 수 있다(balance drift). updatedAt 낙관락이 막는다.
     const req = await tx.leaveRequest.findUnique({
@@ -136,17 +164,54 @@ export async function approveTx(requestId: string, adminId: string, mailJob?: Ma
     });
     if (alloc.count === 0) throw new LeaveConflictError("연차 할당 정보를 찾을 수 없습니다.");
     if (mailJob) await insertPendingDelivery(tx, { leaveRequestId: requestId, eventType: "APPROVED", ...mailJob });
+    await writeAudit(tx, {
+      actorId: authz?.actorId ?? adminId,
+      entityType: "LeaveRequest",
+      entityId: requestId,
+      action: "leave.approve",
+      metadata: { applicantId: req.userId },
+    });
   });
 }
 
-export async function rejectRequest(requestId: string, adminId: string, rejectionReason: string, mailJob?: MailJob | null) {
+export async function rejectRequest(requestId: string, adminId: string, rejectionReason: string, mailJob?: MailJob | null, authz?: ApprovalAuthz) {
   await prisma.$transaction(async (tx) => {
+    // F-P: lock actor+applicant in sorted order(데드락 방지)
+    if (authz) {
+      const lockIds = [...new Set([authz.actorId, authz.applicantId])].sort();
+      for (const uid of lockIds) {
+        await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${uid} FOR UPDATE`;
+      }
+      // F-O: re-resolve scope in-tx
+      const scope = await getEffectiveScope(authz.actorId, "leave.approval", "approve", tx);
+      if (scope == null) throw new ForbiddenError("승인 권한이 없습니다.");
+      if (scope === "team") {
+        const rows = await tx.$queryRaw<Array<{ id: string; teamId: string | null }>>`
+          SELECT "id", "teamId" FROM "kernel"."User" WHERE "id" IN (${authz.actorId}, ${authz.applicantId})`;
+        const actorTeam = rows.find((r) => r.id === authz.actorId)?.teamId ?? null;
+        const applicantTeam = rows.find((r) => r.id === authz.applicantId)?.teamId ?? null;
+        if (actorTeam == null || actorTeam !== applicantTeam) {
+          throw new ForbiddenError("해당 신청에 대한 승인 권한이 없습니다.");
+        }
+        // F-R + F-CC: approveTx와 동형 — Team 행 FOR UPDATE로 동시 비활성화와 직렬화(TOCTOU 차단).
+        const teamRows = await tx.$queryRaw<Array<{ active: boolean }>>`
+          SELECT "active" FROM "kernel"."Team" WHERE "id" = ${actorTeam} FOR UPDATE`;
+        if (!teamRows[0]?.active) throw new ForbiddenError("비활성 팀에서는 team-scope 승인을 할 수 없습니다.");
+      }
+    }
     const updated = await tx.leaveRequest.updateMany({
       where: { id: requestId, status: "PENDING" },
       data: { status: "REJECTED", reviewedById: adminId, reviewedAt: new Date(), rejectionReason },
     });
     if (updated.count === 0) throw new LeaveConflictError("이미 처리된 신청입니다.");
     if (mailJob) await insertPendingDelivery(tx, { leaveRequestId: requestId, eventType: "REJECTED", ...mailJob });
+    await writeAudit(tx, {
+      actorId: authz?.actorId ?? adminId,
+      entityType: "LeaveRequest",
+      entityId: requestId,
+      action: "leave.reject",
+      metadata: { applicantId: authz?.applicantId ?? undefined, rejectionReason },
+    });
   });
 }
 

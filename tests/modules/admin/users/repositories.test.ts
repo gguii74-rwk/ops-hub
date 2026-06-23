@@ -7,15 +7,18 @@ const h = vi.hoisted(() => {
       findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), count: vi.fn(),
       create: vi.fn(), update: vi.fn(), updateMany: vi.fn(),
     },
+    team: { findUnique: vi.fn(), updateMany: vi.fn(async () => ({ count: 0 })) },
     accessRole: { findMany: vi.fn() },
     userAccessRole: { findMany: vi.fn(), createMany: vi.fn(), deleteMany: vi.fn() },
     userPermissionOverride: { create: vi.fn(), deleteMany: vi.fn(), findUnique: vi.fn() },
     permission: { findUnique: vi.fn() },
     mailDelivery: { create: vi.fn() },
     auditLog: { create: vi.fn() },
+    // $executeRaw: cap advisory lock(pg_advisory_xact_lock) — no-op. $queryRaw: F-MM Team active FOR UPDATE / actor·user FOR UPDATE 락.
+    // 기본 [{active:true}](Team 검사 통과; User 락은 반환 무시). F-J 비active/미존재 케이스는 per-test override.
+    $executeRaw: vi.fn(async () => 1),
+    $queryRaw: vi.fn(async (..._a: unknown[]) => [{ active: true }] as Array<{ active: boolean }>),
   };
-  // $executeRaw: cap advisory lock(pg_advisory_xact_lock) 호출 — 테스트에선 no-op. tx에도 동일 객체가 노출되므로 db에 둔다.
-  (db as Record<string, unknown>).$executeRaw = vi.fn(async () => 1);
   const prisma = { ...db, $transaction: vi.fn(async (cb: (tx: typeof db) => unknown) => cb(db)) };
   return { db, prisma };
 });
@@ -37,7 +40,7 @@ import {
   setStatusTx, reactivateRejectedTx, resetPasswordTx, changePasswordTx,
   createActiveUserByAdminTx, createPendingSignup, setPasswordViaToken, refreshVerifyToken,
 } from "@/modules/admin/users/repositories";
-import { UserConflictError, RateLimitError, EscalationError } from "@/modules/admin/users/errors";
+import { UserConflictError, RateLimitError, EscalationError, UserValidationError } from "@/modules/admin/users/errors";
 import { Prisma } from "@prisma/client";
 
 // PENDING 상한은 라우트(task-06)가 주입하는 인자 — repository는 rate-limit.ts 상수에 의존하지 않는다(deps 역전 방지).
@@ -51,6 +54,9 @@ beforeEach(() => {
   // 직전 테스트의 미소비 once가 누수되는 것을 막는다(각 테스트는 필요 시 mockResolvedValue(Once)로 override).
   h.db.userAccessRole.findMany.mockReset();
   h.db.userAccessRole.findMany.mockResolvedValue([]);
+  // F-MM: $queryRaw 기본값 복구(F-J 케이스가 override하므로 누수 방지). Team active 검사 통과(User 락은 반환 무시).
+  h.db.$queryRaw.mockReset();
+  h.db.$queryRaw.mockResolvedValue([{ active: true }]);
   withAvailabilityLockMock.mockImplementation(async (fn: (tx: unknown) => unknown) => fn(h.db));
   assertMinAvailabilityMock.mockResolvedValue(undefined);
 });
@@ -140,6 +146,50 @@ describe("approveTx", () => {
     h.db.mailDelivery.create.mockResolvedValue({ id: "md1" });
     await approveTx("u1", "admin1", decision, mail, updatedAt);
     expect(withAvailabilityLockMock).toHaveBeenCalled();
+  });
+  // F-PP: 승인도 decision.teamId로 팀을 배정하는 경로다 — updateUserTx와 동형으로 팀이 실제 바뀌면
+  //   team-scope override를 정리해야 한다(안 하면 PENDING 때 받은 team-scope override가 다른 팀으로 승인되며 살아남아 F-OO 재현).
+  it("F-PP: 승인 시 팀이 바뀌면(decision.teamId ≠ 기존) team-scope override 정리(교차팀 우회 차단)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "PENDING", emailVerifiedAt: new Date(), teamId: "team-old", updatedAt });
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    h.db.accessRole.findMany.mockResolvedValue([{ id: "role-dev", key: "developer" }]);
+    h.db.userAccessRole.createMany.mockResolvedValue({ count: 1 });
+    h.db.userAccessRole.deleteMany.mockResolvedValue({ count: 0 });
+    h.db.userPermissionOverride.deleteMany.mockResolvedValue({ count: 1 });
+    h.db.mailDelivery.create.mockResolvedValue({ id: "md1" });
+    await approveTx("u1", "admin1", { ...decision, teamId: "team-new" }, mail, updatedAt);
+    expect(h.db.userPermissionOverride.deleteMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ userId: "u1", scope: "team" }),
+    }));
+  });
+  it("F-PP: 승인 시 같은 팀(decision.teamId === 기존)이면 override를 지우지 않는다(정상 부여 보존)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "PENDING", emailVerifiedAt: new Date(), teamId: "team-x", updatedAt });
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    h.db.accessRole.findMany.mockResolvedValue([{ id: "role-dev", key: "developer" }]);
+    h.db.userAccessRole.createMany.mockResolvedValue({ count: 1 });
+    h.db.userAccessRole.deleteMany.mockResolvedValue({ count: 0 });
+    h.db.mailDelivery.create.mockResolvedValue({ id: "md1" });
+    await approveTx("u1", "admin1", { ...decision, teamId: "team-x" }, mail, updatedAt);
+    expect(h.db.userPermissionOverride.deleteMany).not.toHaveBeenCalled();
+  });
+  // F-QQ: teamId를 생략한 승인이라도, 활성화 시 실제로 갖게 될 팀(기존 u.teamId)이 active인지 검증해야 한다 —
+  //   PENDING에 팀 set 후 그 팀이 비활성화되면 생략 승인이 비활성 팀으로 활성화하는 경계 우회(F-J active-team).
+  it("F-QQ: teamId 생략 승인이라도 기존 팀이 비활성이면 거부(active-team 경계, updateMany 미호출)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "PENDING", emailVerifiedAt: new Date(), teamId: "team-dead", updatedAt });
+    h.db.$queryRaw.mockResolvedValue([{ active: false }]); // 기존(보존) 팀이 비active
+    await expect(approveTx("u1", "admin1", decision, mail, updatedAt)).rejects.toBeInstanceOf(UserValidationError);
+    expect(h.db.user.updateMany).not.toHaveBeenCalled();
+  });
+  it("F-QQ: teamId 생략 승인 + 기존 팀 active면 활성화 진행", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "PENDING", emailVerifiedAt: new Date(), teamId: "team-ok", updatedAt });
+    h.db.$queryRaw.mockResolvedValue([{ active: true }]);
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    h.db.accessRole.findMany.mockResolvedValue([{ id: "role-dev", key: "developer" }]);
+    h.db.userAccessRole.createMany.mockResolvedValue({ count: 1 });
+    h.db.userAccessRole.deleteMany.mockResolvedValue({ count: 0 });
+    h.db.mailDelivery.create.mockResolvedValue({ id: "md1" });
+    await approveTx("u1", "admin1", decision, mail, updatedAt);
+    expect(h.db.user.updateMany).toHaveBeenCalled();
   });
 });
 
@@ -408,12 +458,66 @@ describe("updateUserTx (systemRole 강등 시 가용성)", () => {
     h.db.user.updateMany.mockResolvedValue({ count: 0 });
     await expect(updateUserTx("u1", { name: "x" }, "admin1", updatedAt)).rejects.toBeInstanceOf(UserConflictError);
   });
+  // F-OO: team-scope override는 grantee의 현재 팀 기준 상대값이라, 부여 시점(F-EE 교차팀 가드 통과)과 다른 팀으로
+  //   이동하면 새 팀에 권능이 생겨 교차팀 위임 가드가 우회된다 → 팀이 실제 바뀌면 정리(D1/F3 팀장 reconcile과 동형).
+  it("F-OO: 팀 이동(teamId 실제 변경)이면 team-scope override를 정리한다(교차팀 위임 가드 우회 차단)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", systemRole: "MEMBER", teamId: "team-old", updatedAt });
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    h.db.userPermissionOverride.deleteMany.mockResolvedValue({ count: 1 });
+    await updateUserTx("u1", { teamId: "team-new" }, "admin1", updatedAt);
+    expect(h.db.userPermissionOverride.deleteMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ userId: "u1", scope: "team" }),
+    }));
+  });
+  it("F-OO: 같은 팀으로 재저장(teamId 불변)이면 team-scope override를 지우지 않는다(정상 부여 보존)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", systemRole: "MEMBER", teamId: "team-x", updatedAt });
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    await updateUserTx("u1", { teamId: "team-x" }, "admin1", updatedAt);
+    expect(h.db.userPermissionOverride.deleteMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("assertActiveTeamTx (F-J active team validation · F-MM 락)", () => {
+  const updatedAt = new Date("2026-06-01T00:00:00Z");
+  it("비active 팀 배정은 UserValidationError, user.updateMany 미호출(F-J)", async () => {
+    h.db.$queryRaw.mockResolvedValue([{ active: false }]); // Team active FOR UPDATE → 비active
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt });
+    await expect(updateUserTx("u1", { teamId: "team-x" }, "admin1", updatedAt)).rejects.toBeInstanceOf(UserValidationError);
+    expect(h.db.user.updateMany).not.toHaveBeenCalled();
+  });
+  it("미존재 팀은 UserValidationError, FK 500 전 400(F-J)", async () => {
+    h.db.$queryRaw.mockResolvedValue([]); // Team 행 없음 → rows[0] undefined
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt });
+    await expect(updateUserTx("u1", { teamId: "team-x" }, "admin1", updatedAt)).rejects.toBeInstanceOf(UserValidationError);
+    expect(h.db.user.updateMany).not.toHaveBeenCalled();
+  });
+  it("null teamId(무소속)는 Team 검사 없이 통과(user.updateMany 진행)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", teamId: null, updatedAt });
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    await updateUserTx("u1", { teamId: null }, "admin1", updatedAt);
+    expect(h.db.user.updateMany).toHaveBeenCalled(); // 통과(throw 없음)
+  });
+  it("F-MM: teamId 배정 시 Team을 FOR UPDATE로 잠그고, 대상 User 락을 Team 락보다 먼저 잡는다(데드락 안전 순서)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "ACTIVE", updatedAt });
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    const sqls: string[] = [];
+    h.db.$queryRaw.mockImplementation((...args: unknown[]) => {
+      sqls.push((args[0] as TemplateStringsArray).join("?"));
+      return Promise.resolve([{ active: true }]);
+    });
+    await updateUserTx("u1", { teamId: "team-x" }, "admin1", updatedAt);
+    const userLockIdx = sqls.findIndex((s) => /FROM "kernel"\."User"/.test(s) && /FOR UPDATE/.test(s));
+    const teamLockIdx = sqls.findIndex((s) => /FROM "kernel"\."Team"/.test(s) && /FOR UPDATE/.test(s));
+    expect(userLockIdx).toBeGreaterThanOrEqual(0); // User FOR UPDATE 발생
+    expect(teamLockIdx).toBeGreaterThanOrEqual(0); // Team FOR UPDATE 발생
+    expect(userLockIdx).toBeLessThan(teamLockIdx);  // User → Team 순서(updateTeam과 일치 → 데드락 회피)
+  });
 });
 
 describe("createActiveUserByAdminTx (D4)", () => {
   const args = {
     email: "new@x.com", name: "신규", passwordHash: "h", employmentType: "REGULAR", jobFunction: "DEVELOPER",
-    department: null, systemRole: "MEMBER", roleKeys: ["developer"], actorId: "admin1",
+    teamId: null, systemRole: "MEMBER", roleKeys: ["developer"], actorId: "admin1",
   };
   it("ACTIVE + mustChangePassword=true + emailVerifiedAt=now + 역할부여 + 감사", async () => {
     h.db.user.create.mockResolvedValue({ id: "u-new" });
@@ -437,7 +541,7 @@ describe("createActiveUserByAdminTx (D4)", () => {
 describe("createPendingSignup (C안 — 비번 없이 PENDING, user+mail 원자성 #4)", () => {
   const args = {
     email: "self@x.com", name: "자가", employmentType: "REGULAR", jobFunction: "DEVELOPER",
-    department: null, tokenHash: "th", tokenExpiresAt: new Date("2026-07-01T00:00:00Z"),
+    tokenHash: "th", tokenExpiresAt: new Date("2026-07-01T00:00:00Z"),
     mail: { recipients: ["self@x.com"], subject: "verify", bodyHtml: "<a>link</a>" },
     pendingCap: PENDING_CAP, // 라우트가 주입하는 PENDING 상한 — repository는 인자로 받는다(deps 역전 방지)
   };

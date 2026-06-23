@@ -3,7 +3,7 @@ export const RESOURCES = [
   "calendar.work", "calendar.leave", "calendar.personal", "calendar.team", "calendar.admin",
   "workflows.weekly", "workflows.billing", "workflows.notification",
   "leave.request", "leave.approval", "leave.allocation", "leave.status", "leave.admin",
-  "admin.users", "admin.settings", "admin.audit", "admin.navigation",
+  "admin.users", "admin.settings", "admin.audit", "admin.navigation", "admin.teams", "admin.roles",
   "integrations.google", "integrations.smtp", "integrations.templates",
 ] as const;
 
@@ -51,6 +51,8 @@ export const NAV: readonly NavEntry[] = [
     key: "admin", label: "관리", href: "/admin", permission: "admin.users:view",
     children: [
       { key: "admin-users", label: "사용자 관리", href: "/admin/users", permission: "admin.users:view" },
+      { key: "admin-teams", label: "팀 관리", href: "/admin/teams", permission: "admin.teams:view" },
+      { key: "admin-roles", label: "권한 매트릭스", href: "/admin/roles", permission: "admin.roles:view" },
       { key: "admin-navigation", label: "메뉴 관리", href: "/admin/navigation", permission: "admin.navigation:view" },
     ],
   },

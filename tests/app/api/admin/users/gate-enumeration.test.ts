@@ -91,7 +91,7 @@ function makeReq(method = "GET", body?: unknown) {
 // must-change 게이트 차단(403)이 body 검증 오류(400)보다 먼저 나오도록 body 검증을 통과시켜야 한다.
 // body 검증이 먼저 실패하면 게이트 차단을 검증하지 못해 테스트 목적(D17)이 무의미해진다.
 const bodies = {
-  adminCreate: { email: "x@x.com", name: "테스트", password: "Temp1234!abcd", employmentType: "REGULAR", jobFunction: "DEVELOPER", department: null, systemRole: "MEMBER", roleKeys: [] },
+  adminCreate: { email: "x@x.com", name: "테스트", password: "Temp1234!abcd", employmentType: "REGULAR", jobFunction: "DEVELOPER", systemRole: "MEMBER", roleKeys: [] },
   // updateUser/status/approve/roles는 낙관락 body 스키마라 updatedAt(ISO)을 포함해야 zod 통과 → 게이트(403)에 도달한다.
   // updatedAt이 없으면 body 검증 400이 게이트 차단보다 먼저 나와 D17 테스트 목적이 깨진다.
   updateUser: { name: "수정", updatedAt: "2026-06-01T00:00:00.000Z" },
@@ -203,6 +203,12 @@ const knownProtected = new Set<string>([
   "/api/admin/navigation/[id]/reparent",
   "/api/admin/navigation/reorder",
   "/api/admin/navigation/roles",
+  // teams API (task-03) — requirePermission(admin.teams, view|configure) 중앙 게이트
+  "/api/admin/teams",
+  "/api/admin/teams/[id]",
+  // roles matrix API (task-06) — requirePermission(admin.roles, view|configure) 중앙 게이트
+  "/api/admin/roles/matrix",
+  "/api/admin/roles/[roleId]/permissions/[permissionId]",
 ]);
 
 beforeEach(() => {

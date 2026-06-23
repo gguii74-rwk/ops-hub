@@ -1,5 +1,5 @@
 import { auth } from "@/lib/auth";
-import { getPermissionSummary } from "@/kernel/access";
+import { getPermissionSummary, getEffectiveScope } from "@/kernel/access";
 import { LeaveCalendar } from "../_components/leave-calendar";
 
 export default async function LeaveCalendarPage() {
@@ -8,5 +8,6 @@ export default async function LeaveCalendarPage() {
   const set = new Set(keys);
   if (!set.has("leave.request:view"))
     return <p className="text-sm text-muted-foreground">연차 캘린더 권한이 없습니다.</p>;
-  return <LeaveCalendar canManage={set.has("leave.approval:approve")} />;
+  const approvalScope = session?.user ? await getEffectiveScope(session.user.id, "leave.approval", "approve") : null;
+  return <LeaveCalendar canManage={approvalScope === "all"} />;
 }

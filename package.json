@@ -15,7 +15,8 @@
     "prisma:studio": "prisma studio",
     "test": "vitest run",
     "db:seed": "prisma db seed",
-    "db:seed:demo": "tsx prisma/seed-demo.ts"
+    "db:seed:demo": "tsx prisma/seed-demo.ts",
+    "check:no-department": "node scripts/check-no-department.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

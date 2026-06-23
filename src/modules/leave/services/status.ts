@@ -5,7 +5,7 @@ export interface EmployeeStatus {
   id: string;
   name: string;
   email: string;
-  department: string | null;
+  teamName: string | null;
   totalDays: number;
   usedDays: number;
   pendingDays: number;
@@ -16,7 +16,7 @@ export async function getAllEmployeesStatus(year: number): Promise<EmployeeStatu
   const [users, allocs, pendings] = await Promise.all([
     prisma.user.findMany({
       where: { status: "ACTIVE" },
-      select: { id: true, name: true, email: true, department: true },
+      select: { id: true, name: true, email: true, teamId: true, team: { select: { name: true } } },
       orderBy: { name: "asc" },
     }),
     prisma.leaveAllocation.findMany({
@@ -51,7 +51,7 @@ export async function getAllEmployeesStatus(year: number): Promise<EmployeeStatu
       id: u.id,
       name: u.name,
       email: u.email,
-      department: u.department,
+      teamName: u.team?.name ?? null,
       totalDays,
       usedDays,
       pendingDays,

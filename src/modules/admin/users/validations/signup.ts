@@ -9,7 +9,6 @@ export const signupSchema = z.object({
   name: z.string().trim().min(1, "이름은 필수입니다.").max(100),
   employmentType,
   jobFunction,
-  department: z.string().trim().max(100).nullish().transform((v) => v ?? null),
 });
 
 // set-password 겸 검증: 토큰 + 새 비밀번호(12자+ 정책 재사용).

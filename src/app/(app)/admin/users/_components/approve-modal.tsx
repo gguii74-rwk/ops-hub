@@ -10,15 +10,15 @@ import { UserAttrFields, type AttrState } from "./user-fields";
 import { SYSTEM_ROLE_LABEL, SYSTEM_ROLE_OPTIONS } from "./labels";
 import type { EmploymentType, JobFunction, SystemRole } from "@/lib/auth/types";
 
-// NF2: name·department는 admin 확정값(승인이 프로필 권위 — 선점 덮어쓰기).
+// NF2: name·teamId는 admin 확정값(승인이 프로필 권위 — 선점 덮어쓰기).
 // updatedAt: 클라가 본 행 버전 — approve mutation body로 보내 stale-tab lost-update를 차단(409).
-interface Target { id: string; name: string; email: string; department: string | null; employmentType: EmploymentType; jobFunction: JobFunction; systemRole: string; roleKeys: string[]; updatedAt: string; }
+interface Target { id: string; name: string; email: string; teamId: string | null; teamName: string | null; employmentType: EmploymentType; jobFunction: JobFunction; systemRole: string; roleKeys: string[]; updatedAt: string; }
 
 const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
 
-export function ApproveModal({ target, onClose, onDone }: { target: Target; onClose: () => void; onDone: () => void }) {
+export function ApproveModal({ target, teams, onClose, onDone }: { target: Target; teams: Array<{ id: string; name: string }>; onClose: () => void; onDone: () => void }) {
   const [name, setName] = useState(target.name);
-  const [department, setDepartment] = useState(target.department ?? "");
+  const [teamId, setTeamId] = useState(target.teamId ?? "");
   const [attr, setAttr] = useState<AttrState>({ employmentType: target.employmentType, jobFunction: target.jobFunction, roleKeys: target.roleKeys });
   const [systemRole, setSystemRole] = useState<SystemRole>(target.systemRole as SystemRole);
   const [rejecting, setRejecting] = useState(false);
@@ -32,7 +32,7 @@ export function ApproveModal({ target, onClose, onDone }: { target: Target; onCl
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           employmentType: attr.employmentType, jobFunction: attr.jobFunction, systemRole, roleKeys: attr.roleKeys,
-          name, department: department || null, updatedAt: target.updatedAt,
+          name, teamId: teamId || null, updatedAt: target.updatedAt,
         }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `승인 실패 (${res.status})`);
@@ -75,8 +75,11 @@ export function ApproveModal({ target, onClose, onDone }: { target: Target; onCl
               <Input id="ap-name" value={name} onChange={(e) => setName(e.target.value)} />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="ap-dept">부서 (admin 확정)</Label>
-              <Input id="ap-dept" value={department} onChange={(e) => setDepartment(e.target.value)} placeholder="없음" />
+              <Label htmlFor="ap-team">팀 (admin 확정)</Label>
+              <select id="ap-team" className={selectCls} value={teamId} onChange={(e) => setTeamId(e.target.value)}>
+                <option value="">무소속</option>
+                {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
             </div>
           </div>
           <UserAttrFields state={attr} set={set} />

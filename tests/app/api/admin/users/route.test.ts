@@ -127,7 +127,7 @@ describe("POST /api/admin/users (직접추가)", () => {
   const valid = JSON.stringify({
     // finding 3: 직접추가 요청 비번 필드는 adminCreateSchema와 동일한 `password`로 통일(이전 temporaryPassword는 검증 실패).
     email: "new@x.com", name: "신규", password: "tempPass1234",
-    employmentType: "REGULAR", jobFunction: "DEVELOPER", department: null,
+    employmentType: "REGULAR", jobFunction: "DEVELOPER",
     systemRole: "MEMBER", roleKeys: ["developer"],
   });
   it("미인증 401", async () => {

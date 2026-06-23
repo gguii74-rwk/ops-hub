@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { requirePermission } from "@/kernel/access";
 import { reject } from "@/modules/leave/services/requests";
 import { rejectSchema } from "@/modules/leave/validations";
 import { mapError } from "@/app/api/leave/_shared";
@@ -14,7 +13,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const parsed = rejectSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "invalid input" }, { status: 400 });
   try {
-    await requirePermission(session.user.id, "leave.approval", "approve");
     await reject(id, session.user.id, parsed.data.rejectionReason);
     return NextResponse.json({ ok: true });
   } catch (error) {
