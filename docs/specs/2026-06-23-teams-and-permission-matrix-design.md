@@ -83,13 +83,14 @@ model User {
 }
 ```
 
-**마이그레이션 순서(D2)** — 하나의 Prisma migration 안에서:
-1. `Team` 테이블 생성 + `User.teamId` 컬럼 추가
-2. 데이터 이관(raw SQL): `INSERT INTO kernel."Team"(id,name,...) SELECT … FROM (SELECT DISTINCT department FROM "User" WHERE department IS NOT NULL)`; 이어서 `UPDATE "User" SET teamId = (매칭 Team)`
-3. `User.department` 컬럼 drop
-4. `leadUserId`는 마이그레이션에서 비움(팀장은 이후 `/admin/teams`에서 지정)
+**마이그레이션 순서(D2)** — 하나의 Prisma migration·**단일 트랜잭션**으로, 모든 raw SQL은 **스키마 정규화**한다(`User`·`Team` 모두 `kernel` 스키마 — bare `"User"` 참조는 환경별 `search_path`에 따라 잘못된 relation을 타거나 실패할 수 있다, F6):
+1. `kernel."Team"` 테이블 생성 + `kernel."User".teamId` 컬럼 추가
+2. 데이터 이관: `INSERT INTO kernel."Team"(id,name,...) SELECT … FROM (SELECT DISTINCT department FROM kernel."User" WHERE department IS NOT NULL)`; 이어서 `UPDATE kernel."User" u SET "teamId" = (매칭 Team.id)`
+3. **사전 단언(drop 전 가드)**: `SELECT count(*) FROM kernel."User" WHERE department IS NOT NULL AND "teamId" IS NULL`이 **0이 아니면 트랜잭션 abort** — 미이관 멤버십이 남은 채 source를 지우지 않는다
+4. 단언 통과 후에만 `kernel."User".department` 컬럼 drop
+5. `leadUserId`는 비움(팀장은 이후 `/admin/teams`에서 지정)
 
-**적합성 검증(테스트/스크립트)**: 이관 후 (구 department별 사용자 집합) == (신 teamId별 사용자 집합), null department → null teamId.
+**적합성 검증(테스트)**: 이관 후 (구 department별 사용자 집합) == (신 teamId별 사용자 집합), null department → null teamId. 사전 단언(3)이 미이관 0을 보장.
 
 ## 5. scope 해석 엔진 (D3·D4·D5)
 
