@@ -215,7 +215,7 @@ if (scope === "team") {
 }
 // scope==="all"이면 팀 비교 생략. 이어서 기존 updateMany({where:{id,status:'PENDING'}}) status-CAS 수행.
 ```
-(`ForbiddenError`/`getEffectiveScope` import 추가. tx 내부 throw면 status CAS·`MailDelivery` enqueue 모두 롤백 → 부분 실행 없음. in-tx `getEffectiveScope(tx)`가 status/mustChange/override/role을 **현재 값**으로 재평가해 F-O 닫음. actor 행 잠금으로 status/role/team 변경 직렬화; override/RolePermission 행은 Read Committed 재독으로 commit된 변경 반영(잔여 창은 in-tx 재독↔CAS 사이 ms — 단일 인스턴스 admin 액션이라 무시 가능).)
+(`ForbiddenError`/`getEffectiveScope` import 추가. tx 내부 throw면 status CAS·`MailDelivery` enqueue 모두 롤백 → 부분 실행 없음. in-tx `getEffectiveScope(tx)`가 status/mustChange/override/role을 **현재 값**으로 재평가해 F-O 닫음. actor 행 잠금으로 status/role/team 변경 직렬화; override/RolePermission 행은 Read Committed 재독으로 commit된 변경 반영. **잔여 창(F-S, ACCEPTED·사용자 결정):** in-tx 재독↔CAS 사이 ms 구간에 RolePermission/override 폐지가 commit되면 방금 폐지된 승인자가 1회 승인 가능 — 단일 pm2·admin 전용·16명에서 무시 가능 위험으로 **수용**. 보상 통제: 승인은 `auditLog`에 actor·시각 기록 → 사후 탐지 + `cancel`/`reject`로 가역. 완전 폐쇄(SERIALIZABLE+retry/전역 advisory lock)는 위협모델 대비 과도(ledger F-S).)
 
 **(c2) getRequest 단건 상세 target-aware**(줄 113-124 · PD3·F2 필수): `getPermissionSummary`가 any-scope가 되면 `ctx.permissionKeys.has("leave.approval:view")`가 team-scope 승인자에게도 true라 **타 팀 PENDING 단건 상세가 샌다**. canViewPending 경로를 scope-aware로 교체:
 ```ts

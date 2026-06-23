@@ -172,7 +172,7 @@ npm run build                 # 성공
 
 본 증분의 새 권한/메뉴/위임-admin grant는 **`prisma migrate deploy`가 아니라 `npm run db:seed`로** 생성된다(D9 부트스트랩 catalog→Permission/NavigationItem create-if-absent + D10 `applyTeamsPermissionUpgrade`). 따라서 마이그레이션만 적용하고 db:seed를 건너뛰면 **게이트는 다 통과해도** `admin.teams`/`admin.roles` 권한·nav가 없고 위임 admin이 새 화면에 잠긴다(F-I). 배포 런북(CLAUDE.md)에 이미 db:seed가 있으나, 본 task가 **명시·검증**한다:
 
-- **배포 순서(필수):** `prisma migrate deploy`(expand+drop) → **`npm run db:seed`**(부트스트랩+D10 업그레이드) → `npm run db:seed:demo`(선택) → `build` → `pm2 restart`.
+- **배포 순서(필수 — stop→migrate→start, PD1 정합·F-T):** `npm run build`(새 릴리즈 빌드, DB 무관) → `pm2 stop ops-hub`(+워커 — drop이 비가역이라 **old 코드가 `department`를 읽는 동안 drop 금지**) → **DB 백업**(drop 비가역, 롤백=백업 복원) → `prisma migrate deploy`(expand+drop, **old 코드 정지 상태에서**) → **`npm run db:seed`**(부트스트랩+D10 업그레이드) → `npm run db:seed:demo`(선택) → smoke 검증(아래) → `pm2 start ops-hub`(새 릴리즈 기동). **`pm2 restart` 단독 금지** — drop을 old 코드 위에서 돌려 version skew outage(F-T)가 난다.
 - **smoke 검증(배포 후, 수동/스크립트 AC):** db:seed 후 다음이 존재해야 한다 —
   - `Permission`: `admin.teams:view`/`:configure`, `admin.roles:view`/`:configure` 행.
   - `NavigationItem`: `/admin/teams`, `/admin/roles` 항목.
@@ -189,12 +189,14 @@ npm run build                 # 성공
 - `npm run build` → 성공.
 - drop 마이그레이션이 drop 전 재단언(미이관 0)을 포함.
 - **F-I 배포 계약**: 배포 런북에 `npm run db:seed`가 migrate deploy 직후 필수 단계로 명시 + db:seed 후 `admin.teams`/`admin.roles` Permission·Nav·위임-admin grant 존재 smoke 확인.
+- **F-T 배포 순서 안전**: 런북이 build→stop(+워커)→backup→migrate deploy→db:seed→smoke→start 순(stop→migrate→start, PD1 정합). drop을 old 코드가 떠 있는 채로 실행하지 않음(`pm2 restart` 단독 금지).
 
 ## Cautions
 - **Don't** F8 게이트(`check:no-department`) 미통과 상태로 department를 drop. Reason: 잔존 reader가 런타임/컴파일 실패(F8 critical). 게이트가 0건일 때만 진행.
 - **Don't** drop 마이그레이션을 재단언 없이 작성. Reason: 미이관 멤버십이 남은 채 source를 지우면 복구 불가(§4 step3·F6).
 - **Don't** 이 task를 task-04·05 완료 전에 실행. Reason: reader가 남아 typecheck/게이트가 실패한다. PD1 contract는 **마지막**.
 - **Don't** 배포 시 `npm run db:seed`를 건너뛴다. Reason: 새 권한(`admin.teams`/`admin.roles`)·nav·위임-admin grant는 migrate가 아니라 seed가 만든다(D9/D10) — 건너뛰면 게이트는 통과해도 위임 admin이 새 화면에 잠긴다(F-I). migrate deploy 직후 db:seed + smoke 필수.
+- **Don't** drop 마이그레이션을 old 코드가 떠 있는 채로 `migrate deploy`한다(`pm2 restart`만으로 끝낸다). Reason: drop이 비가역인데 old 프로세스가 `department`를 읽어 version skew outage(F-T). 반드시 build → stop(+워커) → backup → migrate → seed → smoke → start.
 - **Don't** 게이트 오탐을 통과시키려 `WORD` 정규식을 느슨하게. Reason: 게이트의 보수성이 F8 안전. 정말 무해한 잔존은 해당 줄을 수정(삭제/teamId로 표현)해 0건을 만든다.
 - **Don't** reader(런타임에 `department`를 읽는 코드)를 ALLOWLIST에 넣어 게이트를 통과시킨다. Reason: ALLOWLIST는 **마이그레이션 아티팩트**(이관 SQL 빌더·이관/ drop 적합성 테스트·게이트 자체 테스트)만 — reader는 반드시 teamId로 전환. allowlist 남용은 F8(drop 후 런타임 실패)을 되살린다.
 - **Don't** 게이트 자체 테스트에서 `WORD` 정규식을 복제. Reason: 스크립트의 `findHits`/`WORD`/`ALLOWLIST`를 import해 실제 로직을 검증해야 드리프트가 없다(자기 테스트가 allowlist에 있어 `department` 리터럴 자유 — F-C 자기모순 제거의 핵심).
