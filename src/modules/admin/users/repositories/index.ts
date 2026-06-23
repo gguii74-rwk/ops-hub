@@ -246,10 +246,13 @@ export async function approveTx(
     if (!u) throw new UserConflictError("사용자를 찾을 수 없습니다.");
     if (u.status !== "PENDING") throw new UserConflictError("이미 처리된 신청입니다.");
     if (!u.emailVerifiedAt) throw new UserConflictError("이메일 검증(비밀번호 설정) 전에는 승인할 수 없습니다.");
-    if (decision.teamId !== undefined) {
+    // F-QQ: 활성화 시 실제로 갖게 될 팀(decision.teamId 생략 시 기존 u.teamId)이 active인지 검증한다 —
+    //   teamId를 생략한 승인이라도, PENDING에 set된 팀이 그새 비활성화됐으면 비활성 팀으로 활성화되는 것을 막는다(F-J active-team 경계).
+    const effectiveTeamId = decision.teamId !== undefined ? decision.teamId : u.teamId;
+    if (effectiveTeamId != null) {
       // F-MM: 대상 User를 먼저 FOR UPDATE로 잠가 락 순서를 User→Team으로 고정(assertActiveTeamTx의 Team 락이 뒤따름).
       await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${id} FOR UPDATE`;
-      await assertActiveTeamTx(tx, decision.teamId);
+      await assertActiveTeamTx(tx, effectiveTeamId);
     }
     const updated = await tx.user.updateMany({
       where: { id, status: "PENDING", updatedAt: expectedUpdatedAt },

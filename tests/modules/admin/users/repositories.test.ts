@@ -172,6 +172,25 @@ describe("approveTx", () => {
     await approveTx("u1", "admin1", { ...decision, teamId: "team-x" }, mail, updatedAt);
     expect(h.db.userPermissionOverride.deleteMany).not.toHaveBeenCalled();
   });
+  // F-QQ: teamId를 생략한 승인이라도, 활성화 시 실제로 갖게 될 팀(기존 u.teamId)이 active인지 검증해야 한다 —
+  //   PENDING에 팀 set 후 그 팀이 비활성화되면 생략 승인이 비활성 팀으로 활성화하는 경계 우회(F-J active-team).
+  it("F-QQ: teamId 생략 승인이라도 기존 팀이 비활성이면 거부(active-team 경계, updateMany 미호출)", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "PENDING", emailVerifiedAt: new Date(), teamId: "team-dead", updatedAt });
+    h.db.$queryRaw.mockResolvedValue([{ active: false }]); // 기존(보존) 팀이 비active
+    await expect(approveTx("u1", "admin1", decision, mail, updatedAt)).rejects.toBeInstanceOf(UserValidationError);
+    expect(h.db.user.updateMany).not.toHaveBeenCalled();
+  });
+  it("F-QQ: teamId 생략 승인 + 기존 팀 active면 활성화 진행", async () => {
+    h.db.user.findUnique.mockResolvedValue({ status: "PENDING", emailVerifiedAt: new Date(), teamId: "team-ok", updatedAt });
+    h.db.$queryRaw.mockResolvedValue([{ active: true }]);
+    h.db.user.updateMany.mockResolvedValue({ count: 1 });
+    h.db.accessRole.findMany.mockResolvedValue([{ id: "role-dev", key: "developer" }]);
+    h.db.userAccessRole.createMany.mockResolvedValue({ count: 1 });
+    h.db.userAccessRole.deleteMany.mockResolvedValue({ count: 0 });
+    h.db.mailDelivery.create.mockResolvedValue({ id: "md1" });
+    await approveTx("u1", "admin1", decision, mail, updatedAt);
+    expect(h.db.user.updateMany).toHaveBeenCalled();
+  });
 });
 
 describe("rejectTx", () => {
