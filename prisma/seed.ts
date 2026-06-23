@@ -4,8 +4,9 @@ import bcrypt from "bcryptjs";
 // 상대경로: tsx의 tsconfig paths(@ alias) 해석 의존을 피한다.
 import { ACCESS_ROLE_KEYS, NAV as NAV_CATALOG, RESOURCES } from "../src/kernel/access/catalog";
 import { EXTRA_PERMISSIONS } from "./seed-permissions";
-import { ROLE_ALLOW, expandRoleCells } from "./seed-roles";
+import { ROLE_ALLOW } from "./seed-roles";
 import { applyTeamsPermissionUpgrade } from "./migrate-helpers/teams-upgrade";
+import { bootstrapRolePermissions } from "./migrate-helpers/roles-bootstrap";
 import { planGoogleSources } from "./seed-google";
 import { seedNavigation } from "./seed-navigation";
 
@@ -55,19 +56,11 @@ async function main() {
 
   // 3. RolePermissions — 부트스트랩-if-empty(D9). 역할 행이 0개일 때만 ROLE_ALLOW로 시드.
   //    기존 행(UI 편집 포함)은 보존 — 부트스트랩 후 DB가 진실원, 코드 ROLE_ALLOW는 초기 1회 시드일 뿐.
-  const allKeys = [...permissionIdByKey.keys()];
-  const existingRoleGrants = await prisma.rolePermission.count();
-  if (existingRoleGrants === 0) {
-    for (const role of ACCESS_ROLES) {
-      const wanted = ROLE_ALLOW[role.key] ?? [];
-      const roleId = roleIdByKey.get(role.key)!;
-      const cells = expandRoleCells(wanted, allKeys); // "*" 확장 + OWNER_ONLY_KEYS 제외(F-L — pm도 admin.roles:configure 미부여)
-      const rows = cells
-        .map(([key, scope]) => { const pid = permissionIdByKey.get(key); return pid ? { roleId, permissionId: pid, effect: "ALLOW" as const, scope } : null; })
-        .filter((r): r is NonNullable<typeof r> => r !== null);
-      await prisma.rolePermission.createMany({ data: rows, skipDuplicates: true });
-    }
-  }
+  //    F-AA: count 검사+전 역할 createMany를 단일 트랜잭션으로 원자화(3b 업그레이드와 동형). 부분 실패 시
+  //    롤백 → count 0 유지 → 다음 seed가 전체 재시도. 비원자적이면 일부 역할만 시드된 채 영구 고착된다.
+  await prisma.$transaction((tx) =>
+    bootstrapRolePermissions(tx, ACCESS_ROLES, ROLE_ALLOW, roleIdByKey, permissionIdByKey),
+  );
 
   // 3b. 업그레이드-once(D10·F4·F-K) — 트랜잭션으로 감싸 upsert+플래그 원자화. 비어있지 않은 DB의 위임-admin 신규 grant를 1회 멱등 upsert.
   await prisma.$transaction((tx) => applyTeamsPermissionUpgrade(tx, roleIdByKey, permissionIdByKey));

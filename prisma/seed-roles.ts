@@ -4,7 +4,7 @@
 
 // 셀 scope 인코딩(D9): "key" = scope "all", ["key","team"] = team scope. 현 매트릭스엔 non-all 셀이 없다(PD2 —
 // team-scope 승인은 "제한"=미부여, OWNER가 편집기로 leave.approval team 부여). tuple은 *능력*만 추가.
-type Cell = string | [string, "own" | "team" | "all"];
+export type Cell = string | [string, "own" | "team" | "all"];
 export const ROLE_ALLOW: Record<string, Cell[]> = {
   // pm 권한은 OWNER systemRole로 전부 허용되지만, 비-OWNER PM 대비 명시 ALLOW도 부여.
   pm: ["*"],
