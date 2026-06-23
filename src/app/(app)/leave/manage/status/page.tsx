@@ -1,6 +1,6 @@
 import { auth } from "@/lib/auth";
 import { getPermissionSummary } from "@/kernel/access";
-import { StatusClient } from "../_components/status-client";
+import { StatusClient } from "../../_components/status-client";
 
 export default async function LeaveStatusPage() {
   const session = await auth();
