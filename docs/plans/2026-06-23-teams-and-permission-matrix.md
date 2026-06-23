@@ -176,4 +176,7 @@ rg -n "\bdepartment\b" src tests prisma --glob '!prisma/migrations/**'
 
 **in-tx-authz 패턴(F-D/F-E/F-H) 관측:** "authz 점검을 mutating 트랜잭션 밖에서 함" 계열이 3개 surface(승인·팀장·매트릭스)에서 반복 → 가변 멤버십/권한 race. 모두 동일 패턴(행 `FOR UPDATE` 잠금 + tx 내부 재확인)으로 닫음. 추가 surface가 또 나오면 class 판정(ACCEPTED — 단일 인스턴스·admin-only·감사 가능).
 
-R1~R4에서 F-A~F-K(11건) 닫음(10 FIXED·1 ACCEPTED). 각 라운드 신규 finding은 다른 부위의 실제 갭(re-flag 아님 — 앞 라운드 finding은 후속 라운드에서 소거 확인). R5 재검으로 R4 FIXED(F-I/F-J/F-K) 소거 확인 후 종료 판정.
+- **F-L**(high, R5) — pm `*` 와일드카드 확장이 OWNER 전용 `admin.roles:configure`를 fresh seed에 부여 → D7 위반·god-power escalation. → `expandRoleCells`가 `OWNER_ONLY_KEYS`를 확장에서 제외(seed-roles.ts 순수 헬퍼 + 어떤 역할도 미보유 테스트, task-06).
+- **F-M**(high, R5) — 이관 테스트가 helper(`expandMigrationSql`)만 검증하고 손복사 배포 `migration.sql`은 미검증 → drift 시 kernel 정규화·단언·FK 누락 → drop이 잘못된 매핑 위에서 일어나 데이터 손상. → team-migration.test가 실제 `migration.sql`을 읽어 helper 핵심 조각·정규화·순서 정합 단언(task-01).
+
+R1~R5에서 F-A~F-M(13건) 닫음(12 FIXED·1 ACCEPTED). 각 라운드 신규 finding은 다른 부위의 실제 갭(re-flag 아님 — 앞 라운드 finding은 후속 라운드에서 모두 소거 확인). **max=5 도달.** F-L/F-M 수정은 적용됐으나 6번째 codex 재검은 max 초과라 미실행 — 두 fix는 명확·기계적(키 제외 / .sql 바인딩 테스트)이라 재검 없이 확정. 종료: 미판정 blocking 0(12 FIXED·1 ACCEPTED).

@@ -52,7 +52,7 @@ describe("admin.roles 카탈로그·nav (D11)", () => {
 
 ### 2. ROLE_ALLOW scope-tuple 인코딩(D9 능력 추가)
 
-`prisma/seed-roles.ts` 타입을 확장(현 값은 전부 string=all → 무변경 동작):
+`prisma/seed-roles.ts` 타입을 확장(현 값은 전부 string=all → 무변경 동작) + **OWNER 전용 키 제외 확장 헬퍼**(F-L):
 ```ts
 // 셀 scope 인코딩(D9): "key" = scope "all", ["key","team"] = team scope. 현 매트릭스엔 non-all 셀이 없다(PD2 —
 // team-scope 승인은 "제한"=미부여, OWNER가 편집기로 leave.approval team 부여). tuple은 *능력*만 추가.
@@ -60,8 +60,20 @@ type Cell = string | [string, "own" | "team" | "all"];
 export const ROLE_ALLOW: Record<string, Cell[]> = {
   // ... 기존 값 그대로(전부 string). admin 배열엔 step1에서 admin.teams:*/admin.roles:view 추가됨.
 };
+
+// OWNER systemRole 전용 — 어떤 AccessRole에도 시드 안 함(D7). pm "*" 와일드카드 확장에서도 제외(F-L: 안 그러면 pm이 god-power).
+export const OWNER_ONLY_KEYS: readonly string[] = ["admin.roles:configure"];
+
+// 한 역할의 ROLE_ALLOW 항목을 (key, scope)[] 셀로 확장. "*"=allKeys 전체(OWNER 전용 키 제외), 그 외는 명시 항목.
+// 두 경로 모두 OWNER_ONLY_KEYS를 최종 제외 — fresh seed가 OWNER 전용 권한을 어떤 역할에도 주지 않음(D7 불변식).
+export function expandRoleCells(wanted: Cell[], allKeys: string[]): Array<readonly [string, "own" | "team" | "all"]> {
+  const base = wanted.includes("*")
+    ? allKeys.map((key) => [key, "all"] as const)
+    : wanted.map((c) => (Array.isArray(c) ? [c[0], c[1]] as const : [c, "all"] as const));
+  return base.filter(([key]) => !OWNER_ONLY_KEYS.includes(key)); // F-L 제외
+}
 ```
-(기존 배열 항목은 손대지 않는다 — 타입만 `Cell[]`로 넓힌다.)
+(기존 ROLE_ALLOW 배열 항목은 손대지 않는다 — 타입만 `Cell[]`로 넓히고 헬퍼만 추가.)
 
 ### 3. seed.ts — 부트스트랩-if-empty(D9) + 업그레이드-once(D10)
 
@@ -74,9 +86,7 @@ export const ROLE_ALLOW: Record<string, Cell[]> = {
     for (const role of ACCESS_ROLES) {
       const wanted = ROLE_ALLOW[role.key] ?? [];
       const roleId = roleIdByKey.get(role.key)!;
-      const cells = wanted.includes("*")
-        ? allKeys.map((key) => [key, "all"] as const)
-        : wanted.map((c) => (Array.isArray(c) ? [c[0], c[1]] as const : [c, "all"] as const));
+      const cells = expandRoleCells(wanted, allKeys); // "*" 확장 + OWNER_ONLY_KEYS 제외(F-L — pm도 admin.roles:configure 미부여)
       const rows = cells
         .map(([key, scope]) => { const pid = permissionIdByKey.get(key); return pid ? { roleId, permissionId: pid, effect: "ALLOW" as const, scope } : null; })
         .filter((r): r is NonNullable<typeof r> => r !== null);
@@ -87,7 +97,7 @@ export const ROLE_ALLOW: Record<string, Cell[]> = {
   // 3b. 업그레이드-once(D10·F4·F-K) — 트랜잭션으로 감싸 upsert+플래그 원자화. 비어있지 않은 DB의 위임-admin 신규 grant를 1회 멱등 upsert.
   await prisma.$transaction((tx) => applyTeamsPermissionUpgrade(tx, roleIdByKey, permissionIdByKey));
 ```
-(`allKeys`는 기존 step3 위에서 선언됨 — 위치 유지. `*` 분기는 `[key,"all"]` 튜플로 매핑. step3b helper는 seed.ts 상단에서 `import { applyTeamsPermissionUpgrade } from "./migrate-helpers/teams-upgrade";`)
+(`allKeys`는 기존 step3 위에서 선언됨 — 위치 유지. `expandRoleCells`/`ROLE_ALLOW`는 seed.ts 상단에서 `./seed-roles`로 import. step3b helper는 `import { applyTeamsPermissionUpgrade } from "./migrate-helpers/teams-upgrade";`)
 
 `prisma/migrate-helpers/teams-upgrade.ts` — 업그레이드-once 로직(D10·F4). 플래그로 1회 + 이후 UI가 진실원(OWNER가 편집기로 제거한 grant를 재seed가 되살리지 않음):
 ```ts
@@ -187,7 +197,7 @@ describe("applyTeamsPermissionUpgrade (D10/F4)", () => {
 `tests/prisma/seed-bootstrap.test.ts`(순수 로직 — cells 인코딩 단위검증; DB-less):
 ```ts
 import { describe, it, expect } from "vitest";
-import { ROLE_ALLOW } from "../../prisma/seed-roles";
+import { ROLE_ALLOW, expandRoleCells, OWNER_ONLY_KEYS } from "../../prisma/seed-roles";
 
 describe("ROLE_ALLOW scope-tuple 인코딩(D9)", () => {
   it("현 매트릭스는 non-all scope 셀이 없다(PD2 — team은 편집기로)", () => {
@@ -202,6 +212,25 @@ describe("ROLE_ALLOW scope-tuple 인코딩(D9)", () => {
     expect(ROLE_ALLOW.admin).toContain("admin.teams:view");
     expect(ROLE_ALLOW.admin).toContain("admin.teams:configure");
     expect(ROLE_ALLOW.admin).toContain("admin.roles:view");
+  });
+});
+
+describe("expandRoleCells — OWNER 전용 키 제외(F-L)", () => {
+  // admin.roles:configure를 포함한 전체 키 집합으로 와일드카드를 확장해도 OWNER 전용 키는 빠져야 한다.
+  const allKeys = ["leave.approval:view", "leave.approval:approve", "admin.teams:configure", "admin.roles:view", "admin.roles:configure"];
+  it("pm '*' 확장이 admin.roles:configure를 부여하지 않는다(D7 불변식)", () => {
+    const cells = expandRoleCells(["*"], allKeys);
+    expect(cells.map(([k]) => k)).not.toContain("admin.roles:configure");
+    expect(cells.map(([k]) => k)).toContain("admin.teams:configure"); // 다른 키는 정상 포함
+  });
+  it("명시 항목 경로도 OWNER 전용 키를 제외", () => {
+    expect(expandRoleCells(["admin.roles:configure", "admin.roles:view"], allKeys).map(([k]) => k)).toEqual(["admin.roles:view"]);
+  });
+  it("어떤 ROLE_ALLOW 역할도 확장 후 OWNER 전용 키를 받지 않는다", () => {
+    for (const cells of Object.values(ROLE_ALLOW)) {
+      const expanded = expandRoleCells(cells, allKeys).map(([k]) => k);
+      for (const owned of OWNER_ONLY_KEYS) expect(expanded).not.toContain(owned);
+    }
   });
 });
 ```
@@ -582,7 +611,7 @@ describe("setCell in-tx OWNER 재확인(F-H)", () => {
 - 수동: OWNER `/admin/roles` → 셀 ALLOW/DENY/none + leave.approval team select 동작, pm 행 잠김; 위임 admin은 read-only(PUT 403).
 
 ## Cautions
-- **Don't** `admin.roles:configure`를 시드/매트릭스로 어떤 역할에 부여. Reason: OWNER systemRole 전용(D7). 부여되면 매트릭스 god-power 위임(escalation). configure 키 미시드 + assertOwner + anti-escalation 가드 3중.
+- **Don't** `admin.roles:configure`를 시드/매트릭스로 어떤 역할에 부여 — **pm `*` 와일드카드 확장 포함**(F-L). Reason: OWNER systemRole 전용(D7). pm `*`가 allKeys로 확장되면 admin.roles:configure까지 부여돼 god-power 위임(escalation)이 fresh seed에 생긴다. `expandRoleCells`가 `OWNER_ONLY_KEYS`를 제외 + assertOwner + anti-escalation + setCell in-tx OWNER + smoke(어떤 역할도 미보유) 다중 가드.
 - **Don't** non-scopeable resource에 team/own을 허용. Reason: `/api/calendar/feed` 등은 all-scope `requirePermission` → 메뉴 노출↔API 403(F5/PD2). `allowedScopes` 강제.
 - **Don't** step3 `deleteMany`를 유지하거나 부트스트랩을 무조건 실행. Reason: 비어있지 않은 DB(UI 편집)를 코드값으로 덮어쓴다(D9 정면 위배). count===0 가드 필수.
 - **Don't** 업그레이드 블록을 플래그 없이 매 seed 실행. Reason: OWNER가 편집기로 제거한 grant를 재seed가 되살린다(UI 진실원 위배). 플래그로 1회.

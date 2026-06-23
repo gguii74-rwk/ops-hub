@@ -135,6 +135,7 @@ export function expandMigrationSql(): string {
 `tests/prisma/team-migration.test.ts`:
 ```ts
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   expandMigrationSql,
   SEED_TEAMS_FROM_DEPARTMENT,
@@ -169,7 +170,36 @@ describe("department→Team expand migration SQL", () => {
     expect(expandMigrationSql()).not.toMatch(/DROP\s+COLUMN\s+"department"/i);
   });
 });
+
+// F-M — 배포되는 실제 migration.sql을 helper에 바인딩(둘이 어긋나도 helper만 통과하는 drift 차단).
+// migration.sql이 helper의 핵심 안전 요소(kernel 정규화·DISTINCT 시드·미이관 단언·FK)를 모두 포함하고 트랜잭션·순서가 맞는지 단언.
+describe("배포 migration.sql ↔ helper 정합(F-M)", () => {
+  const sql = readFileSync("prisma/migrations/20260623100000_add_team_expand/migration.sql", "utf8");
+  it("단일 트랜잭션(BEGIN/COMMIT)", () => {
+    expect(sql).toMatch(/^\s*BEGIN;/m);
+    expect(sql).toMatch(/COMMIT;\s*$/);
+  });
+  it("kernel 정규화(bare User/Team 없음)", () => {
+    expect(sql).not.toMatch(/(?<!kernel\.)"User"/);
+    expect(sql).not.toMatch(/(?<!kernel\.)"Team"/);
+  });
+  it("helper의 핵심 SQL 조각을 모두 포함(시드·연결·단언·FK)", () => {
+    for (const frag of [SEED_TEAMS_FROM_DEPARTMENT, LINK_USERS_TO_TEAM, ASSERT_ALL_MAPPED]) {
+      // 공백 정규화 비교(손복사 줄바꿈 차이 허용, 토큰 시퀀스는 동일해야 함).
+      const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+      expect(norm(sql)).toContain(norm(frag));
+    }
+  });
+  it("미이관 단언이 FK/완료 전에 온다(순서)", () => {
+    expect(sql.indexOf("RAISE EXCEPTION")).toBeGreaterThan(-1);
+    expect(sql.indexOf("RAISE EXCEPTION")).toBeLessThan(sql.indexOf("User_teamId_fkey"));
+  });
+  it("expand는 department를 drop하지 않는다(drop은 task-07)", () => {
+    expect(sql).not.toMatch(/DROP\s+COLUMN\s+"department"/i);
+  });
+});
 ```
+(test 상단에 `import { readFileSync } from "node:fs";` 추가. `SEED_TEAMS_FROM_DEPARTMENT` 등은 이미 helper에서 import.)
 실행: `npm test -- team-migration` → 모듈 미존재로 **FAIL**(아직 helper 미작성이면 import 에러). helper를 step2에서 먼저 만들었다면, 테스트만 추가하고 실행해 RED→GREEN 확인.
 
 ### 4. 마이그레이션 파일 작성
@@ -223,7 +253,7 @@ CREATE INDEX "Team_leadUserId_idx" ON "kernel"."Team"("leadUserId");
 
 COMMIT;
 ```
-(`migration.sql`과 `department-to-team.ts`의 SQL이 어긋나면 test가 가드하지 못하므로 — 두 곳을 동일하게 유지. helper는 DB-less 단위검증용, .sql은 실제 적용본.)
+(`migration.sql`과 `department-to-team.ts`는 동일하게 유지 — helper는 DB-less 단위검증용, .sql은 실제 적용본. **drift는 F-M 테스트가 가드**: team-migration.test가 실제 migration.sql을 읽어 helper의 핵심 조각(시드·연결·미이관 단언·FK)·kernel 정규화·순서를 단언하므로, .sql이 안전 로직을 빠뜨리면 테스트가 RED.)
 
 ### 5. 테스트 통과 + 커밋
 `npm test -- team-migration` → **PASS**. 그 후 task 커밋.
@@ -232,7 +262,7 @@ COMMIT;
 - `npm run prisma:validate` → `The schema ... is valid` (Team·teamId 추가, department **존재 유지**).
 - `npm run prisma:generate` → 성공.
 - `npm run typecheck` → 0 errors(department·teamId 공존, 기존 reader 무변경이라 깨지지 않음).
-- `npm test -- team-migration` → 5 tests PASS.
+- `npm test -- team-migration` → helper 단위 + **배포 migration.sql 정합(F-M)** 모두 PASS(.sql이 helper 핵심 SQL·kernel 정규화·순서를 포함).
 - `npm run lint` → 0 errors.
 
 ## Cautions
@@ -240,4 +270,5 @@ COMMIT;
 - **Don't** raw SQL에서 bare `"User"`/`"Team"`을 쓴다. Reason: search_path 의존으로 잘못된 relation을 타거나 실패(F6). 항상 `kernel."..."`.
 - **Don't** department→Team을 trim/lower 정규화한다. Reason: 정확 매칭으로 결정성 보존. 공백/대소문자 변형 중복은 admin이 `/admin/teams` 리네임으로 병합(16명 규모, 허용). 사전 단언이 미이관 0을 보장.
 - **Don't** leadUserId를 이관 시 채운다. Reason: D2 step5 — 팀장은 이후 `/admin/teams`에서 지정(불변식 검증 경유).
+- **Don't** helper만 테스트하고 배포 `migration.sql`을 검증 안 한 채 둔다. Reason: helper는 통과하는데 손복사한 .sql이 kernel 정규화·미이관 단언·FK를 빠뜨리면 department drop이 잘못된 매핑 위에서 일어나 데이터 손상(F-M). team-migration.test가 실제 .sql을 읽어 helper 핵심 조각과 정합을 단언한다.
 - **참고(F8 allowlist):** 이 task가 만드는 `prisma/migrate-helpers/department-to-team.ts`·`tests/prisma/team-migration.test.ts`는 `department`를 정당하게 포함하는 **마이그레이션 아티팩트**다(reader 아님). task-07의 F8 게이트 ALLOWLIST에 등재되어 drop 후에도 게이트를 통과한다 — 여기서 `department`를 teamId로 바꾸려 하지 말 것(이관 로직/검증 본체).
