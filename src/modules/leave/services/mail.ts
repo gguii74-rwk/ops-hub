@@ -18,7 +18,10 @@ const LEAVE_EVENT_EXPECTED_STATUS: Record<string, LeaveRequestStatus> = {
 
 // 통지 수신자(REQUESTED용): **scope 기반**(결정) — leave.approval:view 유효 보유자 전원.
 // all-scope → 무조건 포함. team-scope → 신청자와 같은 팀(팀 active)이고 team.active인 경우 포함.
-// 팀 리드도 포함(팀 active 시).
+// F-II: 팀장도 **예외 없이 leave.approval:view 보유 시에만** 포함한다(사용자 결정). 팀장은 F3 불변식상 그 팀의 active
+//   소속원이므로 team-scope leave.approval:view를 보유하면 아래 후보 루프가 이미 포함한다. leadUserId만으로 무조건
+//   추가하면(과거 동작) approval 권한 없는 팀장이 휴가 상세를 받고, 위임 admin이 팀장 임명으로 매트릭스 밖에서
+//   휴가데이터 접근을 간접 부여하게 된다 → lead 단축 경로 제거. 알림 수신은 전적으로 leave.approval:view가 결정.
 // **발송 시점 재확정의 SSOT**: drain이 REQUESTED 발송 직전 이 함수를 다시 호출해 '현재' 권한 보유자에게만 보낸다
 // (enqueue 시 저장된 스냅샷을 신뢰하지 않음 — claim~발송 사이 권한을 잃은 사람에게 상세가 새는 것 차단).
 // 규모 전제: 사내 도구라 active 사용자 수가 작다(수십). 인원이 크게 늘면 권한 테이블 직접 조회로 단일 쿼리화.
@@ -37,14 +40,6 @@ export async function getLeaveAdminRecipients(applicantTeamId: string | null): P
     if (scope === "all") emails.add(u.email);
     else if (scope === "team" && teamActive && applicantTeamId != null && u.teamId === applicantTeamId) emails.add(u.email);
   }));
-  // 팀 리드 추가(팀 active 시)
-  if (applicantTeamId != null && teamActive) {
-    const team = await prisma.team.findUnique({
-      where: { id: applicantTeamId },
-      select: { lead: { select: { email: true, status: true } } },
-    });
-    if (team?.lead?.status === "ACTIVE" && team.lead.email) emails.add(team.lead.email);
-  }
   return [...emails];
 }
 

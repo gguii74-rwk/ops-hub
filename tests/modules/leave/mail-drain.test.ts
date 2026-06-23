@@ -118,10 +118,7 @@ describe("drainLeaveMailOutbox", () => {
 
 describe("getLeaveAdminRecipients", () => {
   it("all-scope 사용자는 무조건 포함, team-scope는 같은 팀+팀활성일 때만 포함", async () => {
-    // all-scope user
-    vi.mocked(prisma.team.findUnique)
-      .mockResolvedValueOnce({ active: true } as never) // applicantTeamId 활성 확인
-      .mockResolvedValueOnce({ lead: { email: null, status: "INACTIVE" } } as never); // 팀 리드(없음)
+    vi.mocked(prisma.team.findUnique).mockResolvedValue({ active: true } as never); // applicantTeamId 활성 확인
     vi.mocked(prisma.user.findMany).mockResolvedValue([
       { id: "mgr", email: "mgr@x.com", teamId: "t2" },
       { id: "mem", email: "mem@x.com", teamId: "t1" },
@@ -134,6 +131,18 @@ describe("getLeaveAdminRecipients", () => {
     const result = await getLeaveAdminRecipients("t1");
     expect(result).toContain("mgr@x.com"); // all-scope 포함
     expect(result).toContain("mem@x.com"); // team-scope + 같은팀 포함
+  });
+
+  it("F-II: 팀장이라도 leave.approval:view 미보유면 수신자 제외(매트릭스 밖 간접 부여 차단)", async () => {
+    vi.mocked(prisma.team.findUnique).mockResolvedValue({ active: true } as never);
+    vi.mocked(prisma.user.findMany).mockResolvedValue([
+      { id: "lead", email: "lead@x.com", teamId: "t1" }, // 그 팀 active 소속원=팀장 후보지만 approval 권한 없음
+      { id: "appr", email: "appr@x.com", teamId: "t1" }, // approval:view team-scope 보유
+    ] as never);
+    vi.mocked(getEffectiveScope).mockImplementation((async (id: string) => (id === "appr" ? "team" : null)) as never);
+    const result = await getLeaveAdminRecipients("t1");
+    expect(result).toContain("appr@x.com");
+    expect(result).not.toContain("lead@x.com"); // 팀장이어도 approval:view 없으면 알림 제외
   });
 
   it("applicantTeamId=null이면 team-scope 사용자는 제외, all-scope만 포함", async () => {
