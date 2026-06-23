@@ -97,7 +97,13 @@ export async function requirePermissionForTarget(
 - **`hasPermission`/`requirePermission`은 무변경**(scope=all만 허가) — 공유 커널 서버 authz 가드(F2). team/own scope를 가질 수 있는 권한을 쓰는 엔드포인트만 scope-aware로 이행(§7=`leave.approval` 한정, PD2).
 - **PD3 — any-scope summary 노출 경로 차단: 엔진 clamp + authz 호출부 감사(F2·F-A 필수).** any-scope 전환의 위험은 두 갈래다. ⑴ `permissionKeys.has(...)`를 **서버 데이터 가드**로 쓰는 서비스, ⑵ 서버 **페이지**가 `summary.keys.includes(...)`로 가드한 뒤 `requirePermission` 없이 직접 데이터를 읽는 패턴(`/admin/teams`·`/admin/roles` page.tsx — task-03/06). 둘 다 effective scope ≠ null이면 통과하므로, **매트릭스(D8)가 막아도 증분 ①의 `override-panel`은 임의 resource에 team/own override를 만들 수 있어** 비-scopeable resource(admin.*/workflows.*)가 노출될 수 있다(F-A high — 매트릭스만 제약하면 불충분).
   - **근본 차단(F-A FIXED) = 엔진이 `allowedScopes(resource)`로 clamp.** `getEffectiveScope`·`getPermissionSummary` **둘 다** ALLOW 후보를 resource 허용 scope로 clamp한다(task-02). 비-scopeable resource는 `["all"]`이라 team/own grant(override 포함)가 후보에서 빠져 effective scope가 `all`/`null`만 나온다 → 메뉴 키 미생성·페이지 redirect·`requirePermissionForTarget` 거부. override 데이터를 손보지 않아도 fail-closed로 안전(읽기 경계에서 중앙 차단). 이로써 "비-scopeable 키는 안전"이 **가정이 아니라 강제**가 된다.
-  - **scopeable 키(`leave.approval`) 서비스 authz 감사:** `permissionKeys.has("leave.approval:*")`를 서버 데이터 가드로 쓰는 곳은 **2026-06-23 감사 결과 단 1곳** — `src/modules/leave/services/requests.ts`의 `getRequest`(`canViewPending`). task-05에서 target-aware(`getEffectiveScope`+신청자 팀)로 교체. 그 외 `permissionKeys.has(...)` authz 호출부는 non-scopeable(all-only) 키라 위 clamp로 자동 안전. `useCan`(클라 메뉴)은 D5 의도대로 노출(데이터는 scoped 엔드포인트/clamp가 강제).
+  - **scopeable 키(`leave.approval`) authz 소비처 — `permissionKeys`/`useCan` 키 존재를 권위로 쓰는 곳은 모두 scope-aware로 전환:**
+    - ⑴ `src/modules/leave/services/requests.ts` `getRequest`(`canViewPending`) → target-aware(`getEffectiveScope`+신청자 팀, task-05).
+    - ⑵ **`src/modules/admin/users/services/guards.ts` `assertOverrideWithinActorGrant`(F-N critical — 초기 감사 누락분).** `ActorContext.permissionKeys`(=any-scope summary)로 비-critical ALLOW override를 키 존재만으로 허용 → team-scope `leave.approval:approve`만 가진 위임 admin이 **all-scope override를 타인에게 부여**해 escalation. → 부여 scope ≤ actor `getEffectiveScope`로 강제(task-04 §7b).
+    - ⑶ **승인 액션(F-O):** precheck scope를 권위로 쓰지 않고 `approveTx`/`rejectRequest` **tx 내부에서 `getEffectiveScope(tx)` 재해석**(매트릭스·override·status가 live라 precheck 이후 revoke/disable/deny도 차단, task-05 §c-1).
+    - ⑷ 직접입력 UI(F-G): summary 키가 아니라 effective-scope-all로 게이트(task-05 §5b).
+    - 그 외 `permissionKeys.has(...)` authz 호출부는 non-scopeable(all-only) 키라 위 clamp로 자동 안전. `useCan`(클라 메뉴)은 D5 의도대로 노출(데이터는 scoped 엔드포인트/clamp가 강제).
+    - **교훈:** any-scope summary 전환은 `permissionKeys`/`useCan` 키 존재를 **서버 authz**로 쓰는 **모든** 호출부를 scope-aware로 만들어야 안전 — 키-존재≠권한범위(D5). 구현 시 `permissionKeys.has`/`useCan` 사용처를 전수 재감사.
 
 ### 목록 필터 패턴 (소비처 · §5 · F9)
 
@@ -174,9 +180,12 @@ rg -n "\bdepartment\b" src tests prisma --glob '!prisma/migrations/**'
 - **F-J**(high, R4) — user teamId 검증이 non-empty string만 → 임의 id FK 500·비active 팀이 authz 경계화. → 쓰기 전 같은 tx에서 active-team 검증(`assertActiveTeamTx`, task-04 create/approve/update) + UserValidation(400) + negative 테스트.
 - **F-K**(medium, R4) — `applyTeamsPermissionUpgrade`가 전제(admin 역할·grant 권한) 누락 시 skip하고도 플래그 set(fail-open) → 영구 미적용. → fail-closed throw + 플래그는 모든 upsert 후 + seed가 `$transaction`으로 원자화(task-06 + 누락 throw 테스트).
 
-**in-tx-authz 패턴(F-D/F-E/F-H) 관측:** "authz 점검을 mutating 트랜잭션 밖에서 함" 계열이 3개 surface(승인·팀장·매트릭스)에서 반복 → 가변 멤버십/권한 race. 모두 동일 패턴(행 `FOR UPDATE` 잠금 + tx 내부 재확인)으로 닫음. 추가 surface가 또 나오면 class 판정(ACCEPTED — 단일 인스턴스·admin-only·감사 가능).
-
 - **F-L**(high, R5) — pm `*` 와일드카드 확장이 OWNER 전용 `admin.roles:configure`를 fresh seed에 부여 → D7 위반·god-power escalation. → `expandRoleCells`가 `OWNER_ONLY_KEYS`를 확장에서 제외(seed-roles.ts 순수 헬퍼 + 어떤 역할도 미보유 테스트, task-06).
 - **F-M**(high, R5) — 이관 테스트가 helper(`expandMigrationSql`)만 검증하고 손복사 배포 `migration.sql`은 미검증 → drift 시 kernel 정규화·단언·FK 누락 → drop이 잘못된 매핑 위에서 일어나 데이터 손상. → team-migration.test가 실제 `migration.sql`을 읽어 helper 핵심 조각·정규화·순서 정합 단언(task-01).
 
-R1~R5에서 F-A~F-M(13건) 닫음(12 FIXED·1 ACCEPTED). 각 라운드 신규 finding은 다른 부위의 실제 갭(re-flag 아님 — 앞 라운드 finding은 후속 라운드에서 모두 소거 확인). **max=5 도달.** F-L/F-M 수정은 적용됐으나 6번째 codex 재검은 max 초과라 미실행 — 두 fix는 명확·기계적(키 제외 / .sql 바인딩 테스트)이라 재검 없이 확정. 종료: 미판정 blocking 0(12 FIXED·1 ACCEPTED).
+- **F-N**(**critical**, R6) — any-scope summary가 override 부여 anti-escalation(`assertOverrideWithinActorGrant`)을 깸: 키 존재만 보고 ALLOW override 허용 → team-scope `leave.approval:approve` 위임 admin이 all-scope override를 타인에 부여 escalation(PD3 초기 감사가 이 경로 누락). → 가드를 scope-aware로(부여 scope ≤ actor `getEffectiveScope`, task-04 §7b + negative). PD3 갱신.
+- **F-O**(high, R6) — 승인 액션이 precheck scope 신뢰(in-tx는 team만). 매트릭스·override·status가 live(F-H)라 precheck 이후 revoke/disable/deny도 stale 권한으로 commit. → `approveTx`/`rejectRequest`가 tx 내부에서 `getEffectiveScope(tx)`로 **전체 재해석**(F-D 흡수). `getEffectiveScope`/`loadUserContext`에 optional tx client 추가(task-02), task-05 §c-1 + revoke/disable 회귀 테스트.
+
+**in-tx-authz 패턴(F-B/F-D/F-E/F-H/F-O) 관측:** "authz를 mutating 트랜잭션 밖에서 함" 계열이 승인·팀장·매트릭스 surface에서 반복 → 가변 멤버십/권한 race. 모두 동일 패턴(행 `FOR UPDATE` + tx 내부 재확인/재해석)으로 닫음. **any-scope summary(D5) 교훈:** 키-존재를 서버 authz로 쓰는 모든 경로(데이터 가드·override 부여·UI 게이트·승인)를 scope-aware로 — 구현 시 `permissionKeys.has`/`useCan` 전수 재감사(PD3).
+
+R1~R6에서 **F-A~F-O(15건) 닫음(14 FIXED·1 ACCEPTED).** 각 라운드 신규 finding은 다른 부위의 실제 갭(re-flag 아님 — 앞 라운드 finding은 후속 라운드에서 모두 소거 확인). 사용자 승인 검증 연장(R6)이 critical(F-N) 1건을 추가로 잡음 — 연장이 가치 있었음. R6 fix(F-N/F-O)는 R7 재검 대기.

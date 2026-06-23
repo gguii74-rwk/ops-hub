@@ -143,40 +143,47 @@ export function allowedScopes(resource: string): EnforceableScope[] {
 `src/kernel/access/index.ts` 상단 import에 추가:
 ```ts
 import { effectiveScope, allowedScopes, type EnforceableScope } from "@/kernel/access/scope";
+import { prisma, type PrismaTx } from "@/lib/prisma"; // prisma는 기존 import에 PrismaTx 타입만 추가
+// 엔진 함수가 트랜잭션/전역 클라이언트 양쪽을 받도록(F-O). PrismaClient 정밀 타입 대신 prisma 인스턴스 타입 재사용.
+type PrismaClientOrTx = typeof prisma | PrismaTx;
 ```
 그리고 `export * from "@/kernel/access/catalog";` 아래에 re-export 추가:
 ```ts
 export * from "@/kernel/access/scope";
 ```
+**주의:** `loadUserContext(userId, now)`에 optional `client: PrismaClientOrTx = prisma` 파라미터를 추가하고 내부 `prisma.*`를 `client.*`로 바꾼다(기존 호출부 무영향 — 기본 prisma). 이로써 getEffectiveScope 전체가 tx 클라이언트로 실행 가능(F-O in-tx 재해석).
 
 `requirePermission` 함수 정의 **아래**(getPermissionSummary 위)에 두 함수 추가:
 ```ts
 /**
  * 허가된 가장 넓은 enforceable scope(all>team>own) 또는 null. computeDecision 우선순위의 일반화.
  * OWNER→all, must-change·비활성→null(fail-closed). hasPermission/requirePermission 계약과 별개의 추가 함수.
+ * `client`(기본 prisma): 트랜잭션 내부에서 **현재** 권한 상태로 재해석하려면 tx 클라이언트를 넘긴다(F-O — 승인 tx가
+ * precheck 신뢰 대신 in-tx 재해석). `loadUserContext`도 같은 client를 받도록 optional 파라미터를 추가한다(아래 주의).
  */
 export async function getEffectiveScope(
   userId: string, resource: string, action: Action,
+  client: PrismaClientOrTx = prisma,
 ): Promise<EnforceableScope | null> {
   const now = new Date();
-  const ctx = await loadUserContext(userId, now);
+  const ctx = await loadUserContext(userId, now, client); // loadUserContext에 optional client 파라미터 추가(기본 prisma)
   if (!ctx) return null;
   if (ctx.mustChangePassword) return null; // D17 하드 게이트
   if (ctx.isOwner) return "all";
 
-  const permission = await prisma.permission.findUnique({
+  const permission = await client.permission.findUnique({
     where: { resource_action: { resource, action } },
     select: { id: true },
   });
   if (!permission) return null;
 
   const [overrideRows, roleRows] = await Promise.all([
-    prisma.userPermissionOverride.findMany({
+    client.userPermissionOverride.findMany({
       where: { userId, permissionId: permission.id },
       select: { effect: true, scope: true, startsAt: true, endsAt: true },
     }),
     ctx.roleIds.length
-      ? prisma.rolePermission.findMany({
+      ? client.rolePermission.findMany({
           where: { permissionId: permission.id, roleId: { in: ctx.roleIds } },
           select: { effect: true, scope: true },
         })

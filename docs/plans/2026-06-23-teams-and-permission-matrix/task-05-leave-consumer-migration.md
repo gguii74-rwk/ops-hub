@@ -156,25 +156,18 @@ export async function listApprovalQueue(actorId: string) {
 
 **(c) approve/reject 액션 target 가드 — 상태변경과 원자화(F-B TOCTOU)**: 팀 소속은 본 feature에서 가변(admin 재배정, task-04)이라, target authz(신청자 팀 점검)와 상태 CAS가 **분리**되면 그 사이 재배정으로 team-scope 승인자가 더 이상 자기 팀이 아닌 신청을 승인/거절할 수 있다. → ① 사전 평가로 빠른 거부(scope null·무소속 team-scope F9), ② **권위 점검은 `approveTx`/`rejectRequest` 트랜잭션 내부에서 신청자 행을 `FOR UPDATE`로 잠그고 재확인**해 재배정이 끼어들지 못하게 한다.
 
-신설 헬퍼(서비스). **2단 점검**: ① `requirePermissionForTarget`로 사전 빠른 거부(D12②, 빠른 403), ② **권위 결정은 트랜잭션 내부에서 actor·applicant 두 user 행을 잠그고 현재 팀을 비교**(F-D 원자 — 팀 소속이 가변이라 actor·applicant **둘 다** 재배정 race 대상). precomputed teamId는 권위로 쓰지 않는다(stale actor 방지). 두 번의 `getEffectiveScope`는 16명 규모 admin 액션에서 무해 — 명료성 우선.
+**2단 점검**: ① `requirePermissionForTarget`로 사전 빠른 거부(D12②, 빠른 403), ② **권위 결정은 트랜잭션 내부에서 actor를 잠그고 `getEffectiveScope`를 tx 클라이언트로 재해석 + applicant 현재 팀 비교**(F-O/F-D 원자). precompute한 scope/teamId는 **권위로 쓰지 않는다** — 매트릭스·override·status가 live(F-H)라 precheck 이후 actor가 revoke/disable/deny/must-change돼도 in-tx 재해석이 잡는다.
 ```ts
-import { getEffectiveScope, requirePermissionForTarget, ForbiddenError } from "@/kernel/access";
+import { requirePermissionForTarget } from "@/kernel/access";
 import { approveTx, rejectRequest } from "../repositories";
-// 승인 scope 사전 평가(빠른 거부용). all/team만 진행, null/own은 거부. team의 팀 일치 권위는 (c-1) tx 내부에서.
-async function resolveApprovalScope(adminId: string): Promise<"all" | "team"> {
-  const scope = await getEffectiveScope(adminId, "leave.approval", "approve");
-  if (scope === "all" || scope === "team") return scope;
-  throw new ForbiddenError("leave.approval:approve 권한이 없습니다."); // null/own(leave.approval은 own 미사용)
-}
 
 export async function approve(requestId: string, adminId: string) {
   const req = await getRequestById(requestId);
   if (!req) throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
   const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { email: true, teamId: true } });
-  await requirePermissionForTarget(adminId, "leave.approval", "approve", { teamId: user?.teamId ?? null }); // D12② 사전 빠른 거부(F9 포함)
-  const scope = await resolveApprovalScope(adminId);                 // tx에 넘길 scope("all"|"team")
+  await requirePermissionForTarget(adminId, "leave.approval", "approve", { teamId: user?.teamId ?? null }); // 사전 빠른 거부(D12②·F9)
   const mailJob = user?.email ? toMailJob([user.email], buildApprovedNotification(req)) : null;
-  await approveTx(requestId, adminId, mailJob, { actorId: adminId, applicantId: req.userId, scope }); // 권위 재점검은 tx 내부(F-D)
+  await approveTx(requestId, adminId, mailJob, { actorId: adminId, applicantId: req.userId }); // 권위 재점검은 tx 내부(F-O)
   triggerLeaveMailDrain();
 }
 export async function reject(requestId: string, adminId: string, rejectionReason: string) {
@@ -182,24 +175,27 @@ export async function reject(requestId: string, adminId: string, rejectionReason
   if (!req) throw new LeaveConflictError("연차 신청을 찾을 수 없습니다.");
   const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { email: true, teamId: true } });
   await requirePermissionForTarget(adminId, "leave.approval", "approve", { teamId: user?.teamId ?? null }); // 거절도 approve 권한·target
-  const scope = await resolveApprovalScope(adminId);
   const mailJob = user?.email ? toMailJob([user.email], buildRejectedNotification(req, rejectionReason)) : null;
-  await rejectRequest(requestId, adminId, rejectionReason, mailJob, { actorId: adminId, applicantId: req.userId, scope });
+  await rejectRequest(requestId, adminId, rejectionReason, mailJob, { actorId: adminId, applicantId: req.userId });
   triggerLeaveMailDrain();
 }
 ```
-(`ApprovalAuthz`는 `src/modules/leave/repositories/index.ts`에 단일 정의·export, 서비스가 import. 사전 `requirePermissionForTarget`은 빠른 403, **권위 결정은 (c-1) in-tx actor+applicant 재점검**.)
+(`ApprovalAuthz`는 repositories에 단일 정의·export. 사전 `requirePermissionForTarget`은 빠른 403, **권위 결정은 (c-1) in-tx 재해석**. scope를 precompute해 넘기지 않는다 — in-tx `getEffectiveScope(tx)`가 SSOT.)
 
-**(c-1) repositories `approveTx`/`rejectRequest` — 트랜잭션 내부 권위 점검(F-D)**: `ApprovalAuthz` 타입을 여기서 정의·export하고, 기존 status-CAS 트랜잭션에 인자 `authz: ApprovalAuthz`를 추가해 **상태 `updateMany` 직전**에 actor·applicant 두 행을 잠그고 **현재** 팀을 비교한다(precomputed teamId 미사용 — actor·applicant 둘 다 재배정 race 차단):
+**(c-1) repositories `approveTx`/`rejectRequest` — 트랜잭션 내부 권위 재해석(F-O, F-D 흡수)**: `ApprovalAuthz` 타입을 여기서 정의·export하고, 기존 status-CAS 트랜잭션에 인자 `authz: ApprovalAuthz`를 추가해 **상태 `updateMany` 직전**에 actor를 잠그고 **현재** 권한을 in-tx `getEffectiveScope`로 재해석한 뒤 팀을 비교한다(precompute한 scope/teamId 미사용 — revoke/disable/deny/재배정 모두 차단):
 ```ts
-import { ForbiddenError } from "@/kernel/access";
-export type ApprovalAuthz = { actorId: string; applicantId: string; scope: "all" | "team" };
+import { ForbiddenError, getEffectiveScope } from "@/kernel/access";
+export type ApprovalAuthz = { actorId: string; applicantId: string };
 
 // approveTx/rejectRequest 시그니처에 authz 추가: approveTx(requestId, adminId, mailJob, authz), rejectRequest(requestId, adminId, reason, mailJob, authz).
 // 트랜잭션 본문(prisma.$transaction(async (tx) => { ... })) 안, 상태 전이 전:
-if (authz.scope === "team") {
-  // actor·applicant 행을 **id 정렬 순서**로 각각 FOR UPDATE 잠금 — 두 동시 승인이 같은 두 행을 반대로 잠그는 deadlock 회피.
-  // 잠근 뒤 **현재** teamId를 읽어 비교(재배정이 이 tx 커밋 전까지 끼어들지 못함, Read Committed에서도 원자).
+// 1) actor 행 잠금 — status/systemRole/teamId 변경을 직렬화. (override/role 행은 별도지만 in-tx 재독이 commit된 변경을 본다.)
+await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${authz.actorId} FOR UPDATE`;
+// 2) 현재 권한으로 effective scope 재해석(tx 클라이언트) — precheck 신뢰 안 함(F-O). null=revoke/disable/deny/must-change → 거부.
+const scope = await getEffectiveScope(authz.actorId, "leave.approval", "approve", tx);
+if (scope == null) throw new ForbiddenError("승인 권한이 없습니다."); // 롤백 — 상태/메일 안 됨
+if (scope === "team") {
+  // 3) actor·applicant 현재 팀 비교. applicant 행도 id 정렬 순서로 FOR UPDATE(deadlock 회피, 재배정 차단).
   const [first, second] = [authz.actorId, authz.applicantId].sort();
   await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${first} FOR UPDATE`;
   if (second !== first) await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${second} FOR UPDATE`;
@@ -208,12 +204,12 @@ if (authz.scope === "team") {
   const actorTeam = rows.find((r) => r.id === authz.actorId)?.teamId ?? null;
   const applicantTeam = rows.find((r) => r.id === authz.applicantId)?.teamId ?? null;
   if (actorTeam == null || actorTeam !== applicantTeam) {
-    throw new ForbiddenError("해당 신청에 대한 승인 권한이 없습니다."); // 롤백 — 상태 변경·메일 enqueue 안 됨
+    throw new ForbiddenError("해당 신청에 대한 승인 권한이 없습니다."); // 롤백
   }
 }
-// all-scope는 점검 생략. 이어서 기존 updateMany({where:{id,status:'PENDING'}}) status-CAS 수행.
+// scope==="all"이면 팀 비교 생략. 이어서 기존 updateMany({where:{id,status:'PENDING'}}) status-CAS 수행.
 ```
-(`ForbiddenError` import 추가. 트랜잭션 내부에서 throw하면 status CAS·`MailDelivery` enqueue 모두 롤백되어 부분 실행이 없다. scope 자체 변경(role/override)은 OWNER 전용·본 feature 가변 표면 밖이라 precheck scope를 신뢰; 가변 teamId만 tx에서 재독.)
+(`ForbiddenError`/`getEffectiveScope` import 추가. tx 내부 throw면 status CAS·`MailDelivery` enqueue 모두 롤백 → 부분 실행 없음. in-tx `getEffectiveScope(tx)`가 status/mustChange/override/role을 **현재 값**으로 재평가해 F-O 닫음. actor 행 잠금으로 status/role/team 변경 직렬화; override/RolePermission 행은 Read Committed 재독으로 commit된 변경 반영(잔여 창은 in-tx 재독↔CAS 사이 ms — 단일 인스턴스 admin 액션이라 무시 가능).)
 
 **(c2) getRequest 단건 상세 target-aware**(줄 113-124 · PD3·F2 필수): `getPermissionSummary`가 any-scope가 되면 `ctx.permissionKeys.has("leave.approval:view")`가 team-scope 승인자에게도 true라 **타 팀 PENDING 단건 상세가 샌다**. canViewPending 경로를 scope-aware로 교체:
 ```ts
@@ -362,11 +358,12 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   - 무소속(teamId null) team-scope 승인자 `listApprovalQueue` → ForbiddenError(F9).
   - **getRequest(PD3):** team-scope 승인자가 **자기 팀** PENDING 단건은 조회 OK, **타 팀** PENDING 단건은 ForbiddenError(any-scope summary 과허가 차단). all-scope는 둘 다 OK.
   - **F-G 직접입력 all-scope 게이트(필수):** team-scope `leave.approval:approve` 보유자 → history/calendar page의 `canApprove`/`canManage`가 **false**(effective scope ≠ "all" → 직접입력 버튼 미노출). all-scope면 true. (페이지 단위 테스트 — `getEffectiveScope` mock.) 라우트 자체는 all-scope 유지라 team-scope → 403(기존 가드, 회귀 확인).
-  - **F-D 원자 재점검(필수 — actor·applicant 둘 다):** `approveTx`/`rejectRequest`에 `authz={actorId,applicantId,scope:"team"}`를 주고, in-tx 잠금 조회(`$queryRaw` mock)가 반환하는 **현재** 팀으로:
-    - actor "A" / applicant "A" → 정상 진행(status `updateMany` 호출).
-    - **applicant 재배정** actor "A" / applicant "B" → ForbiddenError, status/메일 미호출.
-    - **actor 재배정**(precheck 이후 actor가 A→B) actor "B" / applicant "A" → ForbiddenError(stale actor 권위 사용 안 함 — F-D 핵심), status/메일 미호출.
-    - `scope:"all"` → 잠금 조회 자체를 건너뛰고 정상 진행.
+  - **F-O/F-D in-tx 권위 재해석(필수):** `approveTx`/`rejectRequest`에 `authz={actorId,applicantId}`를 주고, in-tx `getEffectiveScope`(mock)·잠금 조회(`$queryRaw` mock)로:
+    - getEffectiveScope→**null**(precheck 통과했으나 tx 시점 revoke/disable/deny/must-change) → ForbiddenError, status `updateMany`/메일 미호출(**F-O 핵심 — precheck 신뢰 안 함**).
+    - getEffectiveScope→"team", actor "A"/applicant "A" → 정상 진행.
+    - getEffectiveScope→"team", **applicant 재배정** A/B → ForbiddenError.
+    - getEffectiveScope→"team", **actor 재배정** B/A → ForbiddenError.
+    - getEffectiveScope→"all" → 팀 비교 건너뛰고 정상 진행.
     부분 실행이 없음(tx throw → status CAS·`MailDelivery` create 롤백)을 함께 단언.
 
 대표 — `tests/modules/leave/requests-service.test.ts` 추가:
@@ -393,13 +390,13 @@ it("무소속 team-scope 승인자는 목록 거부(F9)", async () => {
 - `npm run lint` → 0 errors (leave→kernel/access 경계 허용).
 - 범위 내 `department` 참조 0(전역 게이트 task-07).
 - 수동: team-scope `leave.approval` 부여 사용자(매트릭스로) → 자기 팀 승인 큐만, 타 팀 승인 403.
-- **F-D 원자성**: `approveTx`/`rejectRequest`의 in-tx **actor+applicant** `FOR UPDATE` 재점검 테스트 GREEN(actor 또는 applicant 재배정 시뮬레이션 시 ForbiddenError + 상태/메일 미실행).
+- **F-O/F-D 원자성**: `approveTx`/`rejectRequest`의 in-tx `getEffectiveScope(tx)` 재해석 + actor/applicant `FOR UPDATE` 테스트 GREEN(revoke/disable·재배정 시뮬레이션 시 ForbiddenError + 상태/메일 미실행).
 - **F-G 직접입력 게이트**: team-scope 승인자 → 직접입력 버튼 미노출(canApprove/canManage=false) + 라우트 403(all-scope 유지).
 
 ## Cautions
 - **Don't** approvals route에서 `requirePermission(leave.approval,view)`(all-scope)를 유지. Reason: team-scope 승인자가 막힌다(메뉴는 보이는데 목록 403, F5 역). 목록은 `getEffectiveScope` 경유.
 - **Don't** approve/reject 라우트에 requirePermission(all-scope)를 남긴다. Reason: target-aware 가드가 서비스로 이동했고, all-scope 가드가 남으면 team-scope 승인자가 자기 팀도 못 한다. 라우트 가드 제거, 서비스가 SSOT.
-- **Don't** team-scope 승인의 target 점검을 트랜잭션 **밖**에서만 하거나 precomputed `actorTeamId`를 권위로 쓴다. Reason: 팀 소속이 가변(admin 재배정)이라 점검과 상태 CAS 사이 **actor·applicant 둘 다** 재배정될 수 있다(F-D TOCTOU — actor가 A→B로 옮겨도 stale "A"로 구팀 승인 가능). 사전 `requirePermissionForTarget`은 빠른 403일 뿐, **권위 점검은 tx 내부에서 actor·applicant 두 행을 `FOR UPDATE` 잠그고 현재 teamId를 비교**하는 것이 SSOT.
+- **Don't** 승인 권한을 트랜잭션 **밖**에서만 점검하거나 precompute한 scope/teamId를 권위로 쓴다. Reason: 매트릭스·override·status가 live(F-H)라 precheck 이후 actor가 revoke/disable/deny/must-change·재배정될 수 있다(F-O/F-D TOCTOU). 사전 `requirePermissionForTarget`은 빠른 403일 뿐, **권위는 tx 내부에서 actor 잠금 + `getEffectiveScope(tx)` 재해석 + actor/applicant 현재 팀 비교**가 SSOT.
 - **Don't** `getLeaveAdminRecipients`를 인자 없이 호출하는 곳을 남긴다. Reason: 시그니처 변경(applicantTeamId 필수) — requests.ts enqueue·mail.ts drain 둘 다 갱신. 누락 시 typecheck 실패.
 - **Don't** 무소속 team-scope actor를 `teamId=null`로 필터링. Reason: null 팀 버킷 전체 노출(F9). null이면 거부.
 - **Don't** 직접입력(`POST /api/admin/leave/requests`·`/api/admin/leave/users`) 라우트를 team-scope로 열거나 그 UI를 summary 키로 게이트한다. Reason: 직접입력=임의 사용자 create+자동승인(본 증분 OUT). 라우트는 all-scope 유지, UI는 effective-scope-all로 게이트해야 team-scope 승인자에게 버튼이 보였다 403나는 불일치가 없다(F-G).

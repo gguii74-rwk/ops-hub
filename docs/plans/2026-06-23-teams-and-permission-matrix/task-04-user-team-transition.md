@@ -5,7 +5,8 @@
 ## Files
 - Modify: `src/modules/admin/users/validations/index.ts` (`department`→`teamId`)
 - Modify: `src/modules/admin/users/validations/signup.ts` (`department` 제거)
-- Modify: `src/modules/admin/users/services/index.ts` (department→teamId pass-through)
+- Modify: `src/modules/admin/users/services/index.ts` (department→teamId pass-through + F-N: assertOverrideWithinActorGrant 호출에 scope 전달)
+- Modify: `src/modules/admin/users/services/guards.ts` (F-N: `assertOverrideWithinActorGrant`를 scope-aware로 — any-scope summary escalation 차단)
 - Modify: `src/modules/admin/users/repositories/index.ts` (select/create/update teamId + team.name + reconcile wiring)
 - Modify: `src/app/api/auth/signup/route.ts` (department 미저장)
 - Modify: `src/app/signup/_components/signup-form.tsx` (부서 Input 제거)
@@ -22,7 +23,7 @@
 - 기존 코드: `repositories/index.ts`의 `listUsers`/`getUserDetail`/`createActiveUserByAdminTx`/`approveTx`/`updateUserTx`, `services/index.ts`의 approve/create/update.
 
 ## Deps
-01 (teamId), 03 (teams 모듈·reconcile·picker 옵션).
+01 (teamId), 02 (getEffectiveScope — F-N override scope 가드), 03 (teams 모듈·reconcile·picker 옵션).
 
 ## Steps
 
@@ -127,6 +128,43 @@ if (patch.teamId !== undefined) {
 - `createUserByAdmin`(줄 119): `department: input.department ?? null,` → `teamId: input.teamId ?? null,`
 - `updateUser`(줄 134): `...(patch.department !== undefined ? { department: patch.department ?? null } : {}),` → `...(patch.teamId !== undefined ? { teamId: patch.teamId ?? null } : {}),`
 
+### 7b. override 부여 scope-aware (F-N — critical escalation 차단)
+
+`getPermissionSummary`가 any-scope가 되면(task-02) `ActorContext.permissionKeys`도 any-scope다. 증분 ①의 `assertOverrideWithinActorGrant`(guards.ts)는 비-critical ALLOW override를 **키 존재만**으로 허용한다 — `leave.approval`은 non-critical·scopeable이라, **team-scope `leave.approval:approve`만 가진 위임 admin이 타인에게 all-scope override를 부여**해 팀을 넘어 escalation할 수 있다(F-N). → 가드를 **scope-aware**로: 부여하려는 override scope가 actor의 **effective scope**를 넘으면 거부.
+
+`src/modules/admin/users/services/guards.ts` — 시그니처에 scope 추가 + async + `getEffectiveScope` 사용:
+```ts
+import { getEffectiveScope, SCOPE_RANK, type EnforceableScope } from "@/kernel/access";
+import type { Scope } from "@/kernel/access/decision";
+
+export async function assertOverrideWithinActorGrant(
+  actor: ActorContext, resource: string, action: string, effect: "ALLOW" | "DENY", scope: Scope,
+): Promise<void> {
+  if (actor.isOwner) return;
+  const key = permissionKey(resource, action);
+  if (isCriticalKey(key)) throw new EscalationError(`critical 권한(${key})에 대한 override(${effect})는 OWNER만 가능합니다.`);
+  if (effect === "ALLOW") {
+    // 키 존재(any-scope)만으론 부족(F-N). actor의 실제 effective scope를 구해, 부여 scope가 그보다 넓으면 거부.
+    const actorScope = await getEffectiveScope(actor.userId, resource, action); // null=미보유
+    if (actorScope == null) throw new EscalationError(`보유하지 않은 권한(${key})은 ALLOW로 부여할 수 없습니다.`);
+    if (scope === "assigned" || SCOPE_RANK[scope as EnforceableScope] > SCOPE_RANK[actorScope]) {
+      throw new EscalationError(`보유 scope(${actorScope})를 넘는 ${scope} 권한은 부여할 수 없습니다.`); // team-actor가 all override 불가
+    }
+  }
+  // 비-critical DENY는 허용(제한적 — escalation 아님).
+}
+```
+(`actor.permissionKeys.has(key)` 키 검사는 `getEffectiveScope==null`로 대체·포섭 — getEffectiveScope가 보유+clamp를 한 번에. `permissionKeys`는 다른 가드에서 계속 쓰면 유지.)
+
+`src/modules/admin/users/services/index.ts` — 두 호출부를 scope 전달 + await로 갱신:
+- 생성 경로: `await assertOverrideWithinActorGrant(actor, dto.resource, dto.action, dto.effect, dto.scope);`
+- 제거/반전 경로: 기존 override의 `ov.resource/ov.action/ov.scope`로 `await assertOverrideWithinActorGrant(actor, ov.resource, ov.action, ov.effect === "DENY" ? "ALLOW" : "DENY", ov.scope);` (DENY 제거=ALLOW 부여 동형이라 scope 검사 적용 — 일관).
+
+**F-N negative 테스트**(`tests/modules/admin/users/` — override 가드): team-scope `leave.approval:approve`만 가진 위임 admin(getEffectiveScope→"team" mock) →
+- all-scope `leave.approval:approve` ALLOW override 생성 → **EscalationError**(보유 scope 초과).
+- team-scope override 생성 → 허용(rank 동일).
+- OWNER → 무제한 허용. 비보유 권한 ALLOW → EscalationError.
+
 ### 8. admin UI — team picker / 표시
 
 각 폼은 자유텍스트 `<Input department>`를 **active 팀 select**로 바꾼다. page(server)가 `listActiveTeamOptions()`를 불러 client에 `teams` prop으로 전달한다(각 page.tsx에 추가).
@@ -179,6 +217,7 @@ it("미존재 팀 배정은 거부(FK 500 전에 400)", async () => {
 - `npm run lint` → 0 errors (admin/users→admin/teams 경계 허용 확인; 불가 시 동적 import).
 - 범위 내 `department` 참조 0(전역 게이트는 task-07).
 - **F-J**: create/approve/update가 미존재·비active teamId를 `UserValidationError`(400)로 거부, null은 통과 — 테스트 GREEN.
+- **F-N**: team-scope `leave.approval:approve`만 가진 위임 admin이 all-scope override를 부여하면 `EscalationError`; team-scope override는 허용 — 테스트 GREEN(any-scope summary escalation 차단).
 - 수동: signup 폼에 부서 입력 없음; 승인 모달·생성·편집에 팀 select; 사용자 목록에 팀 이름 표시; 직접 API로 가짜 teamId → 400(FK 500 아님).
 
 ## Cautions
@@ -186,4 +225,5 @@ it("미존재 팀 배정은 거부(FK 500 전에 400)", async () => {
 - **Don't** teamId 변경/비활성화에서 reconcile을 빠뜨리거나 teamId UPDATE와 **다른** 트랜잭션에 둔다. Reason: 팀을 떠난 사용자가 이전 팀 leadUserId로 남으면 알림이 교차팀으로 샌다(F3/D1). 또한 teamId UPDATE+reconcile이 같은 tx여야 task-03 팀장 지정의 후보 `FOR UPDATE`와 **직렬화**되어 lead 지정 race가 닫힌다(F-E).
 - **Don't** `department` 잔존 참조를 남긴다(주석 포함). Reason: task-07 F8 게이트(`\bdepartment\b` 0건)가 drop을 막는다.
 - **Don't** teamId를 검증 없이(non-empty string만 보고) 쓴다. Reason: API 직접 호출로 가짜 id는 FK 500, 비active 팀은 승인/캘린더/알림의 authz 경계가 된다(F-J). 쓰기 전 같은 tx에서 active 팀 검증(`assertActiveTeamTx`).
+- **Don't** override 부여 가드를 `permissionKeys` 키 존재만으로 둔다(scope 무시). Reason: any-scope summary(task-02)면 team-scope 승인자가 키를 가지므로, 키만 보면 all-scope override를 타인에게 부여해 escalation(F-N critical). 부여 scope ≤ actor effective scope(`getEffectiveScope`)를 강제.
 - **Don't** 표시용에 `teamId`(cuid)를 노출. Reason: 사용자에겐 `teamName`. id는 select/PATCH 값으로만.
