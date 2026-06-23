@@ -221,6 +221,35 @@ describe("getRequest (PD3 — scope-aware)", () => {
     repo.getRequestById.mockResolvedValue({ id: "r1", userId: "other", status: "CANCELLED" } as any);
     await expect(getRequest("r1", adminCtx)).resolves.toMatchObject({ id: "r1" });
   });
+
+  // PD3: team-scope 승인자 — 자기 팀/타 팀/비활성 팀 경계
+  it("PD3: team-scope 승인자, 신청자 동일 팀+활성 → PENDING 단건 조회 허용", async () => {
+    repo.getRequestById.mockResolvedValue({ id: "r1", userId: "applicant1", status: "PENDING" } as any);
+    getEffectiveScope.mockResolvedValue("team");
+    // applicant: teamId="t1", viewer: teamId="t1", team.active=true
+    userFindUnique
+      .mockResolvedValueOnce({ teamId: "t1" } as any)                           // applicant
+      .mockResolvedValueOnce({ teamId: "t1", team: { active: true } } as any); // viewer(me)
+    await expect(getRequest("r1", approverCtx)).resolves.toMatchObject({ id: "r1" });
+  });
+
+  it("PD3: team-scope 승인자, 신청자 다른 팀 → ForbiddenError", async () => {
+    repo.getRequestById.mockResolvedValue({ id: "r1", userId: "applicant1", status: "PENDING" } as any);
+    getEffectiveScope.mockResolvedValue("team");
+    userFindUnique
+      .mockResolvedValueOnce({ teamId: "t2" } as any)                           // applicant — 다른 팀
+      .mockResolvedValueOnce({ teamId: "t1", team: { active: true } } as any); // viewer(me)
+    await expect(getRequest("r1", approverCtx)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("PD3/F-R: team-scope 승인자, 동일 팀이지만 팀 비활성 → ForbiddenError", async () => {
+    repo.getRequestById.mockResolvedValue({ id: "r1", userId: "applicant1", status: "PENDING" } as any);
+    getEffectiveScope.mockResolvedValue("team");
+    userFindUnique
+      .mockResolvedValueOnce({ teamId: "t1" } as any)                            // applicant — 같은 팀
+      .mockResolvedValueOnce({ teamId: "t1", team: { active: false } } as any); // viewer(me) — 비활성
+    await expect(getRequest("r1", approverCtx)).rejects.toBeInstanceOf(ForbiddenError);
+  });
 });
 
 describe("listApprovalQueue (F9, F-R scope-aware)", () => {

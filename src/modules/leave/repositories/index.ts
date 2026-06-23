@@ -161,6 +161,13 @@ export async function approveTx(requestId: string, adminId: string, mailJob?: Ma
     });
     if (alloc.count === 0) throw new LeaveConflictError("연차 할당 정보를 찾을 수 없습니다.");
     if (mailJob) await insertPendingDelivery(tx, { leaveRequestId: requestId, eventType: "APPROVED", ...mailJob });
+    await writeAudit(tx, {
+      actorId: authz?.actorId ?? adminId,
+      entityType: "LeaveRequest",
+      entityId: requestId,
+      action: "leave.approve",
+      metadata: { applicantId: req.userId },
+    });
   });
 }
 
@@ -194,6 +201,13 @@ export async function rejectRequest(requestId: string, adminId: string, rejectio
     });
     if (updated.count === 0) throw new LeaveConflictError("이미 처리된 신청입니다.");
     if (mailJob) await insertPendingDelivery(tx, { leaveRequestId: requestId, eventType: "REJECTED", ...mailJob });
+    await writeAudit(tx, {
+      actorId: authz?.actorId ?? adminId,
+      entityType: "LeaveRequest",
+      entityId: requestId,
+      action: "leave.reject",
+      metadata: { applicantId: authz?.applicantId ?? undefined, rejectionReason },
+    });
   });
 }
 

@@ -428,3 +428,94 @@ describe("rejectRequest — F-O in-tx 권위 재해석", () => {
     expect(queryRawCalls[1]).toBe("zzz");
   });
 });
+
+// ─────────────────────────────────────────────
+// F-S 보상 통제: approveTx/rejectRequest 성공 시 auditLog 기록
+// ─────────────────────────────────────────────
+
+describe("approveTx — F-S auditLog 보상 통제", () => {
+  const updatedAt3 = new Date("2026-08-01T00:00:00Z");
+
+  it("성공 시 writeAudit(leave.approve) 호출", async () => {
+    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "PENDING", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1, updatedAt: updatedAt3 });
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
+    h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 1 });
+    await approveTx("r1", "admin1", null, { actorId: "admin1", applicantId: "u1" });
+    expect(writeAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      actorId: "admin1",
+      entityType: "LeaveRequest",
+      entityId: "r1",
+      action: "leave.approve",
+      metadata: expect.objectContaining({ applicantId: "u1" }),
+    }));
+  });
+
+  it("authz 없이 성공해도 writeAudit 호출(adminId가 actorId 대체)", async () => {
+    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "PENDING", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1, updatedAt: updatedAt3 });
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
+    h.db.leaveAllocation.updateMany.mockResolvedValue({ count: 1 });
+    await approveTx("r1", "admin1");
+    expect(writeAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      actorId: "admin1",
+      entityType: "LeaveRequest",
+      entityId: "r1",
+      action: "leave.approve",
+    }));
+  });
+
+  it("F-O: in-tx scope=null(CAS 전 throw) → writeAudit 미호출", async () => {
+    h.getEffectiveScopeMock.mockResolvedValue(null);
+    h.db.$queryRaw.mockResolvedValue([]);
+    await expect(approveTx("r1", "admin1", null, { actorId: "actor1", applicantId: "u1" }))
+      .rejects.toBeInstanceOf(ForbiddenError);
+    expect(writeAuditMock).not.toHaveBeenCalled();
+  });
+
+  it("CAS 충돌(updateMany count 0) → writeAudit 미호출", async () => {
+    h.db.leaveRequest.findUnique.mockResolvedValue({ status: "PENDING", userId: "u1", startDate: new Date("2026-08-14T00:00:00Z"), days: 1, updatedAt: updatedAt3 });
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 0 });
+    await expect(approveTx("r1", "admin1")).rejects.toBeInstanceOf(LeaveConflictError);
+    expect(writeAuditMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("rejectRequest — F-S auditLog 보상 통제", () => {
+  it("성공 시 writeAudit(leave.reject) 호출", async () => {
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
+    h.getEffectiveScopeMock.mockResolvedValue("all"); // authz 제공 → in-tx scope 재해석(all → 팀 비교 건너뜀)
+    h.db.$queryRaw.mockResolvedValue([]);
+    await rejectRequest("r1", "admin1", "사유입니다", null, { actorId: "admin1", applicantId: "u1" });
+    expect(writeAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      actorId: "admin1",
+      entityType: "LeaveRequest",
+      entityId: "r1",
+      action: "leave.reject",
+      metadata: expect.objectContaining({ rejectionReason: "사유입니다" }),
+    }));
+  });
+
+  it("authz 없이 성공해도 writeAudit 호출(adminId가 actorId 대체)", async () => {
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 1 });
+    await rejectRequest("r1", "admin1", "사유");
+    expect(writeAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      actorId: "admin1",
+      entityType: "LeaveRequest",
+      entityId: "r1",
+      action: "leave.reject",
+    }));
+  });
+
+  it("F-O: in-tx scope=null(CAS 전 throw) → writeAudit 미호출", async () => {
+    h.getEffectiveScopeMock.mockResolvedValue(null);
+    h.db.$queryRaw.mockResolvedValue([]);
+    await expect(rejectRequest("r1", "admin1", "사유", null, { actorId: "actor1", applicantId: "u1" }))
+      .rejects.toBeInstanceOf(ForbiddenError);
+    expect(writeAuditMock).not.toHaveBeenCalled();
+  });
+
+  it("CAS 충돌(updateMany count 0) → writeAudit 미호출", async () => {
+    h.db.leaveRequest.updateMany.mockResolvedValue({ count: 0 });
+    await expect(rejectRequest("r1", "admin1", "사유")).rejects.toBeInstanceOf(LeaveConflictError);
+    expect(writeAuditMock).not.toHaveBeenCalled();
+  });
+});
