@@ -1,6 +1,6 @@
 # Memory Index
 
-- [Vibrant palette direction](ops-hub-vibrant-palette-direction.md) — ops-hub는 비비드 파스텔(#BA8DFF/#FBC6F2/#24D0FE/#EAFF00) + Playfair Display 지향, 중립 그레이스케일 아님
+- [Palette direction](ops-hub-palette-direction.md) — ops-hub 팔레트는 프로페셔널 블루·슬레이트(brand #2563EB)로 확정(PR #11), 이전 비비드 파스텔 지향 폐기; Playfair Display 헤딩 유지
 - [Session-per-merge workflow](session-per-merge-workflow.md) — 한 단계 머지 후 새 세션에서 다음 단계 시작; 핸드오프/원장이 유일한 인계 수단
 - [ops-hub cutover target](ops-hub-cutover-target.md) — 완성 시 annual-leave가 쓰는 172.21.10.27:3000(방화벽 개방·외주 재택 유일 경로)으로 이전 예정
 - [annual-leave access topology](annual-leave-access-topology.md) — 기존 연차는 kgs-dev 프론트:3000/백엔드:5000 분리, 브라우저가 백엔드 직접호출(IP별 분기), Tailscale 접속은 로그인 안 됨(원래 그럼)
@@ -10,4 +10,11 @@
 - [Memory sync key mismatch](memory-sync-key-mismatch.md) — 메모리는 repo `.claude/memory/`에 두고 git 동기화(my-study 패턴), 글로벌 경로는 junction; 집은 clone 후 junction 1회만
 - [Review-loop automation philosophy](review-loop-automation-philosophy.md) — 사람=병목, 자동화 극대화하되 위험군(critical·보안·방향전제)만 사람 결정으로
 - [User-management merged](user-management-merge-ready.md) — feat/user-management → main 머지 **완료**(b99c7d4, 2026-06-22); 배포 follow-up 4종만 미적용
+- [Navigation CMS merge-ready](navigation-cms-merge-ready.md) — 메뉴 관리 11태스크 완료 → **PR #10 머지 완료**(4c79ba2 계열, 2026-06-23)
+- [Sidebar tree submenu merged+deployed](sidebar-tree-submenu-merge-ready.md) — 사이드바 트리 중메뉴 일원화(연차 5자식·관리 사용자관리·/leave/manage 이동) → **PR #13(코드)·#14(docs) 머지 + dev 배포 완료**(2026-06-23, nav=5 재시드, /login 200)
 - [Laptop sync stale artifacts](laptop-sync-stale-artifacts.md) — 노트북 전환 후 typecheck 거짓 실패 시 prisma:generate(stale client)·rm .next(stale build types) 먼저
+- [ops-hub OWNER email changed](ops-hub-owner-email-changed.md) — dev 로그인 ID admin@→ggui74@uracle.co.kr, 서버 .env SEED_ADMIN_EMAIL도 갱신
+- [annual-leave users migrated](annual-leave-users-migrated.md) — 운영 16명 dev opshub 적재(해시 그대로 재로그인 가능), 운영DB=/opt/annual-leave root PM2
+- [Cross-app cookie collision](cross-app-cookie-collision.md) — day-sync·ops-hub 같은 IP·같은 기본 쿠키 이름 → 세션 충돌(500). ops-hub 전용 쿠키 이름으로 해결(브랜치 fix/auth-cookie-name-collision)
+- [Codex shell and sync lessons](codex-session-shell-and-sync-lessons.md) — 2026-06-22 세션 재발 방지: PowerShell `(app)` 경로 quoting, `npm.cmd`, `.next/dev/types` 충돌, 개발서버/로컬 브랜치 비교, ops-hub DB SSH 터널, `frontend-skill` 공식성 확인.
+- [dev-workflow plugin](dev-workflow-plugin.md) — review-loop·writing-plans-split·context-hook을 dev-workflow 플러그인으로 패키징, public repo gguii74-rwk/claude-dev-workflow 배포(2026-06-23); **ops-hub 전환은 teams 작업 후 별도 세션 예정**
