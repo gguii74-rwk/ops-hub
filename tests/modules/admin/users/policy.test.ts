@@ -56,7 +56,7 @@ describe("비특권 allowlist seed drift 가드 (codex iter1 finding2 ACCEPTED �
     for (const key of NON_PRIVILEGED_ROLE_KEYS) {
       const perms = ROLE_ALLOW[key] ?? [];
       expect(perms, `${key}는 wildcard("*") 권한을 가지면 안 됨`).not.toContain("*");
-      const adminBearing = perms.filter((p) => p.startsWith("admin."));
+      const adminBearing = perms.filter((p) => typeof p === "string" && p.startsWith("admin."));
       expect(adminBearing, `${key}는 admin.* 권한을 가지면 안 됨`).toEqual([]);
     }
   });
