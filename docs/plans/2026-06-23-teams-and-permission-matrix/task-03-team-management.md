@@ -194,6 +194,8 @@ export async function reconcileTeamLeadTx(tx: Prisma.TransactionClient, userId: 
 ```
 (CAS는 `expectedUpdatedAt`(클라가 본 버전, `@/kernel/optimistic`). 에러는 teams 전용 클래스(위 errors.ts).)
 
+> **F-R 비활성 팀 authz 불변식(사용자 결정):** 비활성화는 `active=false`+lead 해제만 하고 **소속 멤버의 `teamId`는 보존**한다(멤버 자동 무소속/비활성화 거부 안 함 — 재활성화 시 멤버십 그대로 복원). 대신 폐기된 팀이 authz 경계가 되지 않도록 **team-scope 검사 시점에 팀 `active`를 런타임 요구**한다(fail-closed). team-scope 권위가 active 팀을 요구하는 소비처(모두 task-05): `listApprovalQueue`·in-tx `approveTx`/`rejectRequest`·`getRequest` 단건·`getLeaveAdminRecipients`가 actor/공유 팀의 `active`를 확인해 비활성이면 거부/제외. 따라서 비활성 팀 멤버의 신청은 all-scope 승인자만 처리한다. (대안 "memberCount=0 강제"·"멤버 자동 무소속"은 데이터/워크플로 부작용으로 기각.)
+
 ### 4. services — configure 게이트
 
 `src/modules/admin/teams/services/index.ts`:

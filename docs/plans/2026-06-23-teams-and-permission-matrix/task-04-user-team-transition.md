@@ -5,9 +5,9 @@
 ## Files
 - Modify: `src/modules/admin/users/validations/index.ts` (`department`→`teamId`)
 - Modify: `src/modules/admin/users/validations/signup.ts` (`department` 제거)
-- Modify: `src/modules/admin/users/services/index.ts` (department→teamId pass-through + F-N: assertOverrideWithinActorGrant 호출에 scope 전달)
-- Modify: `src/modules/admin/users/services/guards.ts` (F-N: `assertOverrideWithinActorGrant`를 scope-aware로 — any-scope summary escalation 차단)
-- Modify: `src/modules/admin/users/repositories/index.ts` (select/create/update teamId + team.name + reconcile wiring)
+- Modify: `src/modules/admin/users/services/index.ts` (department→teamId pass-through + F-N: scope 전달 + F-Q: override 생성/삭제를 actor 잠금 트랜잭션으로 감싸 in-tx 재해석)
+- Modify: `src/modules/admin/users/services/guards.ts` (F-N: `assertOverrideWithinActorGrant`를 scope-aware로 — any-scope summary escalation 차단 + F-Q: optional `tx` 주입)
+- Modify: `src/modules/admin/users/repositories/index.ts` (select/create/update teamId + team.name + reconcile wiring + F-Q: `createOverride`/`deleteOverride` optional `tx`)
 - Modify: `src/app/api/auth/signup/route.ts` (department 미저장)
 - Modify: `src/app/signup/_components/signup-form.tsx` (부서 Input 제거)
 - Modify: `src/app/(app)/admin/users/_components/users-list.tsx` (teamName 표시)
@@ -128,24 +128,26 @@ if (patch.teamId !== undefined) {
 - `createUserByAdmin`(줄 119): `department: input.department ?? null,` → `teamId: input.teamId ?? null,`
 - `updateUser`(줄 134): `...(patch.department !== undefined ? { department: patch.department ?? null } : {}),` → `...(patch.teamId !== undefined ? { teamId: patch.teamId ?? null } : {}),`
 
-### 7b. override 부여 scope-aware (F-N — critical escalation 차단)
+### 7b. override 부여 scope-aware + 쓰기 트랜잭션 내부 권위 (F-N escalation 차단 · F-Q in-tx authz)
 
 `getPermissionSummary`가 any-scope가 되면(task-02) `ActorContext.permissionKeys`도 any-scope다. 증분 ①의 `assertOverrideWithinActorGrant`(guards.ts)는 비-critical ALLOW override를 **키 존재만**으로 허용한다 — `leave.approval`은 non-critical·scopeable이라, **team-scope `leave.approval:approve`만 가진 위임 admin이 타인에게 all-scope override를 부여**해 팀을 넘어 escalation할 수 있다(F-N). → 가드를 **scope-aware**로: 부여하려는 override scope가 actor의 **effective scope**를 넘으면 거부.
 
-`src/modules/admin/users/services/guards.ts` — 시그니처에 scope 추가 + async + `getEffectiveScope` 사용:
+`src/modules/admin/users/services/guards.ts` — 시그니처에 scope 추가 + async + `getEffectiveScope` 사용 + **optional `tx` 주입(F-Q)**:
 ```ts
 import { getEffectiveScope, SCOPE_RANK, type EnforceableScope } from "@/kernel/access";
 import type { Scope } from "@/kernel/access/decision";
+import type { Prisma } from "@prisma/client";
 
 export async function assertOverrideWithinActorGrant(
   actor: ActorContext, resource: string, action: string, effect: "ALLOW" | "DENY", scope: Scope,
+  tx?: Prisma.TransactionClient, // F-Q: 쓰기 트랜잭션 내부 호출 시 tx 클라이언트로 현재 권한 재해석
 ): Promise<void> {
   if (actor.isOwner) return;
   const key = permissionKey(resource, action);
   if (isCriticalKey(key)) throw new EscalationError(`critical 권한(${key})에 대한 override(${effect})는 OWNER만 가능합니다.`);
   if (effect === "ALLOW") {
     // 키 존재(any-scope)만으론 부족(F-N). actor의 실제 effective scope를 구해, 부여 scope가 그보다 넓으면 거부.
-    const actorScope = await getEffectiveScope(actor.userId, resource, action); // null=미보유
+    const actorScope = await getEffectiveScope(actor.userId, resource, action, tx); // null=미보유. tx면 in-tx 재해석(F-Q)
     if (actorScope == null) throw new EscalationError(`보유하지 않은 권한(${key})은 ALLOW로 부여할 수 없습니다.`);
     if (scope === "assigned" || SCOPE_RANK[scope as EnforceableScope] > SCOPE_RANK[actorScope]) {
       throw new EscalationError(`보유 scope(${actorScope})를 넘는 ${scope} 권한은 부여할 수 없습니다.`); // team-actor가 all override 불가
@@ -156,14 +158,29 @@ export async function assertOverrideWithinActorGrant(
 ```
 (`actor.permissionKeys.has(key)` 키 검사는 `getEffectiveScope==null`로 대체·포섭 — getEffectiveScope가 보유+clamp를 한 번에. `permissionKeys`는 다른 가드에서 계속 쓰면 유지.)
 
-`src/modules/admin/users/services/index.ts` — 두 호출부를 scope 전달 + await로 갱신:
-- 생성 경로: `await assertOverrideWithinActorGrant(actor, dto.resource, dto.action, dto.effect, dto.scope);`
-- 제거/반전 경로: 기존 override의 `ov.resource/ov.action/ov.scope`로 `await assertOverrideWithinActorGrant(actor, ov.resource, ov.action, ov.effect === "DENY" ? "ALLOW" : "DENY", ov.scope);` (DENY 제거=ALLOW 부여 동형이라 scope 검사 적용 — 일관).
+`src/modules/admin/users/services/index.ts` — 두 호출부를 **단일 트랜잭션으로 감싸 actor 잠금 후 in-tx 재해석**(F-Q). guard는 service 레이어 유지(repo→service boundary 위반 회피), `createOverride`/`deleteOverride`에 tx 주입:
+```ts
+// upsertOverride(생성) — 기존 createOverride 직접 호출을 tx로 감쌈:
+return prisma.$transaction(async (tx) => {
+  await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${actor.userId} FOR UPDATE`; // actor 직렬화
+  await assertOverrideWithinActorGrant(actor, dto.resource, dto.action, dto.effect, dto.scope, tx); // in-tx 재해석
+  return createOverride(id, input, actor.userId, tx); // 같은 tx에 쓰기 — precheck↔write TOCTOU 제거
+});
+// removeOverride(제거/반전):
+await prisma.$transaction(async (tx) => {
+  await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${actor.userId} FOR UPDATE`;
+  await assertOverrideWithinActorGrant(actor, ov.resource, ov.action, ov.effect === "DENY" ? "ALLOW" : "DENY", ov.scope, tx);
+  await deleteOverride(id, overrideId, actor.userId, tx); // (DENY 제거=ALLOW 부여 동형 — scope 검사 일관)
+});
+```
+`createOverride`/`deleteOverride`(repositories)는 **optional `tx?: Prisma.TransactionClient`**를 받아, 주입 시 자체 `prisma.$transaction`을 열지 않고 그 tx에 합류한다(이 파일 line 302 `else await prisma.$transaction(run)` idiom과 동일 — run 본문을 분리해 tx 유무로 분기). actor 잠금+guard와 같은 트랜잭션이라, precheck 이후 actor revoke/disable/deny가 끼면 in-tx `getEffectiveScope(tx)`가 잡아 **부여/제거가 롤백**된다(승인 task-05·매트릭스 task-06과 동일한 in-tx authz 표준). 기존 가용성 체크(DENY lockout·ALLOW 제거 권한 하락)는 같은 tx 안에서 그대로 유지.
 
 **F-N negative 테스트**(`tests/modules/admin/users/` — override 가드): team-scope `leave.approval:approve`만 가진 위임 admin(getEffectiveScope→"team" mock) →
 - all-scope `leave.approval:approve` ALLOW override 생성 → **EscalationError**(보유 scope 초과).
 - team-scope override 생성 → 허용(rank 동일).
 - OWNER → 무제한 허용. 비보유 권한 ALLOW → EscalationError.
+
+**F-Q in-tx 원자성 테스트**(override authz가 쓰기 tx 안): actor가 precheck 시점엔 scope 보유하나 write 직전 revoke/disable되는 시나리오를 mock으로 — `assertOverrideWithinActorGrant`에 주입된 `tx`의 `getEffectiveScope(tx)`가 null/축소 scope를 반환하면 `upsertOverride`/`removeOverride`가 **EscalationError로 롤백**(override 미생성/미삭제, audit 미기록). 또한 `createOverride`/`deleteOverride`가 주입 tx에 합류(별도 `prisma.$transaction` 미개시)하는지, actor 행 `FOR UPDATE`가 guard보다 먼저 실행되는지 단언.
 
 ### 8. admin UI — team picker / 표시
 
@@ -218,6 +235,7 @@ it("미존재 팀 배정은 거부(FK 500 전에 400)", async () => {
 - 범위 내 `department` 참조 0(전역 게이트는 task-07).
 - **F-J**: create/approve/update가 미존재·비active teamId를 `UserValidationError`(400)로 거부, null은 통과 — 테스트 GREEN.
 - **F-N**: team-scope `leave.approval:approve`만 가진 위임 admin이 all-scope override를 부여하면 `EscalationError`; team-scope override는 허용 — 테스트 GREEN(any-scope summary escalation 차단).
+- **F-Q**: override 생성/삭제가 actor 행 `FOR UPDATE` + in-tx `getEffectiveScope(tx)` 재해석 트랜잭션 안에서 수행 — precheck 이후 revoke/disable/deny 시 부여/제거 롤백 — 테스트 GREEN.
 - 수동: signup 폼에 부서 입력 없음; 승인 모달·생성·편집에 팀 select; 사용자 목록에 팀 이름 표시; 직접 API로 가짜 teamId → 400(FK 500 아님).
 
 ## Cautions
@@ -226,4 +244,5 @@ it("미존재 팀 배정은 거부(FK 500 전에 400)", async () => {
 - **Don't** `department` 잔존 참조를 남긴다(주석 포함). Reason: task-07 F8 게이트(`\bdepartment\b` 0건)가 drop을 막는다.
 - **Don't** teamId를 검증 없이(non-empty string만 보고) 쓴다. Reason: API 직접 호출로 가짜 id는 FK 500, 비active 팀은 승인/캘린더/알림의 authz 경계가 된다(F-J). 쓰기 전 같은 tx에서 active 팀 검증(`assertActiveTeamTx`).
 - **Don't** override 부여 가드를 `permissionKeys` 키 존재만으로 둔다(scope 무시). Reason: any-scope summary(task-02)면 team-scope 승인자가 키를 가지므로, 키만 보면 all-scope override를 타인에게 부여해 escalation(F-N critical). 부여 scope ≤ actor effective scope(`getEffectiveScope`)를 강제.
+- **Don't** override 부여 가드(getEffectiveScope)를 쓰기 트랜잭션 **밖**에서만 호출한다. Reason: override는 권한 변경 primitive라 precheck↔write 사이 actor revoke/disable/deny가 끼면 stale actor가 부여/제거(F-Q escalation). actor 잠금+guard+create/delete를 단일 tx로(승인 task-05·매트릭스 task-06과 동일 표준).
 - **Don't** 표시용에 `teamId`(cuid)를 노출. Reason: 사용자에겐 `teamName`. id는 select/PATCH 값으로만.
