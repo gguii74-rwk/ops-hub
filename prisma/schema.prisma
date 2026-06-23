@@ -196,10 +196,30 @@ model User {
   permissionOverrides UserPermissionOverride[]
   auditLogs           AuditLog[]               @relation("AuditActor")
 
+  teamId   String?                                                   // 신규 — 1인 1팀(D1)
+  team     Team?   @relation("TeamMembers", fields: [teamId], references: [id], onDelete: SetNull)
+  ledTeams Team[]  @relation("TeamLead")                             // 팀장으로 있는 팀들
+
   @@index([employmentType, jobFunction])
   @@index([systemRole])
   @@index([status])
   @@index([emailVerifyTokenHash])
+  @@index([teamId])
+  @@schema("kernel")
+}
+
+model Team {
+  id         String   @id @default(cuid())
+  name       String
+  leadUserId String?
+  lead       User?    @relation("TeamLead", fields: [leadUserId], references: [id], onDelete: SetNull)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  members    User[]   @relation("TeamMembers")
+
+  @@index([leadUserId])
   @@schema("kernel")
 }
 
