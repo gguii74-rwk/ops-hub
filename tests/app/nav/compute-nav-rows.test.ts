@@ -43,3 +43,47 @@ describe("computeNavRows (D5 링크/토글·자동펼침)", () => {
     expect(admin.autoExpanded).toBe(false);
   });
 });
+
+describe("computeNavRows — 형제 최장 매칭 우선(D8)", () => {
+  const leave: NavItem = {
+    key: "leave", label: "연차", href: "/leave",
+    children: [
+      leaf("leave-dashboard", "/leave"),
+      leaf("leave-request", "/leave/request"),
+      leaf("leave-calendar", "/leave/calendar"),
+      leaf("leave-history", "/leave/history"),
+      leaf("leave-manage", "/leave/manage"),
+    ],
+  };
+  const items: NavItem[] = [leaf("dashboard", "/dashboard"), leave];
+
+  const childActiveKeys = (pathname: string) =>
+    computeNavRows(items, pathname)
+      .find((r) => r.key === "leave")!
+      .children.filter((c) => c.active)
+      .map((c) => c.key);
+
+  it("/leave → 대시보드(인덱스)만 active", () => {
+    expect(childActiveKeys("/leave")).toEqual(["leave-dashboard"]);
+  });
+
+  it("/leave/request → 연차 신청만 active(대시보드 아님)", () => {
+    expect(childActiveKeys("/leave/request")).toEqual(["leave-request"]);
+  });
+
+  it("/leave/manage/allocations → 연차 관리만 active(prefix 최장)", () => {
+    expect(childActiveKeys("/leave/manage/allocations")).toEqual(["leave-manage"]);
+  });
+
+  it("부모 연차는 모든 /leave/* 에서 active·자동펼침", () => {
+    for (const p of ["/leave", "/leave/request", "/leave/manage/status"]) {
+      const row = computeNavRows(items, p).find((r) => r.key === "leave")!;
+      expect(row.active, p).toBe(true);
+      expect(row.autoExpanded, p).toBe(true);
+    }
+  });
+
+  it("연차 외 경로(/dashboard)면 자식 active 없음", () => {
+    expect(childActiveKeys("/dashboard")).toEqual([]);
+  });
+});
