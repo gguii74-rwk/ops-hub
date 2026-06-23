@@ -19,6 +19,7 @@ export const EXTRA_PERMISSIONS: Array<[string, string]> = [
   ["admin.audit", "view"],
   ["admin.settings", "configure"],
   ["admin.navigation", "configure"],
+  ["admin.teams", "configure"],
   ["integrations.google", "configure"],
   ["integrations.smtp", "configure"],
   ["integrations.templates", "configure"],
