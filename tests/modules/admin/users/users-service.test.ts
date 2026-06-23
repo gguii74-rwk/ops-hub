@@ -11,9 +11,12 @@ vi.mock("@/modules/admin/users/repositories", () => ({
 vi.mock("@/modules/leave/services/mail", () => ({ triggerLeaveMailDrain: vi.fn() }));
 // bcrypt 해시 — 고정값(임시비번/새 비번 해시는 서비스가 만든다).
 vi.mock("bcryptjs", () => ({ default: { hash: vi.fn(async () => "HASHED") } }));
-// prisma 모킹 — services/index.ts의 upsertOverride·removeOverride가 $transaction 사용.
+// prisma 모킹 — services/index.ts의 upsertOverride·removeOverride가 withAvailabilityLock($transaction) 사용.
 // F-Q: vi.hoisted로 stableTx를 팩토리 호이스팅 전에 생성해 $transaction 콜백이 받는 객체를 외부에서 참조 가능하게 한다.
-const { stableTx } = vi.hoisted(() => ({ stableTx: { $queryRaw: vi.fn() } }));
+// F-GG/F-FF: withAvailabilityLock의 advisory lock($executeRaw)·actor/target FOR UPDATE($queryRaw)·가드 team 읽기(user.findUnique).
+const { stableTx } = vi.hoisted(() => ({
+  stableTx: { $queryRaw: vi.fn(), $executeRaw: vi.fn(), user: { findUnique: vi.fn(async () => ({ teamId: null })) } },
+}));
 vi.mock("@/lib/prisma", () => ({
   prisma: { $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(stableTx)) },
 }));

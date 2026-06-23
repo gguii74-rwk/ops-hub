@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import {
   assertNotSelfMutation, assertCanAssignRoles, assertCanSetSystemRole, assertOverrideWithinActorGrant,
+  withAvailabilityLock,
   type ActorContext,
 } from "./guards";
 import { isPrivilegedRoleKey, PRIVILEGED_SYSTEM_ROLES } from "../policy";
@@ -13,7 +14,6 @@ import {
   createOverride, deleteOverride, setStatusTx, reactivateRejectedTx, resetPasswordTx,
   type UserListFilter, type UserDetail, type OverrideInput,
 } from "../repositories";
-import { prisma } from "@/lib/prisma";
 import type { UserMailJob } from "../repositories/mail";
 import { triggerLeaveMailDrain } from "@/modules/leave/services/mail";
 import type {
@@ -157,6 +157,11 @@ export async function assignRoles(actor: ActorContext, id: string, roleKeys: str
 
 // ── override 생성(D13ⓐ ⓒ ⓓ): 자가 금지 + ALLOW 보유한도/scope/critical DENY 가드 → createOverride. ──
 // F-Q: actor lock(FOR UPDATE)을 먼저 잡아 assertOverrideWithinActorGrant(getEffectiveScope)와 createOverride를 같은 tx에서.
+// F-GG: withAvailabilityLock을 outer 트랜잭션으로 써서 availability advisory lock을 잡는다. prisma.$transaction 단독이면
+//   injected-tx 경로의 createOverride가 withAvailabilityLock을 건너뛰어, 동시 override DENY 2건이 서로의 미커밋분을 못 본
+//   스냅샷으로 assertMinAvailability를 통과해 가용 관리자/감사자가 0이 될 수 있다.
+// F-FF: actor와 target 행을 id 정렬 순서로 FOR UPDATE 잠가(데드락 방지) team-move race를 직렬화한다 — actor만 잠그면
+//   가드가 읽은 target teamId가 override insert 전에 바뀌어(다른 팀 이동) stale 경계로 team-scope ALLOW가 만들어진다.
 export async function upsertOverride(actor: ActorContext, id: string, dto: OverrideInputDto): Promise<{ id: string }> {
   await loadTarget(id);
   assertNotSelfMutation(actor, id);
@@ -166,8 +171,10 @@ export async function upsertOverride(actor: ActorContext, id: string, dto: Overr
     startsAt: dto.startsAt ? new Date(dto.startsAt) : null,
     endsAt: dto.endsAt ? new Date(dto.endsAt) : null,
   };
-  return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${actor.userId} FOR UPDATE`;
+  return withAvailabilityLock(async (tx) => {
+    for (const uid of [...new Set([actor.userId, id])].sort()) {
+      await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${uid} FOR UPDATE`;
+    }
     await assertOverrideWithinActorGrant(actor, id, dto.resource, dto.action, dto.effect, dto.scope, tx);
     return createOverride(id, input, actor.userId, tx);
   });
@@ -179,13 +186,16 @@ export async function upsertOverride(actor: ActorContext, id: string, dto: Overr
 // critical DENY를 삭제해 대상의 admin 권한을 OWNER 승인 없이 복원하는 것을 차단한다. override는 update 경로가 없어
 // (생성·삭제만) key/effect가 불변이므로 로드 스냅샷으로 가드해도 stale race가 없다.
 // F-Q: actor lock(FOR UPDATE)을 먼저 잡아 assertOverrideWithinActorGrant(getEffectiveScope)와 deleteOverride를 같은 tx에서.
+// F-GG/F-FF: upsertOverride와 동형 — withAvailabilityLock(availability advisory lock) + actor·target 정렬 락.
 export async function removeOverride(actor: ActorContext, id: string, overrideId: string): Promise<void> {
   const target = await loadTarget(id);
   assertNotSelfMutation(actor, id);
   const ov = target.overrides.find((o) => o.id === overrideId);
   if (!ov) throw new UserConflictError("해당 권한 예외를 찾을 수 없습니다.");
-  await prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${actor.userId} FOR UPDATE`;
+  await withAvailabilityLock(async (tx) => {
+    for (const uid of [...new Set([actor.userId, id])].sort()) {
+      await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${uid} FOR UPDATE`;
+    }
     await assertOverrideWithinActorGrant(actor, id, ov.resource, ov.action, ov.effect === "DENY" ? "ALLOW" : "DENY", ov.scope, tx);
     await deleteOverride(id, overrideId, actor.userId, tx);
   });
