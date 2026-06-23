@@ -54,6 +54,17 @@ describe("effectiveScope (computeDecision 우선순위의 scope 일반화)", () 
   it("아무것도 없으면 null(fail-closed)", () => {
     expect(effectiveScope({ overrides: [], roleRules: [] })).toBeNull();
   });
+  // F-A — allowed clamp: 비-scopeable resource(["all"])는 team/own ALLOW를 후보에서 제외.
+  it("clamp: 비-scopeable resource(allowed=[all])에 team override만 있으면 null(노출 차단)", () => {
+    expect(effectiveScope({ overrides: [allow("team")], roleRules: [] }, ["all"])).toBeNull();
+    expect(effectiveScope({ overrides: [allow("own")], roleRules: [] }, ["all"])).toBeNull();
+  });
+  it("clamp: 비-scopeable resource라도 all ALLOW는 통과(정상 admin 권한)", () => {
+    expect(effectiveScope({ overrides: [], roleRules: [allow("all")] }, ["all"])).toBe("all");
+  });
+  it("clamp: scopeable resource(allowed=[all,team])는 team ALLOW를 그대로 인정", () => {
+    expect(effectiveScope({ overrides: [], roleRules: [allow("team")] }, ["all", "team"])).toBe("team");
+  });
 });
 
 describe("allowedScopes (PD2 — scopeable resource)", () => {
@@ -81,31 +92,43 @@ import type { PermissionRule } from "@/kernel/access/decision";
 export type EnforceableScope = "own" | "team" | "all"; // assigned 제외(D13 — 미해석)
 export const SCOPE_RANK: Record<EnforceableScope, number> = { all: 3, team: 2, own: 1 };
 
+const ALL_ENFORCEABLE: readonly EnforceableScope[] = ["own", "team", "all"];
+
 // ALLOW 중 가장 넓은 enforceable scope. assigned는 후보에서 제외(F1: 미해석 scope가 좁은 유효 grant 가림 방지).
-function widestEnforceable(rules: PermissionRule[]): EnforceableScope | null {
+// `allowed`로 후보를 clamp한다(PD2/F-A): resource가 허용하지 않는 scope의 ALLOW는 후보에서 제외 — 비-scopeable resource에
+// team/own override가 걸려도 enforceable 후보가 되지 못해 effective scope가 null/all로만 나온다(아래 effectiveScope 주석).
+function widestEnforceable(rules: PermissionRule[], allowed: readonly EnforceableScope[]): EnforceableScope | null {
   let best: EnforceableScope | null = null;
   for (const r of rules) {
     if (r.effect !== "ALLOW") continue;
     if (r.scope === "assigned") continue;
     const s = r.scope as EnforceableScope;
+    if (!allowed.includes(s)) continue; // PD2/F-A clamp — 비허용 scope는 후보 제외
     if (best === null || SCOPE_RANK[s] > SCOPE_RANK[best]) best = s;
   }
   return best;
 }
 
 // computeDecision 우선순위의 scope 일반화(OWNER/게이트는 index.ts가 prisma 컨텍스트로 처리).
-// override DENY → null / override ALLOW(enforceable) → 최광 / role DENY → null / role ALLOW(enforceable) → 최광 / else null.
-export function effectiveScope(input: { overrides: PermissionRule[]; roleRules: PermissionRule[] }): EnforceableScope | null {
+// override DENY → null / override ALLOW(enforceable∩allowed) → 최광 / role DENY → null / role ALLOW(enforceable∩allowed) → 최광 / else null.
+// `allowed`(기본 무제약)는 소비처가 allowedScopes(resource)를 주입한다(F-A): 비-scopeable resource는 ["all"]이라
+// team/own ALLOW가 clamp돼 그 grant만 있으면 null(메뉴 미노출), all ALLOW가 있으면 all(정상). DENY는 scope-무관 거부(불변).
+export function effectiveScope(
+  input: { overrides: PermissionRule[]; roleRules: PermissionRule[] },
+  allowed: readonly EnforceableScope[] = ALL_ENFORCEABLE,
+): EnforceableScope | null {
   if (input.overrides.some((r) => r.effect === "DENY")) return null;
-  const ovrAllow = widestEnforceable(input.overrides);
+  const ovrAllow = widestEnforceable(input.overrides, allowed);
   if (ovrAllow) return ovrAllow;
   if (input.roleRules.some((r) => r.effect === "DENY")) return null;
-  const roleAllow = widestEnforceable(input.roleRules);
+  const roleAllow = widestEnforceable(input.roleRules, allowed);
   if (roleAllow) return roleAllow;
   return null;
 }
 
-// PD2 — 편집기·부트스트랩·업그레이드 마이그레이션 공유 SSOT. 본 증분에서 scope-aware 소비처가 있는 resource만 team/own을 연다.
+// PD2 — 편집기·부트스트랩·업그레이드 마이그레이션·**엔진(getEffectiveScope/getPermissionSummary)** 공유 SSOT.
+// 본 증분에서 scope-aware 소비처가 있는 resource만 team/own을 연다. 엔진이 이 집합으로 clamp하므로(F-A),
+// override-panel(증분 ①) 등이 비-scopeable resource에 team/own override를 만들어도 메뉴/데이터로 새지 않는다(fail-closed).
 export const SCOPEABLE_RESOURCES: Record<string, EnforceableScope[]> = {
   "leave.approval": ["all", "team"],
 };
@@ -119,7 +142,7 @@ export function allowedScopes(resource: string): EnforceableScope[] {
 
 `src/kernel/access/index.ts` 상단 import에 추가:
 ```ts
-import { effectiveScope, type EnforceableScope } from "@/kernel/access/scope";
+import { effectiveScope, allowedScopes, type EnforceableScope } from "@/kernel/access/scope";
 ```
 그리고 `export * from "@/kernel/access/catalog";` 아래에 re-export 추가:
 ```ts
@@ -165,7 +188,9 @@ export async function getEffectiveScope(
     .map((r) => ({ effect: r.effect, scope: r.scope as Scope }));
   const roleRules: PermissionRule[] = roleRows.map((r) => ({ effect: r.effect, scope: r.scope as Scope }));
 
-  return effectiveScope({ overrides, roleRules });
+  // F-A: resource가 허용하는 scope로 clamp. 비-scopeable resource는 ["all"]이라 team/own grant가 후보에서 빠진다
+  // (override-panel로 만든 비-scopeable team override가 메뉴/데이터로 새는 것 차단). requirePermissionForTarget도 이걸 상속.
+  return effectiveScope({ overrides, roleRules }, allowedScopes(resource));
 }
 
 /**
@@ -206,11 +231,14 @@ export async function requirePermissionForTarget(
 변경:
 ```ts
     // D5: 메뉴/useCan은 any enforceable scope면 노출(team/own grant도 메뉴는 보임). 실제 데이터 범위는 scoped 엔드포인트가 강제.
-    if (effectiveScope({ overrides: ovr, roleRules: roles }) !== null) {
+    // F-A: allowedScopes(p.resource)로 clamp — 비-scopeable resource(admin.*/workflows.* 등)는 ["all"]이라
+    // team/own override가 메뉴 키를 만들지 못한다. 서버 페이지가 summary 키를 가드로 쓰고 직접 데이터를 읽어도(task-03/06 page.tsx)
+    // 비-scopeable resource의 team/own override로는 노출되지 않는다(이 clamp가 없으면 page-layer 데이터 누수, F-A high).
+    if (effectiveScope({ overrides: ovr, roleRules: roles }, allowedScopes(p.resource)) !== null) {
       keys.push(permissionKey(p.resource, p.action));
     }
 ```
-(`computeDecision` import는 `hasPermission`이 계속 쓰므로 유지.)
+(`computeDecision` import는 `hasPermission`이 계속 쓰므로 유지. `allowedScopes`는 위 import에 추가됨.)
 
 ### 4. prisma-mock 테스트 — getEffectiveScope/requirePermissionForTarget
 
@@ -265,6 +293,17 @@ describe("getEffectiveScope", () => {
     mockUser({ mustChangePassword: true });
     h.db.rolePermission.findMany.mockResolvedValue([{ effect: "ALLOW", scope: "all" }]);
     expect(await getEffectiveScope("u1", "leave.approval", "view")).toBeNull();
+  });
+  // F-A — 비-scopeable resource(admin.teams)에 team grant가 있어도 clamp되어 null.
+  it("비-scopeable resource + team grant → null(allowedScopes clamp, F-A)", async () => {
+    mockUser();
+    h.db.rolePermission.findMany.mockResolvedValue([{ effect: "ALLOW", scope: "team" }]);
+    expect(await getEffectiveScope("u1", "admin.teams", "view")).toBeNull();
+  });
+  it("비-scopeable resource + all grant → all(정상)", async () => {
+    mockUser();
+    h.db.rolePermission.findMany.mockResolvedValue([{ effect: "ALLOW", scope: "all" }]);
+    expect(await getEffectiveScope("u1", "admin.teams", "view")).toBe("all");
   });
 });
 
@@ -332,6 +371,21 @@ describe("D5/F2 — 메뉴 노출 ≠ 데이터 범위", () => {
     expect(await hasPermission("u1", "leave.approval", "view")).toBe(false); // scope=all 아님
     await expect(requirePermission("u1", "leave.approval", "view")).rejects.toBeInstanceOf(ForbiddenError);
   });
+  // F-A — 비-scopeable resource(admin.teams)에 team override가 걸려도 summary 키가 안 생긴다(서버 페이지 누수 차단).
+  it("비-scopeable resource의 team override는 summary 키를 만들지 않는다(F-A: page-layer 누수 차단)", async () => {
+    h.db.permission.findMany.mockResolvedValue([{ id: "p2", resource: "admin.teams", action: "view" }]);
+    h.db.rolePermission.findMany.mockResolvedValue([]);
+    h.db.userPermissionOverride.findMany.mockResolvedValue([{ permissionId: "p2", effect: "ALLOW", scope: "team", startsAt: null, endsAt: null }]);
+    const summary = await getPermissionSummary("u1");
+    expect(summary.keys).not.toContain("admin.teams:view"); // clamp → null → 키 없음(페이지 redirect)
+  });
+  it("비-scopeable resource의 all override/role은 정상 노출(admin 권한 유지)", async () => {
+    h.db.permission.findMany.mockResolvedValue([{ id: "p2", resource: "admin.teams", action: "view" }]);
+    h.db.rolePermission.findMany.mockResolvedValue([{ permissionId: "p2", effect: "ALLOW", scope: "all" }]);
+    h.db.userPermissionOverride.findMany.mockResolvedValue([]);
+    const summary = await getPermissionSummary("u1");
+    expect(summary.keys).toContain("admin.teams:view");
+  });
 });
 ```
 
@@ -345,6 +399,7 @@ describe("D5/F2 — 메뉴 노출 ≠ 데이터 범위", () => {
 - `npm run lint` → 0 errors (boundaries 포함).
 
 ## Cautions
+- **Don't** `getEffectiveScope`/`getPermissionSummary`에서 `allowedScopes(resource)` clamp를 빠뜨린다. Reason: clamp 없이 any-scope summary면 `override-panel`(증분 ①)로 만든 비-scopeable resource(admin.*/workflows.*)의 team/own override가 effective scope를 non-null로 만든다 → 서버 페이지가 summary 키를 가드로 쓰고 직접 데이터를 읽으므로(task-03/06 page.tsx) **requirePermission(all-only)이 막을 데이터가 페이지 경로로 샌다**(F-A high). clamp는 `effectiveScope`의 두 호출부(getEffectiveScope·getPermissionSummary)에 **모두** 필요. requirePermissionForTarget은 getEffectiveScope 경유라 자동 상속.
 - **Don't** `computeDecision`·`hasPermission`·`requirePermission` 시그니처/의미를 바꾼다. Reason: 공유 커널 서버 authz 가드. any-scope로 새면 team/own grant가 unscoped allow가 된다(F2, D4 자기모순). any-scope는 `getPermissionSummary`만.
 - **Don't** `assigned`를 SCOPE_RANK/widestEnforceable에 넣는다. Reason: 미해석 scope가 좁은 유효 grant를 가린다(F1).
 - **Don't** requirePermissionForTarget에서 actor.teamId null일 때 team 매칭을 통과시킨다. Reason: `null === null`이 무소속 버킷 전체를 매칭(F9). target.teamId null 가드 + me.teamId null 가드 둘 다 필요.

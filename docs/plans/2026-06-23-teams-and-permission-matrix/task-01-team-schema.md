@@ -240,3 +240,4 @@ COMMIT;
 - **Don't** raw SQL에서 bare `"User"`/`"Team"`을 쓴다. Reason: search_path 의존으로 잘못된 relation을 타거나 실패(F6). 항상 `kernel."..."`.
 - **Don't** department→Team을 trim/lower 정규화한다. Reason: 정확 매칭으로 결정성 보존. 공백/대소문자 변형 중복은 admin이 `/admin/teams` 리네임으로 병합(16명 규모, 허용). 사전 단언이 미이관 0을 보장.
 - **Don't** leadUserId를 이관 시 채운다. Reason: D2 step5 — 팀장은 이후 `/admin/teams`에서 지정(불변식 검증 경유).
+- **참고(F8 allowlist):** 이 task가 만드는 `prisma/migrate-helpers/department-to-team.ts`·`tests/prisma/team-migration.test.ts`는 `department`를 정당하게 포함하는 **마이그레이션 아티팩트**다(reader 아님). task-07의 F8 게이트 ALLOWLIST에 등재되어 drop 후에도 게이트를 통과한다 — 여기서 `department`를 teamId로 바꾸려 하지 말 것(이관 로직/검증 본체).

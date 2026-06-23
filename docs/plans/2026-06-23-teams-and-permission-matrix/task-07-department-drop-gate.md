@@ -20,49 +20,68 @@
 
 ### 1. F8 게이트 스크립트(실패 우선 — 잔존 참조가 있으면 fail)
 
-`scripts/check-no-department.mjs` — node 단독(rg 의존 회피, 크로스플랫폼):
+`scripts/check-no-department.mjs` — node 단독(rg 의존 회피, 크로스플랫폼). **스캔 범위 = 엔트리포인트 F8 계약(`src`+`tests`+`prisma`, `migrations/` 제외)**. `department`를 정당하게 포함하는 **마이그레이션 아티팩트는 명시 allowlist로 제외**(reader가 아니라 이관 로직/검증). 게이트 로직(`WORD`/`ALLOWLIST`/`findHits`)을 export해 자체 테스트가 실제 동작을 검증한다(F-C — 자기모순 제거):
 ```js
-// F8 게이트: 마이그레이션·문서 외 소스/테스트/seed에 `department` 단어가 0건이어야 통과.
+// F8 게이트: 마이그레이션·allowlist 외 src/tests/prisma에 `department` 단어가 0건이어야 통과.
 // department 컬럼 drop(task-07) 전 전수 전환을 기계 검증한다(spec §10 F8 DEFERRED_TO_IMPL).
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, sep } from "node:path";
+import { join, sep, posix } from "node:path";
+import { pathToFileURL } from "node:url";
 
-const ROOTS = ["src", "tests"];
-const EXTRA_FILES = ["prisma/seed.ts", "prisma/seed-roles.ts", "prisma/seed-permissions.ts", "prisma/seed-demo.ts", "prisma/schema.prisma"];
-const EXCLUDE_DIRS = new Set(["node_modules", ".next", "migrations"]);
-const EXT = /\.(ts|tsx|mjs|js|prisma)$/;
-const WORD = /\bdepartment\b/i;
+export const ROOTS = ["src", "tests", "prisma"];                       // 엔트리포인트 F8 계약 범위(prisma 포함)
+export const EXCLUDE_DIRS = new Set(["node_modules", ".next", "migrations"]); // 마이그레이션 SQL은 department 포함이 정상
+export const EXT = /\.(ts|tsx|mjs|js|prisma)$/;
+export const WORD = /\bdepartment\b/i;
 
-const hits = [];
-function scanFile(path) {
-  let text;
-  try { text = readFileSync(path, "utf8"); } catch { return; }
-  text.split(/\r?\n/).forEach((line, i) => { if (WORD.test(line)) hits.push(`${path}:${i + 1}: ${line.trim()}`); });
+// 마이그레이션 산출물 — department를 정당하게 포함(이관 로직/검증). reader가 아니므로 drop과 무관.
+// posix(슬래시) 상대경로 정확 일치. 항목 추가 시 "왜 정당한지" 주석 필수(보수성 유지).
+export const ALLOWLIST = new Set([
+  "prisma/migrate-helpers/department-to-team.ts", // 이관 SQL 빌더(task-01) — department→Team 변환 본체
+  "tests/prisma/team-migration.test.ts",          // expand/drop 마이그레이션 SQL 적합성 단언(task-01·07)
+  "tests/scripts/check-no-department.test.ts",     // 이 게이트의 자체 테스트(allowlist 동작 검증)
+]);
+
+const toPosix = (p) => p.split(sep).join(posix.sep);
+// 한 파일의 department 히트 목록(allowlist면 빈 배열). 테스트가 직접 호출하는 순수 함수.
+export function findHits(relPath, text) {
+  if (ALLOWLIST.has(toPosix(relPath))) return [];
+  const out = [];
+  text.split(/\r?\n/).forEach((line, i) => { if (WORD.test(line)) out.push(`${toPosix(relPath)}:${i + 1}: ${line.trim()}`); });
+  return out;
 }
-function walk(dir) {
+
+function walk(dir, hits) {
   for (const name of readdirSync(dir)) {
     if (EXCLUDE_DIRS.has(name)) continue;
     const p = join(dir, name);
     const st = statSync(p);
-    if (st.isDirectory()) walk(p);
-    else if (EXT.test(name)) scanFile(p);
+    if (st.isDirectory()) walk(p, hits);
+    else if (EXT.test(name)) {
+      let text; try { text = readFileSync(p, "utf8"); } catch { continue; }
+      hits.push(...findHits(p, text));
+    }
   }
 }
-for (const r of ROOTS) { try { walk(r); } catch {} }
-for (const f of EXTRA_FILES) { try { if (statSync(f)) scanFile(f.split("/").join(sep)); } catch {} }
 
-if (hits.length) {
-  console.error(`F8 게이트 실패 — 마이그레이션 외 department 참조 ${hits.length}건(drop 차단):`);
-  for (const h of hits) console.error("  " + h);
-  process.exit(1);
+export function runGate() {
+  const hits = [];
+  for (const r of ROOTS) { try { walk(r, hits); } catch {} }
+  if (hits.length) {
+    console.error(`F8 게이트 실패 — 마이그레이션/allowlist 외 department 참조 ${hits.length}건(drop 차단):`);
+    for (const h of hits) console.error("  " + h);
+    process.exit(1);
+  }
+  console.log("F8 게이트 통과 — department 참조 0건(allowlist 제외).");
 }
-console.log("F8 게이트 통과 — department 참조 0건.");
+
+// CLI 직접 실행일 때만 게이트 수행(테스트 import 시에는 실행 안 됨).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) runGate();
 ```
 `package.json` scripts에 추가:
 ```json
     "check:no-department": "node scripts/check-no-department.mjs",
 ```
-실행: `npm run check:no-department`. task-04·05가 완료됐으면 **통과**해야 한다. **잔존 참조가 잡히면 그 파일을 teamId/teamName으로 마저 전환**(이 task의 본 작업 — 게이트가 누락을 드러냄). 0건이 될 때까지 반복.
+실행: `npm run check:no-department`. task-04·05가 완료됐으면 **통과**해야 한다. **잔존 참조가 잡히면 그 파일을 teamId/teamName으로 마저 전환**(이 task의 본 작업 — 게이트가 누락을 드러냄). 0건이 될 때까지 반복. 새 마이그레이션 아티팩트가 정당하게 `department`를 포함하면 ALLOWLIST에 경로+이유를 추가(무분별 추가 금지 — reader는 전환해야 함).
 
 ### 2. schema에서 department 제거
 
@@ -109,18 +128,33 @@ COMMIT;
     expect(sql.indexOf("RAISE EXCEPTION")).toBeLessThan(sql.indexOf("DROP COLUMN"));
   });
   ```
-- **F8 게이트 자체 테스트**(스크립트가 잔존 참조를 잡는지): `tests/scripts/check-no-department.test.ts` — 임시 문자열에 `WORD` 정규식을 적용해 매칭/비매칭 검증(스크립트의 `WORD`를 export하거나 정규식을 테스트에 복제). 간단히:
+- **F8 게이트 자체 테스트**(스크립트 실제 로직 import — 정규식 복제 아님, 드리프트 방지): `tests/scripts/check-no-department.test.ts`. 이 파일은 ALLOWLIST에 있어 `department` 리터럴을 자유롭게 포함할 수 있다(자기모순 제거 — F-C). `findHits`/`ALLOWLIST`/`WORD`를 import해 동작을 검증한다:
   ```ts
   import { describe, it, expect } from "vitest";
-  const WORD = /\bdepartment\b/i;
-  describe("F8 게이트 정규식", () => {
-    it("department 단어를 잡는다", () => { expect(WORD.test('select: { department: true }')).toBe(true); });
-    it("teamId만 있는 줄은 안 잡는다", () => { expect(WORD.test('select: { teamId: true }')).toBe(false); });
-    it("departmental 같은 부분일치는 단어경계로 잡되, 의도된 식별자 department는 모두 포함", () => {
-      expect(WORD.test('const departmentName = x')).toBe(true); // \b 뒤 단어 시작 — 보수적으로 잡힘(오탐 시 수동 화이트리스트)
+  import { findHits, ALLOWLIST, WORD } from "../../scripts/check-no-department.mjs";
+
+  describe("F8 게이트 로직", () => {
+    it("비-allowlist 파일의 department 줄을 잡는다", () => {
+      expect(findHits("src/foo.ts", "select: { department: true }")).toHaveLength(1);
+    });
+    it("teamId만 있는 줄은 안 잡는다", () => {
+      expect(findHits("src/foo.ts", "select: { teamId: true }")).toHaveLength(0);
+    });
+    it("allowlist 파일은 department가 있어도 0건(마이그레이션 아티팩트 제외)", () => {
+      expect(findHits("prisma/migrate-helpers/department-to-team.ts", 'SELECT "department"')).toHaveLength(0);
+      expect(findHits("tests/prisma/team-migration.test.ts", '"department" IS NOT NULL')).toHaveLength(0);
+    });
+    it("ALLOWLIST는 이관 헬퍼/테스트를 정확히 포함(posix 경로)", () => {
+      expect(ALLOWLIST.has("prisma/migrate-helpers/department-to-team.ts")).toBe(true);
+      expect(ALLOWLIST.has("tests/prisma/team-migration.test.ts")).toBe(true);
+    });
+    it("WORD는 단어경계(teamId 미일치, department 일치)", () => {
+      expect(WORD.test("teamId")).toBe(false);
+      expect(WORD.test("department")).toBe(true);
     });
   });
   ```
+  (import 시 `runGate()`는 실행되지 않는다 — 스크립트가 CLI 진입점일 때만 돈다. vitest가 `.mjs` import를 처리하는지 확인 — esbuild 변환 대상. 안 되면 동일 로직의 `.ts` 모듈로 분리하고 `.mjs`가 re-export.)
 
 ### 5. 전수 게이트 통과 + 커밋
 
@@ -147,4 +181,6 @@ npm run build                 # 성공
 - **Don't** F8 게이트(`check:no-department`) 미통과 상태로 department를 drop. Reason: 잔존 reader가 런타임/컴파일 실패(F8 critical). 게이트가 0건일 때만 진행.
 - **Don't** drop 마이그레이션을 재단언 없이 작성. Reason: 미이관 멤버십이 남은 채 source를 지우면 복구 불가(§4 step3·F6).
 - **Don't** 이 task를 task-04·05 완료 전에 실행. Reason: reader가 남아 typecheck/게이트가 실패한다. PD1 contract는 **마지막**.
-- **Don't** 게이트 오탐(예: 주석의 "department" 역사 설명)을 무시하고 통과시키려 정규식을 느슨하게. Reason: 게이트의 보수성이 F8 안전. 정말 무해한 잔존은 해당 줄을 수정(삭제/teamId로 표현)해 0건을 만든다.
+- **Don't** 게이트 오탐을 통과시키려 `WORD` 정규식을 느슨하게. Reason: 게이트의 보수성이 F8 안전. 정말 무해한 잔존은 해당 줄을 수정(삭제/teamId로 표현)해 0건을 만든다.
+- **Don't** reader(런타임에 `department`를 읽는 코드)를 ALLOWLIST에 넣어 게이트를 통과시킨다. Reason: ALLOWLIST는 **마이그레이션 아티팩트**(이관 SQL 빌더·이관/ drop 적합성 테스트·게이트 자체 테스트)만 — reader는 반드시 teamId로 전환. allowlist 남용은 F8(drop 후 런타임 실패)을 되살린다.
+- **Don't** 게이트 자체 테스트에서 `WORD` 정규식을 복제. Reason: 스크립트의 `findHits`/`WORD`/`ALLOWLIST`를 import해 실제 로직을 검증해야 드리프트가 없다(자기 테스트가 allowlist에 있어 `department` 리터럴 자유 — F-C 자기모순 제거의 핵심).
