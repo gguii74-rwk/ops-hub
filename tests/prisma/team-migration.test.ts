@@ -64,3 +64,12 @@ describe("배포 migration.sql ↔ helper 정합(F-M)", () => {
     expect(sql).not.toMatch(/DROP\s+COLUMN\s+"department"/i);
   });
 });
+
+// task-07: drop 마이그레이션 재단언 정합성
+describe("drop 마이그레이션 SQL 정합(task-07)", () => {
+  const sql = readFileSync("prisma/migrations/20260623200000_drop_department/migration.sql", "utf8");
+  it("drop 마이그레이션은 drop 전 미이관 0 재단언을 포함한다", () => {
+    expect(sql).toMatch(/"department" IS NOT NULL AND "teamId" IS NULL/);
+    expect(sql.indexOf("RAISE EXCEPTION")).toBeLessThan(sql.indexOf("DROP COLUMN"));
+  });
+});

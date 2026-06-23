@@ -176,7 +176,6 @@ model User {
   email          String         @unique
   passwordHash   String?        // 변경: nullable — 자가가입은 set-password 전까지 null(C안). 관리자추가/시드는 즉시 설정
   name           String
-  department     String?
   position       String?
   joinDate       DateTime?
   employmentType EmploymentType

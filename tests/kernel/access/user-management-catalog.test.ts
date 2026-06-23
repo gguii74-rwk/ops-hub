@@ -9,6 +9,7 @@ const ADMIN_ROLE = [
   "admin.settings:configure", "admin.audit:view",
   "admin.navigation:view", "admin.navigation:configure",
   "admin.teams:view", "admin.teams:configure",
+  "admin.roles:view",
 ];
 
 describe("user-management catalog·seed (task-01)", () => {

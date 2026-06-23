@@ -63,7 +63,7 @@ function jsonReq(body: unknown, ip = "1.2.3.4") {
   });
 }
 const validSignup = {
-  email: "new@x.com", name: "신규", employmentType: "REGULAR", jobFunction: "DEVELOPER", department: null,
+  email: "new@x.com", name: "신규", employmentType: "REGULAR", jobFunction: "DEVELOPER",
 };
 
 beforeEach(() => {

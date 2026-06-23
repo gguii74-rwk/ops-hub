@@ -29,7 +29,7 @@ export const adminCreateSchema = z.object({
 });
 
 // ── 승인(확정): 고용형태·직무·systemRole·역할 확정. roleKeys 빈 배열 허용. ──
-// NF2: name·department는 선택(기존 호출 호환). 승인이 프로필 권위 — admin 입력값이 사용자 self-input을 덮어쓴다.
+// NF2: name은 선택(기존 호출 호환). 승인이 프로필 권위 — admin 입력값이 사용자 self-input을 덮어쓴다.
 export const approveSchema = z.object({
   employmentType, jobFunction, systemRole,
   roleKeys: z.array(z.string()).default([]),
