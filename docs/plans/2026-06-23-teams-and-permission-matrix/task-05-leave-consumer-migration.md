@@ -14,6 +14,7 @@
 - Modify: `src/modules/leave/services/users.ts` (`listActiveUsers` select teamId)
 - Modify: `src/app/api/admin/leave/status/export/route.ts` (부서→팀 컬럼)
 - Modify: `src/app/(app)/leave/_components/{status-client,admin-history,user-select}.tsx`, `src/app/(app)/leave/manage/approvals-client.tsx` (teamName 표시)
+- Modify: `src/app/(app)/leave/history/page.tsx`, `src/app/(app)/leave/calendar/page.tsx` (직접입력 버튼 게이트를 effective-scope-all로 — F-G)
 - Modify (tests): `tests/modules/leave/{calendar-service,status-service,list-with-user,requests-service,mail-wiring,mail-drain}.test.ts`, `tests/app/api/leave/calendar-route.test.ts`, `tests/app/components/history-page.test.ts`
 
 ## Prep
@@ -326,6 +327,16 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
 ```
 (reject도 동일하게 requirePermission 제거, `reject(id, userId, reason)` 호출.)
 
+### 5b. 직접입력(create+자동승인) = all-scope 전용 — UI 게이트 정합(F-G)
+
+`leave.approval:approve`가 scopeable(team)이 되면 any-scope `getPermissionSummary`가 team-scope 승인자에게도 키를 노출한다. 그런데 **직접입력**(`POST /api/admin/leave/requests` 자동승인 + 대상 picker `/api/admin/leave/users`)은 임의 사용자에 대한 create+자동승인이라 **본 증분에서 scope-aware로 이행하지 않는다**(create 흐름 전체를 team으로 좁히는 건 OUT — 승인 큐만 team). 두 라우트는 **all-scope `requirePermission(leave.approval, approve)` 유지**(이미 그러함, fail-closed). 따라서 **직접입력 UI 트리거를 summary 키가 아니라 effective scope=all로 게이트**해 team-scope 승인자에게 버튼이 보였다가 403나는 불일치(F5-class)를 막는다.
+
+- `src/app/(app)/leave/history/page.tsx`(줄 16): `canApprove={set.has("leave.approval:approve")}` → `canApprove={(await getEffectiveScope(session.user.id, "leave.approval", "approve")) === "all"}` (admin-history에서 canApprove는 직접입력 버튼 게이트 전용 — 줄 109).
+- `src/app/(app)/leave/calendar/page.tsx`(줄 11): `canManage={set.has("leave.approval:approve")}` → `canManage={(await getEffectiveScope(session.user.id, "leave.approval", "approve")) === "all"}` (LeaveCalendar의 "+ 연차 입력" 게이트).
+- `getEffectiveScope` import 추가. **라우트는 변경 없음**(all-scope 유지가 정답 — team-scope 승인자는 직접입력 불가, 승인 큐로만 자기 팀 처리).
+
+(이렇게 하면 team-scope 승인자: 승인 큐·승인 액션 O / 직접입력 버튼 미노출·라우트 403 — 일관. all-scope 승인자: 둘 다 O.)
+
 ### 6. status.ts / users.ts / export — teamId/teamName
 
 **status.ts**: `EmployeeStatus.department` → `teamName: string | null`; select `department: true` → `teamId: true, team: { select: { name: true } }`; 매핑 `department: u.department` → `teamName: u.team?.name ?? null`.
@@ -350,6 +361,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   - team-scope 승인자가 타 팀 신청 `approve` → ForbiddenError(사전 `requirePermissionForTarget`).
   - 무소속(teamId null) team-scope 승인자 `listApprovalQueue` → ForbiddenError(F9).
   - **getRequest(PD3):** team-scope 승인자가 **자기 팀** PENDING 단건은 조회 OK, **타 팀** PENDING 단건은 ForbiddenError(any-scope summary 과허가 차단). all-scope는 둘 다 OK.
+  - **F-G 직접입력 all-scope 게이트(필수):** team-scope `leave.approval:approve` 보유자 → history/calendar page의 `canApprove`/`canManage`가 **false**(effective scope ≠ "all" → 직접입력 버튼 미노출). all-scope면 true. (페이지 단위 테스트 — `getEffectiveScope` mock.) 라우트 자체는 all-scope 유지라 team-scope → 403(기존 가드, 회귀 확인).
   - **F-D 원자 재점검(필수 — actor·applicant 둘 다):** `approveTx`/`rejectRequest`에 `authz={actorId,applicantId,scope:"team"}`를 주고, in-tx 잠금 조회(`$queryRaw` mock)가 반환하는 **현재** 팀으로:
     - actor "A" / applicant "A" → 정상 진행(status `updateMany` 호출).
     - **applicant 재배정** actor "A" / applicant "B" → ForbiddenError, status/메일 미호출.
@@ -382,6 +394,7 @@ it("무소속 team-scope 승인자는 목록 거부(F9)", async () => {
 - 범위 내 `department` 참조 0(전역 게이트 task-07).
 - 수동: team-scope `leave.approval` 부여 사용자(매트릭스로) → 자기 팀 승인 큐만, 타 팀 승인 403.
 - **F-D 원자성**: `approveTx`/`rejectRequest`의 in-tx **actor+applicant** `FOR UPDATE` 재점검 테스트 GREEN(actor 또는 applicant 재배정 시뮬레이션 시 ForbiddenError + 상태/메일 미실행).
+- **F-G 직접입력 게이트**: team-scope 승인자 → 직접입력 버튼 미노출(canApprove/canManage=false) + 라우트 403(all-scope 유지).
 
 ## Cautions
 - **Don't** approvals route에서 `requirePermission(leave.approval,view)`(all-scope)를 유지. Reason: team-scope 승인자가 막힌다(메뉴는 보이는데 목록 403, F5 역). 목록은 `getEffectiveScope` 경유.
@@ -389,3 +402,4 @@ it("무소속 team-scope 승인자는 목록 거부(F9)", async () => {
 - **Don't** team-scope 승인의 target 점검을 트랜잭션 **밖**에서만 하거나 precomputed `actorTeamId`를 권위로 쓴다. Reason: 팀 소속이 가변(admin 재배정)이라 점검과 상태 CAS 사이 **actor·applicant 둘 다** 재배정될 수 있다(F-D TOCTOU — actor가 A→B로 옮겨도 stale "A"로 구팀 승인 가능). 사전 `requirePermissionForTarget`은 빠른 403일 뿐, **권위 점검은 tx 내부에서 actor·applicant 두 행을 `FOR UPDATE` 잠그고 현재 teamId를 비교**하는 것이 SSOT.
 - **Don't** `getLeaveAdminRecipients`를 인자 없이 호출하는 곳을 남긴다. Reason: 시그니처 변경(applicantTeamId 필수) — requests.ts enqueue·mail.ts drain 둘 다 갱신. 누락 시 typecheck 실패.
 - **Don't** 무소속 team-scope actor를 `teamId=null`로 필터링. Reason: null 팀 버킷 전체 노출(F9). null이면 거부.
+- **Don't** 직접입력(`POST /api/admin/leave/requests`·`/api/admin/leave/users`) 라우트를 team-scope로 열거나 그 UI를 summary 키로 게이트한다. Reason: 직접입력=임의 사용자 create+자동승인(본 증분 OUT). 라우트는 all-scope 유지, UI는 effective-scope-all로 게이트해야 team-scope 승인자에게 버튼이 보였다 403나는 불일치가 없다(F-G).

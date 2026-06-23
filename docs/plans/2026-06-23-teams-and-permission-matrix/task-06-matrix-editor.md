@@ -14,7 +14,7 @@
 - Create: `src/app/api/admin/roles/[roleId]/permissions/[permissionId]/route.ts` (PUT)
 - Create: `src/app/(app)/admin/roles/page.tsx` + `_components/matrix-editor.tsx`
 - Create: `prisma/migrate-helpers/teams-upgrade.ts` (업그레이드-once 로직 — 테스트 가능하게 추출)
-- Create: `tests/modules/admin/roles/matrix-service.test.ts`, `tests/kernel/access/roles-catalog.test.ts`, `tests/prisma/seed-bootstrap.test.ts`, `tests/prisma/teams-upgrade.test.ts`
+- Create: `tests/modules/admin/roles/matrix-service.test.ts`, `tests/modules/admin/roles/matrix-repo.test.ts`(F-H in-tx OWNER 재확인), `tests/kernel/access/roles-catalog.test.ts`, `tests/prisma/seed-bootstrap.test.ts`, `tests/prisma/teams-upgrade.test.ts`
 
 ## Prep
 - 엔트리포인트 §Shared Contracts "scope 엔진"(`allowedScopes`/`SCOPEABLE_RESOURCES`), "seed 부트스트랩화 + 업그레이드", "PD2", "감사 로그 패턴".
@@ -208,6 +208,7 @@ export type SetCellInput = z.infer<typeof setCellSchema>;
 ```ts
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { ForbiddenError } from "@/kernel/access";
 
 export interface MatrixData {
   roles: Array<{ id: string; key: string; name: string }>;
@@ -225,11 +226,19 @@ export async function getMatrix(): Promise<MatrixData> {
 }
 
 // scope가 unique 키의 일부라 scope 변경 = 행 치환. 같은 (role,permission)의 모든 scope 행을 지우고 none이 아니면 1행 생성.
+// F-H: OWNER 권위 점검을 **이 쓰기 트랜잭션 내부에서** actor를 잠그고 재확인한다. 서비스의 assertOwner는 빠른 pre-check일 뿐,
+// precheck 이후 actor가 강등(OWNER→ADMIN)·비활성·must-change로 바뀌면 stale 권한으로 매트릭스(최고위험 op)를 바꿀 수 있다.
 export async function setCell(
   roleId: string, permissionId: string,
   effect: "none" | "ALLOW" | "DENY", scope: string, actorId: string,
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
+    // actor 행 잠금 + 현재 OWNER/상태 재확인(precheck 이후 강등 race 차단). 동시 강등 UPDATE와 직렬화.
+    await tx.$queryRaw`SELECT 1 FROM "kernel"."User" WHERE "id" = ${actorId} FOR UPDATE`;
+    const actor = await tx.user.findUnique({ where: { id: actorId }, select: { systemRole: true, status: true, mustChangePassword: true } });
+    if (!actor || actor.status !== "ACTIVE" || actor.mustChangePassword || actor.systemRole !== "OWNER") {
+      throw new ForbiddenError("권한 매트릭스 편집은 OWNER만 가능합니다."); // 롤백 — 셀 변경·감사 없음
+    }
     const before = await tx.rolePermission.findFirst({ where: { roleId, permissionId }, select: { effect: true, scope: true } });
     await tx.rolePermission.deleteMany({ where: { roleId, permissionId } });
     if (effect !== "none") {
@@ -267,7 +276,8 @@ async function assertOwner(actorId: string): Promise<void> {
 }
 
 export async function setRoleCell(actorId: string, roleId: string, permissionId: string, input: SetCellInput): Promise<void> {
-  // 1) configure 키(OWNER 전용 시드 → OWNER만 통과) + 2) 명시적 OWNER 단언(방어선, D7).
+  // 1) configure 키(OWNER 전용 시드 → OWNER만 통과) + 2) 명시적 OWNER 단언(빠른 pre-check, D7).
+  //    ※ 권위 OWNER 점검은 setCell **트랜잭션 내부**에서 actor를 잠그고 재확인(F-H — precheck 이후 강등 race 차단). 여기 둘은 fast-fail.
   await requirePermission(actorId, "admin.roles", "configure");
   await assertOwner(actorId);
 
@@ -504,11 +514,52 @@ describe("setRoleCell 가드", () => {
 });
 ```
 
+**F-H — `setCell` in-tx OWNER 재확인**(repository, setCell을 mock하지 않는 별도 파일) `tests/modules/admin/roles/matrix-repo.test.ts`:
+```ts
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const h = vi.hoisted(() => {
+  const tx = {
+    $queryRaw: vi.fn(),
+    user: { findUnique: vi.fn() },
+    rolePermission: { findFirst: vi.fn(), deleteMany: vi.fn(), create: vi.fn() },
+    auditLog: { create: vi.fn() },
+  };
+  return { tx, db: { $transaction: vi.fn(async (fn: (t: typeof tx) => unknown) => fn(tx)) } };
+});
+vi.mock("@/lib/prisma", () => ({ prisma: h.db }));
+
+import { setCell } from "@/modules/admin/roles/repositories";
+import { ForbiddenError } from "@/kernel/access";
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.tx.$queryRaw.mockResolvedValue([]);
+  h.tx.rolePermission.findFirst.mockResolvedValue(null);
+  h.tx.rolePermission.deleteMany.mockResolvedValue({ count: 0 });
+});
+
+describe("setCell in-tx OWNER 재확인(F-H)", () => {
+  it("tx 내부에서 actor가 더 이상 OWNER가 아니면 거부 + 셀/감사 미기록", async () => {
+    h.tx.user.findUnique.mockResolvedValue({ systemRole: "ADMIN", status: "ACTIVE", mustChangePassword: false }); // precheck 이후 강등
+    await expect(setCell("r1", "p1", "ALLOW", "all", "actor")).rejects.toBeInstanceOf(ForbiddenError);
+    expect(h.tx.rolePermission.deleteMany).not.toHaveBeenCalled();
+    expect(h.tx.auditLog.create).not.toHaveBeenCalled();
+  });
+  it("OWNER면 정상 치환 + 감사", async () => {
+    h.tx.user.findUnique.mockResolvedValue({ systemRole: "OWNER", status: "ACTIVE", mustChangePassword: false });
+    await setCell("r1", "p1", "ALLOW", "all", "actor");
+    expect(h.tx.rolePermission.create).toHaveBeenCalled();
+    expect(h.tx.auditLog.create).toHaveBeenCalled();
+  });
+});
+```
+
 ### 10. 통과 + 커밋
-`npm test -- matrix-service roles-catalog seed-bootstrap teams-upgrade` 통과.
+`npm test -- matrix-service matrix-repo roles-catalog seed-bootstrap teams-upgrade` 통과.
 
 ## Acceptance Criteria
-- `npm test -- matrix-service roles-catalog seed-bootstrap teams-upgrade` → PASS (F4 포함).
+- `npm test -- matrix-service matrix-repo roles-catalog seed-bootstrap teams-upgrade` → PASS (F4 + F-H 포함).
 - `npm run typecheck` → 0 errors.
 - `npm run lint` → 0 errors (admin/roles 경계).
 - `npm run prisma:validate` → valid.
@@ -520,3 +571,4 @@ describe("setRoleCell 가드", () => {
 - **Don't** step3 `deleteMany`를 유지하거나 부트스트랩을 무조건 실행. Reason: 비어있지 않은 DB(UI 편집)를 코드값으로 덮어쓴다(D9 정면 위배). count===0 가드 필수.
 - **Don't** 업그레이드 블록을 플래그 없이 매 seed 실행. Reason: OWNER가 편집기로 제거한 grant를 재seed가 되살린다(UI 진실원 위배). 플래그로 1회.
 - **Don't** 셀 변경 감사를 누락. Reason: 권한 재정의는 최상위 행위(D7) — before/after 필수.
+- **Don't** OWNER 권위 점검을 setCell 쓰기 트랜잭션 **밖**에서만 한다. Reason: precheck(assertOwner) 이후 강등·비활성·must-change로 바뀐 actor가 stale 권한으로 매트릭스(god-power)를 바꿀 수 있다(F-H stale-authz). 권위 점검은 tx 내부에서 actor 행 `FOR UPDATE` 잠금 + 재확인.
