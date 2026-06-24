@@ -3,8 +3,7 @@ import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-
-const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
+import { Select } from "@/components/ui/select";
 
 type EmploymentType = "REGULAR" | "CONTRACTOR";
 type JobFunction = "PM" | "DEVELOPER" | "CONTENT_MANAGER" | "CIVIL_RESPONSE";
@@ -72,15 +71,15 @@ export function SignupForm() {
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label>고용형태</Label>
-          <select className={selectCls} value={employmentType} onChange={(e) => setEmploymentType(e.target.value as EmploymentType)}>
+          <Select value={employmentType} onChange={(e) => setEmploymentType(e.target.value as EmploymentType)}>
             {EMPLOYMENT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
+          </Select>
         </div>
         <div className="space-y-1">
           <Label>직무</Label>
-          <select className={selectCls} value={jobFunction} onChange={(e) => setJobFunction(e.target.value as JobFunction)}>
+          <Select value={jobFunction} onChange={(e) => setJobFunction(e.target.value as JobFunction)}>
             {JOB_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
+          </Select>
         </div>
       </div>
       {status === "error" ? <p className="text-sm text-destructive">{errorMsg}</p> : null}

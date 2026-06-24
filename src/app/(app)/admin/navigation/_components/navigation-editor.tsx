@@ -8,9 +8,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { isKnownInternalRoute } from "@/modules/admin/navigation/href";
-
-const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
 
 export interface NavRowDto {
   id: string;
@@ -229,10 +228,10 @@ export function NavigationEditor({
               <div className="grid gap-1.5">
                 <Label>부모 메뉴</Label>
                 <div className="flex gap-2">
-                  <select className={selectCls} value={form.parentId} onChange={(e) => set("parentId", e.target.value)}>
+                  <Select value={form.parentId} onChange={(e) => set("parentId", e.target.value)}>
                     <option value="">— 대메뉴(최상위) —</option>
                     {parents.filter((p) => p.id !== editingId).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-                  </select>
+                  </Select>
                   {editingId && (
                     <Button
                       size="sm"
@@ -251,11 +250,11 @@ export function NavigationEditor({
               </div>
               <div className="grid gap-1.5">
                 <Label>필요 권한</Label>
-                <select className={selectCls} value={form.permissionSelect} onChange={(e) => set("permissionSelect", e.target.value)}>
+                <Select value={form.permissionSelect} onChange={(e) => set("permissionSelect", e.target.value)}>
                   <option value="">— 권한 선택 —</option>
                   <option value={PUBLIC_OPTION}>공개 — 로그인한 모든 사용자</option>
                   {permissions.map((p) => <option key={p.id} value={p.id}>{permLabel(p)}</option>)}
-                </select>
+                </Select>
                 <RolePreview permissionId={requiredPermissionIdOf(form)} selected={form.permissionSelect} />
               </div>
               {save.isError && <p className="text-sm text-destructive">{(save.error as Error).message}</p>}
