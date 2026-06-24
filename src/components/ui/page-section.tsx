@@ -11,14 +11,21 @@ function PageHeader({
   title,
   subtitle,
   actions,
+  eyebrow,
 }: {
   title: React.ReactNode;
   subtitle?: React.ReactNode;
   actions?: React.ReactNode;
+  eyebrow?: React.ReactNode;
 }) {
   return (
     <div className="flex items-start justify-between gap-3">
       <div className="space-y-1">
+        {eyebrow ? (
+          <p data-slot="eyebrow" className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+            {eyebrow}
+          </p>
+        ) : null}
         <h1 className="font-display text-2xl font-semibold tracking-tight">{title}</h1>
         {subtitle ? <p className="text-sm text-muted-foreground">{subtitle}</p> : null}
       </div>
