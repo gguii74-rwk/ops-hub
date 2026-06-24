@@ -164,6 +164,12 @@ src/app/{(auth),dashboard,workflows,leave,admin,api}/
 
 **두 세션 동시 작업 git 위생:** 같은 워킹트리를 구현 세션 + 보조 세션이 공유할 수 있다(실제 `index.lock` 충돌 발생). 커밋 전 `.git/index.lock` 존재를 확인하고, `git add -A` 대신 **변경 파일을 명시적으로 stage**해 다른 세션의 미커밋 작업과 섞이지 않게 한다.
 
+**PR 머지/편집:** 머지 전 `git rev-parse origin/<branch>`이 local HEAD와 일치하는지 확인한다(두 노트북·review-loop가 로컬에만 커밋을 쌓아, 미push 시 **옛 상태가 머지**된다). `gh pr edit`/`gh pr merge`(GraphQL)는 토큰에 `read:project` 스코프가 없으면 실패 → `gh api` REST로 우회(`-X PATCH repos/{owner}/{repo}/pulls/N -F body=@file` / `-X PUT repos/{owner}/{repo}/pulls/N/merge -f merge_method=merge`). 머지 컨벤션 = merge commit.
+
 ## dev 테스트 배포 (수동 — 배포 스크립트 없음)
 
 접속·경로·포트·DB는 workspace-env `INVENTORY.md`(SSOT) 참조. 절차: 대상 브랜치 checkout → `.env` 보강 → `npm ci` → `npx prisma migrate deploy` → `npm run db:seed`(새 권한 catalog 등록) → `npm run db:seed:demo`(테스트 데이터) → `npm run build` → `pm2 restart ops-hub`. **마이그레이션 대상은 우리 `opshub` DB — 같은 서버에 동거하는 safety_report 운영 DB는 절대 건드리지 말 것.** `psql "$DATABASE_URL"`은 Prisma 전용 `?schema=public`를 제거해야 동작한다.
+
+- `npm ci`는 postinstall이 없어 Prisma client를 재생성하지 않는다 → migrate/build 전에 `npm run prisma:generate` 명시 실행(스키마 변경 시 필수).
+- **비가역 마이그레이션(컬럼 drop 등)은 `pm2 restart` 금지 — full-stop:** build → `pm2 stop` → DB 백업(`pg_dump`) → `prisma migrate deploy` → `db:seed`(+`db:seed:demo`) → smoke → `pm2 start`. rolling 시 old 바이너리가 drop된 컬럼을 참조해 outage.
+- `psql`/`pg_dump`의 SQL 문자열 리터럴은 SSH 단일따옴표 명령 안에서 `$$..$$` 달러 인용(중첩 작은따옴표·`\x27` 미작동).
