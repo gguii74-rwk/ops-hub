@@ -90,8 +90,10 @@ CIVIL_RESPONSE
 | --- | --- |
 | OWNER | PM 또는 시스템 소유자. 모든 권한 허용 |
 | ADMIN | 사용자/설정 관리 가능 |
-| MANAGER | 일부 관리 권한 가능 |
+| ~~MANAGER~~ | **폐지(미사용)** — 권한 엔진에서 MEMBER와 동일했다. 신규 부여 차단 |
 | MEMBER | 일반 사용자 |
+
+> **MANAGER 폐지(2026-06-24)**: MANAGER는 권한 엔진에서 특권 없이 MEMBER와 동일하게 취급되어 실질 의미가 없었다. 신규 부여를 차단한다 — 사용자 편집 드롭다운(`SYSTEM_ROLE_OPTIONS`) 노출 제거 + 입력 검증(zod)에서 제외 + federation `ops-manager` 그룹 발급 중단. DB `SystemRole` enum 값과 TS 타입·라벨은 보존(비가역 마이그레이션 회피, 기존 데이터 표시 안전). 운영 등급은 **OWNER/ADMIN/MEMBER 3단계**다.
 
 세부 업무 권한은 `AccessRole`과 `Permission`으로 판단합니다.
 

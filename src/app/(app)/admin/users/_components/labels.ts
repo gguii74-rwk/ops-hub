@@ -36,7 +36,9 @@ export const SYSTEM_ROLE_LABEL: Record<SystemRole, string> = {
 
 export const EMPLOYMENT_OPTIONS = Object.keys(EMPLOYMENT_LABEL) as EmploymentType[];
 export const JOB_OPTIONS = Object.keys(JOB_LABEL) as JobFunction[];
-export const SYSTEM_ROLE_OPTIONS = Object.keys(SYSTEM_ROLE_LABEL) as SystemRole[];
+// MANAGER 폐지(미사용 coarse 등급) — 부여 드롭다운에서 제외해 신규 부여를 막는다.
+// SYSTEM_ROLE_LABEL엔 MANAGER를 남겨 둔다(기존 MANAGER 사용자 표시가 깨지지 않도록).
+export const SYSTEM_ROLE_OPTIONS = ["OWNER", "ADMIN", "MEMBER"] as SystemRole[];
 
 export const ROLE_OPTIONS: Array<{ key: string; label: string; privileged: boolean }> = [
   { key: "regular-developer", label: "정규 개발자", privileged: false },

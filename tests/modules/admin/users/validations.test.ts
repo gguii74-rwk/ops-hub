@@ -43,10 +43,13 @@ describe("adminCreateSchema", () => {
 describe("updateUserSchema / rolesSchema", () => {
   it("updateUser 부분 patch — 빈 객체도 통과(변경 없음)", () => {
     expect(updateUserSchema.safeParse({}).success).toBe(true);
-    expect(updateUserSchema.safeParse({ name: "수정", systemRole: "MANAGER" }).success).toBe(true);
+    expect(updateUserSchema.safeParse({ name: "수정", systemRole: "ADMIN" }).success).toBe(true);
   });
   it("updateUser 알 수 없는 systemRole 거부", () => {
     expect(updateUserSchema.safeParse({ systemRole: "ROOT" }).success).toBe(false);
+  });
+  it("updateUser MANAGER systemRole 거부(MANAGER 폐지 — 신규 부여 차단)", () => {
+    expect(updateUserSchema.safeParse({ systemRole: "MANAGER" }).success).toBe(false);
   });
   it("rolesSchema roleKeys 배열", () => {
     expect(rolesSchema.safeParse({ roleKeys: ["developer", "admin"] }).success).toBe(true);

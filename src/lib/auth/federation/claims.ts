@@ -13,7 +13,7 @@ export type ClaimsSource = Pick<SessionUser, "id" | "email" | "systemRole">;
 export function toGroups(user: ClaimsSource): string[] {
   const groups = ["kgs-user"];
   if (user.systemRole === "OWNER" || user.systemRole === "ADMIN") groups.push("ops-admin");
-  if (user.systemRole === "MANAGER") groups.push("ops-manager");
+  // MANAGER 폐지(미사용 coarse 등급) — ops-manager 그룹 미발급.
   return groups;
 }
 

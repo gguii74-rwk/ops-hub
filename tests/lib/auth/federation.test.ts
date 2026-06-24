@@ -29,8 +29,8 @@ describe("federation claims", () => {
     expect(toGroups({ ...base, systemRole: "ADMIN" })).toContain("ops-admin");
   });
 
-  it("MANAGER gets ops-manager", () => {
-    expect(toGroups({ ...base, systemRole: "MANAGER" })).toContain("ops-manager");
+  it("MANAGER는 그룹 가산 없음(MANAGER 폐지 — kgs-user만)", () => {
+    expect(toGroups({ ...base, systemRole: "MANAGER" })).toEqual(["kgs-user"]);
   });
 
   it("issueClaims exposes only sub/email/groups", () => {

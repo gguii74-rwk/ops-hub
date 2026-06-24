@@ -60,3 +60,15 @@ Accepted
 
 현재 선택안입니다. 단순한 RBAC를 기본으로 두고, employmentType/jobFunction과 JSON conditions를 필요한 곳에만 사용합니다.
 
+## 갱신
+
+### 2026-06-24 — MANAGER systemRole 폐지
+
+`systemRole`의 MANAGER는 구현상 권한 엔진(`kernel/access`)에서 MEMBER와 동일하게 취급되어(coarse 게이트·권한 부여 어디에도 연결되지 않음) 실질 역할이 없었다. 위임 관리는 ADMIN systemRole + `admin` AccessRole 조합으로 충분히 표현된다. 따라서 MANAGER **신규 부여를 비활성화**한다:
+
+- 사용자 편집 드롭다운(`SYSTEM_ROLE_OPTIONS`)에서 제외
+- 입력 검증(`validations`의 zod `systemRole`)에서 제외 → API 부여 거부
+- federation `ops-manager` 그룹 발급 중단
+
+DB `kernel.SystemRole` enum 값과 TS `SystemRole` 타입은 **보존**한다 — enum 값 제거는 Postgres에서 비가역 타입 재생성 마이그레이션이라 비용 대비 실익이 적고, 기존 MANAGER 데이터 표시를 위해 `SYSTEM_ROLE_LABEL`도 유지한다. 운영 등급은 **OWNER/ADMIN/MEMBER 3단계**로 운영한다.
+
