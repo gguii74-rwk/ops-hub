@@ -1,5 +1,7 @@
 import { auth } from "@/lib/auth";
 import { getPermissionSummary } from "@/kernel/access";
+import { PageSection } from "@/components/ui/page-section";
+import { EmptyState } from "@/components/ui/states";
 import { AllocationsClient } from "./allocations-client";
 
 export default async function AllocationsPage() {
@@ -8,13 +10,12 @@ export default async function AllocationsPage() {
   const set = new Set(keys);
   const canView = set.has("leave.allocation:view");
   return (
-    <section className="space-y-4">
-      <h1 className="font-display text-2xl font-semibold tracking-tight">연차 할당</h1>
+    <PageSection title="연차 할당">
       {!canView ? (
-        <p className="text-sm text-muted-foreground">할당 열람 권한이 없습니다.</p>
+        <EmptyState>할당 열람 권한이 없습니다.</EmptyState>
       ) : (
         <AllocationsClient canConfigure={set.has("leave.allocation:configure")} />
       )}
-    </section>
+    </PageSection>
   );
 }

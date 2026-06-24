@@ -1,4 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageHeader } from "@/components/ui/page-section";
 
 // 디자인 미리보기 데모 — 실제 지표가 아니라 브랜드 팔레트/Playfair 시연용 예시.
 // 라벨은 실제 도메인 용어가 아닌 중립 샘플로 두어 운영 데이터로 오인되지 않게 한다.
@@ -18,12 +19,14 @@ const trendChip: Record<"cyan" | "lime", string> = {
 export default function DashboardPage() {
   return (
     <section className="grid gap-4">
-      <div className="flex items-center gap-2">
-        <h1 className="text-xl font-semibold">대시보드</h1>
-        <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-          디자인 미리보기
-        </span>
-      </div>
+      <PageHeader
+        title="대시보드"
+        actions={
+          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+            디자인 미리보기
+          </span>
+        }
+      />
       <p className="text-sm text-muted-foreground">
         아래 카드는 브랜드 팔레트·타이포그래피 시연용 예시이며 실제 운영 데이터가 아닙니다.
       </p>

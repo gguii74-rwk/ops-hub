@@ -7,6 +7,7 @@ import { getIntegrationStatuses } from "@/modules/integrations";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { PageHeader } from "@/components/ui/page-section";
 import { SettingEditor } from "./settings-editor";
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -43,7 +44,7 @@ export default async function SettingsPage() {
 
   return (
     <section className="grid gap-6">
-      <h1 className="text-xl font-semibold">설정</h1>
+      <PageHeader title="설정" />
 
       {integrations.length > 0 ? (
         <Card>

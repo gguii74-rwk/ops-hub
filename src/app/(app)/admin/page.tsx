@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { hasPermission } from "@/kernel/access";
+import { PageSection } from "@/components/ui/page-section";
 
 export default async function AdminPage() {
   const session = await auth();
@@ -9,9 +10,8 @@ export default async function AdminPage() {
     redirect("/dashboard");
   }
   return (
-    <section className="grid gap-4">
-      <h1 className="text-xl font-semibold">관리</h1>
+    <PageSection title="관리">
       <p className="text-sm text-muted-foreground">좌측 메뉴에서 사용자 관리·메뉴 관리를 선택하세요.</p>
-    </section>
+    </PageSection>
   );
 }

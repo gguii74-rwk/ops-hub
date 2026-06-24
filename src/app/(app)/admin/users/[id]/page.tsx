@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { getPermissionSummary } from "@/kernel/access";
 import { listActiveTeamOptions } from "@/modules/admin/teams/services";
+import { PageSection } from "@/components/ui/page-section";
 import { UserEdit } from "./_components/user-edit";
 
 export default async function EditUserPage({ params }: { params: Promise<{ id: string }> }) {
@@ -16,9 +17,8 @@ export default async function EditUserPage({ params }: { params: Promise<{ id: s
   if (!keys.has("admin.users:view")) redirect("/dashboard");
 
   return (
-    <section className="mx-auto w-full max-w-2xl space-y-4">
-      <h1 className="font-display text-2xl font-semibold tracking-tight">사용자 편집</h1>
+    <PageSection title="사용자 편집" width="wide">
       <UserEdit userId={id} canUpdate={keys.has("admin.users:update")} teams={teams} />
-    </section>
+    </PageSection>
   );
 }
