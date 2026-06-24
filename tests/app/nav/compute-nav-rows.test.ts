@@ -33,6 +33,14 @@ describe("computeNavRows (active·targetHref)", () => {
     expect(rows.find((r) => r.key === "dashboard")!.targetHref).toBe("/dashboard");
   });
 
+  it("href=null 부모(권한 필터된 그룹 — D5)는 targetHref=null로 비링크 유지", () => {
+    // selectVisibleNav: 부모 자체 권한 실패 + 보이는 자식 있으면 href=null로 내려보냄(그룹 토글 계약).
+    const grouped: NavItem[] = [
+      { key: "admin", label: "관리", href: null, children: [leaf("admin-users", "/admin/users")] },
+    ];
+    expect(computeNavRows(grouped, "/dashboard").find((r) => r.key === "admin")!.targetHref).toBeNull();
+  });
+
   it("현재 경로가 자식이면 부모 active + 자식 active 표시", () => {
     const rows = computeNavRows(items, "/admin/users");
     const admin = rows.find((r) => r.key === "admin")!;

@@ -88,7 +88,8 @@ export function computeNavRows(items: NavItem[], pathname: string): NavRow[] {
       key: item.key, label: item.label,
       active: selfActive || childActive,
       // 부모 클릭 = 첫 중메뉴로 이동(부모 href가 placeholder인 경우 대비). leaf는 자기 href.
-      targetHref: item.children[0]?.href ?? item.href,
+      // href=null은 selectVisibleNav가 "부모 권한 실패 → 비링크 그룹 헤더"로 인코딩한 신호(D5) — 보존한다.
+      targetHref: item.href == null ? null : (item.children[0]?.href ?? item.href),
       children,
     };
   });

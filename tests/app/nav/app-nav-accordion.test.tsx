@@ -71,4 +71,17 @@ describe("AppNav 아코디언", () => {
     render(<AppNav items={items} />);
     expect(screen.getByRole("link", { name: "관리" }).getAttribute("href")).toBe("/admin/users");
   });
+
+  it("href=null 부모는 링크가 아니라 그룹 헤더 — 화살표로만 펼친다(D5 계약)", () => {
+    nav.pathname = "/dashboard";
+    const grouped: NavItem[] = [
+      { key: "admin", label: "관리", href: null, children: [
+        { key: "admin-users", label: "사용자 관리", href: "/admin/users", children: [] },
+      ] },
+    ];
+    render(<AppNav items={grouped} />);
+    expect(screen.queryByRole("link", { name: "관리" })).toBeNull(); // 부모는 비링크
+    fireEvent.click(screen.getByRole("button", { name: /관리 하위 메뉴/ }));
+    expect(screen.queryByText("사용자 관리")).not.toBeNull(); // 화살표로는 펼침 가능
+  });
 });
