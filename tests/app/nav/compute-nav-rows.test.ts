@@ -14,33 +14,43 @@ describe("isActiveHref", () => {
   });
 });
 
-describe("computeNavRows (D5 링크/토글·자동펼침)", () => {
+describe("computeNavRows (active·targetHref)", () => {
   const items: NavItem[] = [
     leaf("dashboard", "/dashboard"),
-    { key: "admin", label: "관리", href: null, children: [leaf("admin-navigation", "/admin/navigation")] }, // 토글 부모
-    { key: "leave", label: "연차", href: "/leave", children: [leaf("leave-status", "/leave/status")] },     // 링크 부모
+    // 부모 href(/admin)는 placeholder, 첫 자식은 /admin/users.
+    { key: "admin", label: "관리", href: "/admin", children: [leaf("admin-users", "/admin/users"), leaf("admin-teams", "/admin/teams")] },
+    { key: "leave", label: "연차", href: "/leave", children: [leaf("leave-dashboard", "/leave"), leaf("leave-request", "/leave/request")] },
   ];
 
-  it("href 있는 노드는 링크, null이면 토글", () => {
+  it("자식 있는 부모의 targetHref는 첫 자식 href(부모 클릭 시 첫 중메뉴로 이동)", () => {
     const rows = computeNavRows(items, "/dashboard");
-    expect(rows.find((r) => r.key === "dashboard")!.isLink).toBe(true);
-    expect(rows.find((r) => r.key === "admin")!.isLink).toBe(false);
-    expect(rows.find((r) => r.key === "leave")!.isLink).toBe(true);
+    expect(rows.find((r) => r.key === "admin")!.targetHref).toBe("/admin/users");
+    expect(rows.find((r) => r.key === "leave")!.targetHref).toBe("/leave");
   });
 
-  it("현재 경로가 자식이면 부모 active + 자동 펼침, 자식 active 표시", () => {
-    const rows = computeNavRows(items, "/admin/navigation");
+  it("자식 없는 leaf의 targetHref는 자기 href", () => {
+    const rows = computeNavRows(items, "/dashboard");
+    expect(rows.find((r) => r.key === "dashboard")!.targetHref).toBe("/dashboard");
+  });
+
+  it("href=null 부모(권한 필터된 그룹 — D5)는 targetHref=null로 비링크 유지", () => {
+    // selectVisibleNav: 부모 자체 권한 실패 + 보이는 자식 있으면 href=null로 내려보냄(그룹 토글 계약).
+    const grouped: NavItem[] = [
+      { key: "admin", label: "관리", href: null, children: [leaf("admin-users", "/admin/users")] },
+    ];
+    expect(computeNavRows(grouped, "/dashboard").find((r) => r.key === "admin")!.targetHref).toBeNull();
+  });
+
+  it("현재 경로가 자식이면 부모 active + 자식 active 표시", () => {
+    const rows = computeNavRows(items, "/admin/users");
     const admin = rows.find((r) => r.key === "admin")!;
     expect(admin.active).toBe(true);
-    expect(admin.autoExpanded).toBe(true);
-    expect(admin.children.find((c) => c.key === "admin-navigation")!.active).toBe(true);
+    expect(admin.children.find((c) => c.key === "admin-users")!.active).toBe(true);
   });
 
-  it("무관 경로면 부모 비활성·미펼침", () => {
+  it("무관 경로면 부모 비활성", () => {
     const rows = computeNavRows(items, "/dashboard");
-    const admin = rows.find((r) => r.key === "admin")!;
-    expect(admin.active).toBe(false);
-    expect(admin.autoExpanded).toBe(false);
+    expect(rows.find((r) => r.key === "admin")!.active).toBe(false);
   });
 });
 
@@ -75,11 +85,10 @@ describe("computeNavRows — 형제 최장 매칭 우선(D8)", () => {
     expect(childActiveKeys("/leave/manage/allocations")).toEqual(["leave-manage"]);
   });
 
-  it("부모 연차는 모든 /leave/* 에서 active·자동펼침", () => {
+  it("부모 연차는 모든 /leave/* 에서 active", () => {
     for (const p of ["/leave", "/leave/request", "/leave/manage/status"]) {
       const row = computeNavRows(items, p).find((r) => r.key === "leave")!;
       expect(row.active, p).toBe(true);
-      expect(row.autoExpanded, p).toBe(true);
     }
   });
 

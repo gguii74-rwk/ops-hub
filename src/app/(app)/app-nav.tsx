@@ -64,14 +64,12 @@ export interface NavChildRow {
 export interface NavRow {
   key: string;
   label: string;
-  href: string | null;
-  isLink: boolean;       // href != null (SC-2 인코딩)
-  active: boolean;       // 자신 또는 자식이 현재 경로
-  autoExpanded: boolean; // 자신 또는 자식이 활성 → 펼침
+  active: boolean;            // 자신 또는 자식이 현재 경로
+  targetHref: string | null;  // 헤더 클릭 시 이동 — 자식 있으면 첫 자식(첫 중메뉴), 없으면 자기 href
   children: NavChildRow[];
 }
 
-// 렌더 결정을 순수 계산으로 분리(DOM 없이 테스트). 펼침 토글은 컴포넌트 상태가 보강.
+// 렌더 결정을 순수 계산으로 분리(DOM 없이 테스트). 펼침 상태는 AppNav가 보강(단일 확장 아코디언).
 export function computeNavRows(items: NavItem[], pathname: string): NavRow[] {
   return items.map((item) => {
     // 형제 중 현재 경로와 매칭되는 "가장 긴(구체적) href"만 active(D8).
@@ -87,10 +85,11 @@ export function computeNavRows(items: NavItem[], pathname: string): NavRow[] {
     const selfActive = isActiveHref(item.href, pathname);
     const childActive = children.some((c) => c.active);
     return {
-      key: item.key, label: item.label, href: item.href,
-      isLink: item.href != null,
+      key: item.key, label: item.label,
       active: selfActive || childActive,
-      autoExpanded: selfActive || childActive,
+      // 부모 클릭 = 첫 중메뉴로 이동(부모 href가 placeholder인 경우 대비). leaf는 자기 href.
+      // href=null은 selectVisibleNav가 "부모 권한 실패 → 비링크 그룹 헤더"로 인코딩한 신호(D5) — 보존한다.
+      targetHref: item.href == null ? null : (item.children[0]?.href ?? item.href),
       children,
     };
   });
@@ -99,23 +98,40 @@ export function computeNavRows(items: NavItem[], pathname: string): NavRow[] {
 export function AppNav({ items }: { items: NavItem[] }) {
   const pathname = usePathname();
   const rows = computeNavRows(items, pathname);
+  // 수동으로 미리 펼친 비활성 섹션(한 번에 하나). 활성 섹션은 expandedKey와 무관하게 항상 펼친다.
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [syncedPath, setSyncedPath] = useState(pathname);
+  // 경로가 바뀌면 수동 펼침을 비운다 — 활성 섹션만 펼친 상태로 복귀(이전 섹션 닫힘). 파생-상태 패턴(렌더 중 setState).
+  if (syncedPath !== pathname) {
+    setSyncedPath(pathname);
+    setExpandedKey(null);
+  }
   return (
     <nav className="grid gap-1.5">
-      {rows.map((row) => (
-        <NavRowView key={row.key} row={row} />
-      ))}
+      {rows.map((row) => {
+        const hasChildren = row.children.length > 0;
+        return (
+          <NavRowView
+            key={row.key}
+            row={row}
+            // 현재 위치(활성) 섹션은 항상 펼침(접기 불가) + 수동으로 펼친 비활성 섹션 하나.
+            expanded={(row.active && hasChildren) || row.key === expandedKey}
+            onToggle={() => {
+              if (row.active) return; // 현재 위치는 항상 펼침 — 토글 무시
+              setExpandedKey((k) => (k === row.key ? null : row.key));
+            }}
+          />
+        );
+      })}
     </nav>
   );
 }
 
-// per-row 컴포넌트 — useState/useId 순서 안정화(admin-tabs Tab 패턴).
-function NavRowView({ row }: { row: NavRow }) {
+// per-row 컴포넌트 — useId 순서 안정화(admin-tabs Tab 패턴). 펼침은 상위 단일 상태가 주입.
+function NavRowView({ row, expanded, onToggle }: { row: NavRow; expanded: boolean; onToggle: () => void }) {
   const tone = NAV_TONES[row.key] ?? DEFAULT_TONE;
   const hasChildren = row.children.length > 0;
   const panelId = useId();
-  const [open, setOpen] = useState(row.autoExpanded);
-  // 활성 자식이 있으면 항상 펼침(경로 이동에 따른 자동 펼침 — 현재 섹션은 접히지 않음).
-  const expanded = open || row.children.some((c) => c.active);
 
   const headerClasses = (active: boolean) =>
     cn(
@@ -131,22 +147,16 @@ function NavRowView({ row }: { row: NavRow }) {
   return (
     <div className="grid gap-1">
       <div className="flex items-center gap-1">
-        {row.isLink ? (
-          <Link href={row.href!} aria-current={row.active ? "page" : undefined} className={headerClasses(row.active)}>
+        {row.targetHref ? (
+          <Link href={row.targetHref} aria-current={row.active ? "page" : undefined} className={headerClasses(row.active)}>
             {dot(row.active)}
             {row.label}
           </Link>
         ) : (
-          <button
-            type="button"
-            className={headerClasses(row.active)}
-            aria-expanded={hasChildren ? expanded : undefined}
-            aria-controls={hasChildren ? panelId : undefined}
-            onClick={() => hasChildren && setOpen((v) => !v)}
-          >
+          <span className={headerClasses(row.active)}>
             {dot(row.active)}
             {row.label}
-          </button>
+          </span>
         )}
         {hasChildren && (
           <button
@@ -154,7 +164,7 @@ function NavRowView({ row }: { row: NavRow }) {
             aria-label={`${row.label} 하위 메뉴 ${expanded ? "접기" : "펼치기"}`}
             aria-expanded={expanded}
             aria-controls={panelId}
-            onClick={() => setOpen((v) => !v)}
+            onClick={onToggle}
             className="rounded-md px-1.5 py-2 text-muted-foreground transition-colors hover:text-foreground"
           >
             <span aria-hidden className={cn("inline-block transition-transform motion-reduce:transition-none", expanded && "rotate-90")}>
