@@ -1,14 +1,19 @@
 {
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash -c 'OPS_HUB_CTX_LIMIT=1000000 node \"$CLAUDE_PROJECT_DIR/scripts/context-threshold-hook.mjs\"'"
-          }
-        ]
+  "extraKnownMarketplaces": {
+    "claude-dev-workflow": {
+      "source": {
+        "source": "github",
+        "repo": "gguii74-rwk/claude-dev-workflow"
       }
-    ]
+    },
+    "openai-codex": {
+      "source": {
+        "source": "github",
+        "repo": "openai/codex-plugin-cc"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "dev-workflow@claude-dev-workflow": true
   }
 }
