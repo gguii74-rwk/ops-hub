@@ -18,11 +18,11 @@ const VIEW_RESOURCES = [...RESOURCES];
 // 역할 키는 catalog(ACCESS_ROLE_KEYS)가 단일 출처. 표시명만 seed-local.
 const ROLE_NAMES: Record<string, string> = {
   pm: "PM",
-  admin: "사용자 관리자",
+  admin: "관리자",
   "regular-developer": "정규 개발자",
   "contractor-developer": "외주 개발자",
-  "contractor-content": "외주 컨텐츠관리",
-  "contractor-civil-response": "외주 민원응대",
+  "contractor-content": "콘텐츠관리",
+  "contractor-civil-response": "민원응대",
 };
 const ACCESS_ROLES = ACCESS_ROLE_KEYS.map((key) => ({ key, name: ROLE_NAMES[key] ?? key }));
 

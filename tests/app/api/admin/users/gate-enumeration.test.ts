@@ -209,6 +209,7 @@ const knownProtected = new Set<string>([
   // roles matrix API (task-06) — requirePermission(admin.roles, view|configure) 중앙 게이트
   "/api/admin/roles/matrix",
   "/api/admin/roles/[roleId]/permissions/[permissionId]",
+  "/api/admin/roles/[roleId]/permissions/bulk",
 ]);
 
 beforeEach(() => {

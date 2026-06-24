@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { ForbiddenError } from "@/kernel/access";
+import { ROLE_DISPLAY_ORDER } from "@/kernel/access/catalog";
 
 export interface MatrixData {
   roles: Array<{ id: string; key: string; name: string }>;
@@ -9,11 +10,14 @@ export interface MatrixData {
 }
 
 export async function getMatrix(): Promise<MatrixData> {
-  const [roles, permissions, rules] = await Promise.all([
+  const [rolesRaw, permissions, rules] = await Promise.all([
     prisma.accessRole.findMany({ orderBy: { key: "asc" }, select: { id: true, key: true, name: true } }),
     prisma.permission.findMany({ orderBy: [{ resource: "asc" }, { action: "asc" }], select: { id: true, resource: true, action: true } }),
     prisma.rolePermission.findMany({ select: { roleId: true, permissionId: true, effect: true, scope: true } }),
   ]);
+  // 표시 순서(D1)로 역할 정렬. 목록에 없는 키는 말미(999) — Array.sort 안정성으로 그들끼리는 key-asc 유지.
+  const orderIdx = new Map<string, number>(ROLE_DISPLAY_ORDER.map((k, i) => [k, i]));
+  const roles = [...rolesRaw].sort((a, b) => (orderIdx.get(a.key) ?? 999) - (orderIdx.get(b.key) ?? 999));
   return { roles, permissions, rules };
 }
 
