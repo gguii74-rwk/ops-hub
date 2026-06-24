@@ -66,6 +66,22 @@ describe("AppNav 아코디언", () => {
     expect(screen.queryByText("사용자 관리")).toBeNull(); // 단일 확장 — 이전 수동 펼침 닫힘
   });
 
+  it("현재 위치 섹션은 화살표로 접히지 않는다(현재 위치 보호)", () => {
+    nav.pathname = "/admin/users";
+    render(<AppNav items={items} />);
+    expect(screen.queryByText("사용자 관리")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /관리 하위 메뉴/ }));
+    expect(screen.queryByText("사용자 관리")).not.toBeNull(); // 토글해도 현재 섹션은 유지
+  });
+
+  it("현재 위치 유지하며 다른 섹션을 미리 펼칠 수 있다(최대 2개)", () => {
+    nav.pathname = "/admin/users";
+    render(<AppNav items={items} />);
+    fireEvent.click(screen.getByRole("button", { name: /연차 하위 메뉴/ }));
+    expect(screen.queryByText("연차 신청")).not.toBeNull();   // 미리보기 펼침
+    expect(screen.queryByText("사용자 관리")).not.toBeNull(); // 현재 위치 유지
+  });
+
   it("부모 헤더 링크가 첫 자식을 가리킨다(이슈1)", () => {
     nav.pathname = "/dashboard";
     render(<AppNav items={items} />);

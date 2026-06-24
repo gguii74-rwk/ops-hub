@@ -98,25 +98,31 @@ export function computeNavRows(items: NavItem[], pathname: string): NavRow[] {
 export function AppNav({ items }: { items: NavItem[] }) {
   const pathname = usePathname();
   const rows = computeNavRows(items, pathname);
-  // 펼칠 섹션 — 활성이고 자식 있는 부모(아코디언은 한 번에 하나만 펼침).
-  const activeKey = rows.find((r) => r.active && r.children.length > 0)?.key ?? null;
-  const [expandedKey, setExpandedKey] = useState<string | null>(activeKey);
+  // 수동으로 미리 펼친 비활성 섹션(한 번에 하나). 활성 섹션은 expandedKey와 무관하게 항상 펼친다.
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [syncedPath, setSyncedPath] = useState(pathname);
-  // 경로가 바뀌면 활성 섹션으로 펼침을 옮긴다(이전 섹션은 닫힘). 표준 파생-상태 패턴(렌더 중 setState).
+  // 경로가 바뀌면 수동 펼침을 비운다 — 활성 섹션만 펼친 상태로 복귀(이전 섹션 닫힘). 파생-상태 패턴(렌더 중 setState).
   if (syncedPath !== pathname) {
     setSyncedPath(pathname);
-    setExpandedKey(activeKey);
+    setExpandedKey(null);
   }
   return (
     <nav className="grid gap-1.5">
-      {rows.map((row) => (
-        <NavRowView
-          key={row.key}
-          row={row}
-          expanded={row.key === expandedKey}
-          onToggle={() => setExpandedKey((k) => (k === row.key ? null : row.key))}
-        />
-      ))}
+      {rows.map((row) => {
+        const hasChildren = row.children.length > 0;
+        return (
+          <NavRowView
+            key={row.key}
+            row={row}
+            // 현재 위치(활성) 섹션은 항상 펼침(접기 불가) + 수동으로 펼친 비활성 섹션 하나.
+            expanded={(row.active && hasChildren) || row.key === expandedKey}
+            onToggle={() => {
+              if (row.active) return; // 현재 위치는 항상 펼침 — 토글 무시
+              setExpandedKey((k) => (k === row.key ? null : row.key));
+            }}
+          />
+        );
+      })}
     </nav>
   );
 }
