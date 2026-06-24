@@ -13,9 +13,12 @@
 - [Navigation CMS merge-ready](navigation-cms-merge-ready.md) — 메뉴 관리 11태스크 완료 → **PR #10 머지 완료**(4c79ba2 계열, 2026-06-23)
 - [Sidebar tree submenu merged+deployed](sidebar-tree-submenu-merge-ready.md) — 사이드바 트리 중메뉴 일원화(연차 5자식·관리 사용자관리·/leave/manage 이동) → **PR #13(코드)·#14(docs) 머지 + dev 배포 완료**(2026-06-23, nav=5 재시드, /login 200)
 - [Teams + permission matrix merged+deployed](teams-permission-matrix-merged.md) — 팀 모델·scope=team·역할↔권한 매트릭스(증분 ②) **PR #15 머지 + dev 배포 완료**(3d10176, 2026-06-24, review-loop R1~R12, full-stop department drop, /login 200)
+- [Shared UI primitives PR](shared-ui-primitives-pr.md) — 공용 프리미티브 5종(Select·Table·Modal+a11y·States·PageSection) 신설+소비처 이관 SDD 10태스크 완료 → **PR #18 머지 완료**(cbb54c8, 2026-06-24, 1279테스트, 마이그레이션 없음=표준 restart, dev 배포 미진행)
 - [Laptop sync stale artifacts](laptop-sync-stale-artifacts.md) — 노트북 전환 후 typecheck 거짓 실패 시 prisma:generate(stale client)·rm .next(stale build types) 먼저
 - [ops-hub OWNER email changed](ops-hub-owner-email-changed.md) — dev 로그인 ID admin@→ggui74@uracle.co.kr, 서버 .env SEED_ADMIN_EMAIL도 갱신
 - [annual-leave users migrated](annual-leave-users-migrated.md) — 운영 16명 dev opshub 적재(해시 그대로 재로그인 가능), 운영DB=/opt/annual-leave root PM2
 - [Cross-app cookie collision](cross-app-cookie-collision.md) — day-sync·ops-hub 같은 IP·같은 기본 쿠키 이름 → 세션 충돌(500). ops-hub 전용 쿠키 이름으로 해결(브랜치 fix/auth-cookie-name-collision)
 - [Codex shell and sync lessons](codex-session-shell-and-sync-lessons.md) — 2026-06-22 세션 재발 방지: PowerShell `(app)` 경로 quoting, `npm.cmd`, `.next/dev/types` 충돌, 개발서버/로컬 브랜치 비교, ops-hub DB SSH 터널, `frontend-skill` 공식성 확인.
 - [dev-workflow plugin](dev-workflow-plugin.md) — review-loop·writing-plans-split·context-hook을 dev-workflow 플러그인으로 패키징, public repo gguii74-rwk/claude-dev-workflow 배포(2026-06-23); **ops-hub 전환 PR #17 머지 완료**(dee35d2, 2026-06-24); 집 그램 잔여=`/plugin install dev-workflow@claude-dev-workflow` 1회(codex 이미 설치라 `/codex:setup` 불필요)
+- [No AI trace in review-loop output](no-ai-trace-in-review-loop-output.md) — review-loop plan 문서·커밋 메시지에 codex/AI 도구 출처 적지 말 것(운영 프로젝트 no-AI-trace); 기술 근거만, 종료 시 grep 확인
+- [Context hook 1M miscalc](context-hook-1m-miscalc.md) — dev-workflow context 훅이 transcript에 없는 `[1m]`로 1M 감지 실패→200k 폴백 5배 부풀림; v0.1.1 peakUsed 자기보정+CLAUDE_CTX_LIMIT env로 해결
