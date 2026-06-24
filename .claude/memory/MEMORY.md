@@ -22,3 +22,5 @@
 - [dev-workflow plugin](dev-workflow-plugin.md) — review-loop·writing-plans-split·context-hook을 dev-workflow 플러그인으로 패키징, public repo gguii74-rwk/claude-dev-workflow 배포(2026-06-23); **ops-hub 전환 PR #17 머지 완료**(dee35d2, 2026-06-24); 집 그램 잔여=`/plugin install dev-workflow@claude-dev-workflow` 1회(codex 이미 설치라 `/codex:setup` 불필요)
 - [No AI trace in review-loop output](no-ai-trace-in-review-loop-output.md) — review-loop plan 문서·커밋 메시지에 codex/AI 도구 출처 적지 말 것(운영 프로젝트 no-AI-trace); 기술 근거만, 종료 시 grep 확인
 - [Context hook 1M miscalc](context-hook-1m-miscalc.md) — dev-workflow context 훅이 transcript에 없는 `[1m]`로 1M 감지 실패→200k 폴백 5배 부풀림; v0.1.1 peakUsed 자기보정+CLAUDE_CTX_LIMIT env로 해결
+- [Permission matrix bulk-grant merged+deployed](permission-matrix-bulk-grant-pr.md) — 권한 매트릭스 묶음 부여·역할 표시 순서/이름 개선 SDD 4태스크 → **PR #19 머지(ee2bc65) + dev 배포 완료**(2026-06-24), 1291테스트·최종리뷰 clean, 역할 표시명 DB 반영 확인
+- [Dev deploy stale-build P2010](dev-deploy-stale-build-p2010.md) — kgs-dev stale 빌드가 advisory-lock 경로에서 P2010(void) 사일런트 크래시; 배포 smoke에 인증+advisory 라우트 필수, /login 200만으론 부족
