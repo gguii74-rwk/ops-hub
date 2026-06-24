@@ -57,3 +57,20 @@ export const NAV: readonly NavEntry[] = [
     ],
   },
 ] as const;
+
+// 권한 매트릭스 묶음 부여·표시 그룹 — resource 첫 세그먼트 단위(D3). 순서=표시 순서(메뉴와 동일).
+export const PERMISSION_GROUPS = [
+  { key: "dashboard", label: "대시보드" },
+  { key: "calendar", label: "캘린더" },
+  { key: "workflows", label: "업무" },
+  { key: "leave", label: "연차" },
+  { key: "admin", label: "관리" },
+  { key: "integrations", label: "연동" },
+] as const;
+export const PERMISSION_GROUP_KEYS = PERMISSION_GROUPS.map((g) => g.key);
+
+// 권한 매트릭스 역할 열 표시 순서(UX 전용, D1). 시드·타입용 ACCESS_ROLE_KEYS와 분리.
+export const ROLE_DISPLAY_ORDER = [
+  "admin", "pm", "regular-developer",
+  "contractor-developer", "contractor-content", "contractor-civil-response",
+] as const;
