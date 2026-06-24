@@ -1,4 +1,5 @@
 import type { EmploymentType, JobFunction, SystemRole } from "@/lib/auth/types";
+import type { ChipTone } from "@/components/ui/chip";
 
 export type UserStatusKey = "PENDING" | "INVITED" | "ACTIVE" | "DISABLED" | "REJECTED";
 
@@ -55,3 +56,43 @@ export const SCOPE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "team", label: "팀(team) — ②증분 전까지 미작동" },
   { value: "assigned", label: "배정(assigned)" },
 ];
+
+// ── 컬러톤 매핑(Aurora 컬러칩, task-04 소비). 값=ChipTone. ──
+export const STATUS_TONE: Record<UserStatusKey, ChipTone> = {
+  PENDING: "amber",
+  INVITED: "blue",
+  ACTIVE: "ok",
+  DISABLED: "off",
+  REJECTED: "rose",
+};
+export const EMPLOYMENT_TONE: Record<EmploymentType, ChipTone> = {
+  REGULAR: "blue",
+  CONTRACTOR: "amber",
+};
+export const JOB_TONE: Record<JobFunction, ChipTone> = {
+  PM: "pink",
+  DEVELOPER: "blue",
+  CONTENT_MANAGER: "purple",
+  CIVIL_RESPONSE: "orange",
+};
+
+// raw 역할 key → 한글 표시명(ROLE_OPTIONS 단일 출처에서 파생).
+export const ROLE_LABEL: Record<string, string> = Object.fromEntries(
+  ROLE_OPTIONS.map((o) => [o.key, o.label]),
+);
+// 역할 key → 컬러톤. 직무 도메인 색을 따른다(개발=blue·콘텐츠=purple·민원=orange), 특권은 pink/rose.
+export const ROLE_TONE: Record<string, ChipTone> = {
+  pm: "pink",
+  admin: "rose",
+  "regular-developer": "blue",
+  "contractor-developer": "blue",
+  "contractor-content": "purple",
+  "contractor-civil-response": "orange",
+};
+
+export function roleLabel(key: string): string {
+  return ROLE_LABEL[key] ?? key;
+}
+export function roleTone(key: string): ChipTone {
+  return ROLE_TONE[key] ?? "neutral";
+}
