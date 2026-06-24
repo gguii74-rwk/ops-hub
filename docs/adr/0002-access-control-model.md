@@ -72,3 +72,7 @@ Accepted
 
 DB `kernel.SystemRole` enum 값과 TS `SystemRole` 타입은 **보존**한다 — enum 값 제거는 Postgres에서 비가역 타입 재생성 마이그레이션이라 비용 대비 실익이 적고, 기존 MANAGER 데이터 표시를 위해 `SYSTEM_ROLE_LABEL`도 유지한다. 운영 등급은 **OWNER/ADMIN/MEMBER 3단계**로 운영한다.
 
+**기존 MANAGER 편집 보존**: 사용자 편집(PATCH)은 변경되지 않은 `systemRole`을 전송에서 생략한다 — 폐지된 MANAGER 사용자도 이름·팀·속성을 정상 편집할 수 있다(신규 부여만 드롭다운·zod로 차단).
+
+**배포 게이트(전환기 호환)**: `ops-manager` 발급 중단은 외부 federation 출력(`/api/auth/verify`의 `X-Auth-Groups`)에 영향을 줄 수 있다. 배포 전 ① 잔존 MANAGER 사용자 0명(`SELECT count(*) FROM kernel."User" WHERE "systemRole"='MANAGER'`) ② 외부 소비자가 `ops-manager` 그룹에 미의존을 확인한다.
+

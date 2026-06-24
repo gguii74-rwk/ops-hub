@@ -63,7 +63,13 @@ export function UserEdit({ userId, canUpdate, teams }: { userId: string; canUpda
       const res = await fetch(`/api/admin/users/${userId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, teamId: teamId || null, employmentType: attr.employmentType, jobFunction: attr.jobFunction, systemRole, updatedAt: data?.updatedAt }),
+        // systemRole이 원래 값과 같으면 PATCH에서 생략한다 — OPTIONS·zod에서 폐지된 값(예: 기존 MANAGER 사용자)도
+        // 무변경 편집(이름·팀·속성)이 가능. 신규 부여 차단은 드롭다운(SYSTEM_ROLE_OPTIONS)·zod(systemRole 3값)가 담당.
+        body: JSON.stringify({
+          name, teamId: teamId || null, employmentType: attr.employmentType, jobFunction: attr.jobFunction,
+          ...(systemRole !== data?.systemRole ? { systemRole } : {}),
+          updatedAt: data?.updatedAt,
+        }),
       });
       if (!res.ok) { reloadOnConflict(res); throw new Error((await res.json().catch(() => ({}))).error ?? `수정 실패 (${res.status})`); }
     },
