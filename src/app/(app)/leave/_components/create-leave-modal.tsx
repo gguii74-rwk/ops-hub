@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Modal } from "./modal";
+import { Modal } from "@/components/ui/modal";
 import { UserSelect } from "./user-select";
 import { LeaveFields, emptyLeaveForm, toLeavePayload, type LeaveFormState } from "./leave-fields";
 
