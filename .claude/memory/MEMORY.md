@@ -12,6 +12,7 @@
 - [User-management merged](user-management-merge-ready.md) — feat/user-management → main 머지 **완료**(b99c7d4, 2026-06-22); 배포 follow-up 4종만 미적용
 - [Navigation CMS merge-ready](navigation-cms-merge-ready.md) — 메뉴 관리 11태스크 완료 → **PR #10 머지 완료**(4c79ba2 계열, 2026-06-23)
 - [Sidebar tree submenu merged+deployed](sidebar-tree-submenu-merge-ready.md) — 사이드바 트리 중메뉴 일원화(연차 5자식·관리 사용자관리·/leave/manage 이동) → **PR #13(코드)·#14(docs) 머지 + dev 배포 완료**(2026-06-23, nav=5 재시드, /login 200)
+- [Teams + permission matrix merged+deployed](teams-permission-matrix-merged.md) — 팀 모델·scope=team·역할↔권한 매트릭스(증분 ②) **PR #15 머지 + dev 배포 완료**(3d10176, 2026-06-24, review-loop R1~R12, full-stop department drop, /login 200)
 - [Laptop sync stale artifacts](laptop-sync-stale-artifacts.md) — 노트북 전환 후 typecheck 거짓 실패 시 prisma:generate(stale client)·rm .next(stale build types) 먼저
 - [ops-hub OWNER email changed](ops-hub-owner-email-changed.md) — dev 로그인 ID admin@→ggui74@uracle.co.kr, 서버 .env SEED_ADMIN_EMAIL도 갱신
 - [annual-leave users migrated](annual-leave-users-migrated.md) — 운영 16명 dev opshub 적재(해시 그대로 재로그인 가능), 운영DB=/opt/annual-leave root PM2
