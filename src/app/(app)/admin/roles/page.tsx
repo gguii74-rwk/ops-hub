@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { getPermissionSummary, allowedScopes } from "@/kernel/access";
+import { PERMISSION_GROUPS } from "@/kernel/access/catalog";
 import { getRoleMatrix } from "@/modules/admin/roles/services";
 import { MatrixEditor } from "./_components/matrix-editor";
 
@@ -16,5 +17,6 @@ export default async function AdminRolesPage() {
   // 각 permission의 scopeable 옵션을 서버에서 계산해 내려준다(PD2).
   const scopeOptions: Record<string, string[]> = {};
   for (const p of matrix.permissions) scopeOptions[`${p.resource}:${p.action}`] = allowedScopes(p.resource);
-  return <MatrixEditor matrix={matrix} scopeOptions={scopeOptions} canConfigure={canConfigure} />;
+  const groups = PERMISSION_GROUPS.map((g) => ({ key: g.key, label: g.label }));
+  return <MatrixEditor matrix={matrix} scopeOptions={scopeOptions} groups={groups} canConfigure={canConfigure} />;
 }
