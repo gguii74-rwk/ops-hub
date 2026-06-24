@@ -6,13 +6,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { buttonVariants } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableEmpty } from "@/components/ui/table";
+import { LoadingState, ErrorState } from "@/components/ui/states";
 import {
   STATUS_LABEL, STATUS_VARIANT, EMPLOYMENT_LABEL, JOB_LABEL,
   EMPLOYMENT_OPTIONS, JOB_OPTIONS, type UserStatusKey,
 } from "./labels";
 import { ApproveModal } from "./approve-modal";
-
-const selectCls = "h-8 rounded-lg border border-input bg-background px-2.5 text-sm";
 const PAGE_SIZE = 20;
 
 interface Row {
@@ -66,17 +67,17 @@ export function UsersList({ canCreate, canUpdate, canApprove, teams }: { canCrea
             <Badge variant="secondary">승인 대기 {pendingCount}건</Badge>
           </button>
         ) : null}
-        <select className={selectCls} value={status} onChange={(e) => { setStatus(e.target.value as "ALL" | UserStatusKey); reset(); }}>
+        <Select className="w-auto" value={status} onChange={(e) => { setStatus(e.target.value as "ALL" | UserStatusKey); reset(); }}>
           {STATUS_FILTER.map((s) => <option key={s} value={s}>{s === "ALL" ? "전체 상태" : STATUS_LABEL[s]}</option>)}
-        </select>
-        <select className={selectCls} value={employmentType} onChange={(e) => { setEmploymentType(e.target.value); reset(); }}>
+        </Select>
+        <Select className="w-auto" value={employmentType} onChange={(e) => { setEmploymentType(e.target.value); reset(); }}>
           <option value="">전체 고용형태</option>
           {EMPLOYMENT_OPTIONS.map((v) => <option key={v} value={v}>{EMPLOYMENT_LABEL[v]}</option>)}
-        </select>
-        <select className={selectCls} value={jobFunction} onChange={(e) => { setJobFunction(e.target.value); reset(); }}>
+        </Select>
+        <Select className="w-auto" value={jobFunction} onChange={(e) => { setJobFunction(e.target.value); reset(); }}>
           <option value="">전체 직무</option>
           {JOB_OPTIONS.map((v) => <option key={v} value={v}>{JOB_LABEL[v]}</option>)}
-        </select>
+        </Select>
         <Input className="w-44" placeholder="이름/이메일 검색" value={q} onChange={(e) => { setQ(e.target.value); reset(); }} />
         {canCreate ? (
           <Link href="/admin/users/new" className={buttonVariants({ size: "sm" }) + " ml-auto"}>+ 직접 추가</Link>
@@ -84,47 +85,43 @@ export function UsersList({ canCreate, canUpdate, canApprove, teams }: { canCrea
       </div>
 
       {isLoading ? (
-        <p className="text-sm text-muted-foreground">불러오는 중…</p>
+        <LoadingState />
       ) : isError ? (
-        <p className="text-sm text-destructive">불러오지 못했습니다.</p>
+        <ErrorState />
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-border">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50 text-left text-muted-foreground">
-              <tr>
-                <th className="p-2">이름</th>
-                <th className="p-2">이메일</th>
-                <th className="p-2">상태</th>
-                <th className="p-2">고용형태</th>
-                <th className="p-2">직무</th>
-                <th className="p-2">역할</th>
-                <th className="p-2"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((u) => (
-                <tr key={u.id} className="border-t border-border">
-                  <td className="p-2">{u.name}</td>
-                  <td className="p-2 text-muted-foreground">{u.email}</td>
-                  <td className="p-2"><Badge variant={STATUS_VARIANT[u.status]}>{STATUS_LABEL[u.status]}</Badge></td>
-                  <td className="p-2">{EMPLOYMENT_LABEL[u.employmentType]}</td>
-                  <td className="p-2">{JOB_LABEL[u.jobFunction]}</td>
-                  <td className="p-2 text-muted-foreground">{u.roleKeys.join(", ") || "-"}</td>
-                  <td className="p-2 text-right">
-                    {u.status === "PENDING" && canApprove ? (
-                      <Button size="sm" variant="ghost" onClick={() => setApproveTarget(u)}>승인·거절</Button>
-                    ) : canUpdate ? (
-                      <Link href={`/admin/users/${u.id}`} className={buttonVariants({ size: "sm", variant: "ghost" })}>편집</Link>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
-              {rows.length === 0 ? (
-                <tr><td colSpan={7} className="p-4 text-center text-muted-foreground">사용자가 없습니다.</td></tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>이름</TableHead>
+              <TableHead>이메일</TableHead>
+              <TableHead>상태</TableHead>
+              <TableHead>고용형태</TableHead>
+              <TableHead>직무</TableHead>
+              <TableHead>역할</TableHead>
+              <TableHead></TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((u) => (
+              <TableRow key={u.id}>
+                <TableCell>{u.name}</TableCell>
+                <TableCell className="text-muted-foreground">{u.email}</TableCell>
+                <TableCell><Badge variant={STATUS_VARIANT[u.status]}>{STATUS_LABEL[u.status]}</Badge></TableCell>
+                <TableCell>{EMPLOYMENT_LABEL[u.employmentType]}</TableCell>
+                <TableCell>{JOB_LABEL[u.jobFunction]}</TableCell>
+                <TableCell className="text-muted-foreground">{u.roleKeys.join(", ") || "-"}</TableCell>
+                <TableCell className="text-right">
+                  {u.status === "PENDING" && canApprove ? (
+                    <Button size="sm" variant="ghost" onClick={() => setApproveTarget(u)}>승인·거절</Button>
+                  ) : canUpdate ? (
+                    <Link href={`/admin/users/${u.id}`} className={buttonVariants({ size: "sm", variant: "ghost" })}>편집</Link>
+                  ) : null}
+                </TableCell>
+              </TableRow>
+            ))}
+            {rows.length === 0 ? <TableEmpty colSpan={7}>사용자가 없습니다.</TableEmpty> : null}
+          </TableBody>
+        </Table>
       )}
 
       <div className="flex items-center justify-between text-sm text-muted-foreground">

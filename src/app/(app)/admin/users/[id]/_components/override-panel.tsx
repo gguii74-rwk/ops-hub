@@ -2,11 +2,13 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
+import { EmptyState } from "@/components/ui/states";
 import { SCOPE_OPTIONS } from "../../_components/labels";
 import type { OverrideRow } from "@/modules/admin/users/repositories";
-
-const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
 
 // 권한키 분해 → resource/action + 빈값 null 정규화
 export interface OverrideFormState {
@@ -71,40 +73,38 @@ export function OverridePanel({ userId, overrides, onMutated }: { userId: string
       <h3 className="text-sm font-medium">개인 권한 예외</h3>
 
       {overrides.length > 0 ? (
-        <div className="overflow-x-auto rounded-lg border border-border">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50 text-left text-muted-foreground">
-              <tr>
-                <th className="p-2">권한</th>
-                <th className="p-2">effect</th>
-                <th className="p-2">scope</th>
-                <th className="p-2">사유</th>
-                <th className="p-2">기간</th>
-                <th className="p-2"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {overrides.map((o) => (
-                <tr key={o.id} className="border-t border-border">
-                  <td className="p-2 font-mono text-xs">{o.resource}:{o.action}</td>
-                  <td className="p-2">{o.effect}</td>
-                  <td className="p-2">{o.scope}</td>
-                  <td className="p-2 text-muted-foreground">{o.reason ?? "-"}</td>
-                  <td className="p-2 text-muted-foreground text-xs">
-                    {o.startsAt ? new Date(o.startsAt).toLocaleDateString("ko-KR") : "—"}
-                    {" ~ "}
-                    {o.endsAt ? new Date(o.endsAt).toLocaleDateString("ko-KR") : "무기한"}
-                  </td>
-                  <td className="p-2 text-right">
-                    <Button size="sm" variant="ghost" disabled={remove.isPending} onClick={() => remove.mutate(o.id)}>삭제</Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>권한</TableHead>
+              <TableHead>effect</TableHead>
+              <TableHead>scope</TableHead>
+              <TableHead>사유</TableHead>
+              <TableHead>기간</TableHead>
+              <TableHead></TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {overrides.map((o) => (
+              <TableRow key={o.id}>
+                <TableCell className="font-mono text-xs">{o.resource}:{o.action}</TableCell>
+                <TableCell>{o.effect}</TableCell>
+                <TableCell>{o.scope}</TableCell>
+                <TableCell className="text-muted-foreground">{o.reason ?? "-"}</TableCell>
+                <TableCell className="text-muted-foreground text-xs">
+                  {o.startsAt ? new Date(o.startsAt).toLocaleDateString("ko-KR") : "—"}
+                  {" ~ "}
+                  {o.endsAt ? new Date(o.endsAt).toLocaleDateString("ko-KR") : "무기한"}
+                </TableCell>
+                <TableCell className="text-right">
+                  <Button size="sm" variant="ghost" disabled={remove.isPending} onClick={() => remove.mutate(o.id)}>삭제</Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       ) : (
-        <p className="text-sm text-muted-foreground">등록된 예외가 없습니다.</p>
+        <EmptyState>등록된 예외가 없습니다.</EmptyState>
       )}
 
       <details className="rounded-lg border border-border p-3">
@@ -112,43 +112,37 @@ export function OverridePanel({ userId, overrides, onMutated }: { userId: string
         <div className="mt-3 grid gap-3">
           <div className="space-y-1">
             <Label>권한 키</Label>
-            <select className={selectCls} value={permissionKey} onChange={(e) => setPermissionKey(e.target.value)}>
+            <Select value={permissionKey} onChange={(e) => setPermissionKey(e.target.value)}>
               {PERMISSION_KEYS.map((k) => <option key={k} value={k}>{k}</option>)}
-            </select>
+            </Select>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1">
               <Label>effect</Label>
-              <select className={selectCls} value={effect} onChange={(e) => setEffect(e.target.value as "ALLOW" | "DENY")}>
+              <Select value={effect} onChange={(e) => setEffect(e.target.value as "ALLOW" | "DENY")}>
                 <option value="ALLOW">ALLOW</option>
                 <option value="DENY">DENY</option>
-              </select>
+              </Select>
             </div>
             <div className="space-y-1">
               <Label>scope</Label>
-              <select className={selectCls} value={scope} onChange={(e) => setScope(e.target.value)}>
+              <Select value={scope} onChange={(e) => setScope(e.target.value)}>
                 {SCOPE_OPTIONS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-              </select>
+              </Select>
             </div>
           </div>
           <div className="space-y-1">
             <Label>사유(선택)</Label>
-            <input
-              type="text"
-              className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="예: 일시 프로젝트 참여"
-            />
+            <Input type="text" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="예: 일시 프로젝트 참여" />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1">
               <Label>시작일(선택)</Label>
-              <input type="date" className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} />
+              <Input type="date" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} />
             </div>
             <div className="space-y-1">
               <Label>종료일(선택)</Label>
-              <input type="date" className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} />
+              <Input type="date" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} />
             </div>
           </div>
           {add.isError ? <p className="text-sm text-destructive">{(add.error as Error).message}</p> : null}
