@@ -6,11 +6,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { UserAttrFields, emptyAttrState, type AttrState } from "../../_components/user-fields";
 import { SYSTEM_ROLE_LABEL, SYSTEM_ROLE_OPTIONS } from "../../_components/labels";
 import type { SystemRole } from "@/lib/auth/types";
-
-const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
 
 export interface CreateUserState {
   email: string; name: string; password: string; teamId: string | null;
@@ -69,17 +68,17 @@ export function CreateUserForm({ teams }: { teams: Array<{ id: string; name: str
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="team">팀(선택)</Label>
-          <select id="team" className={selectCls} value={teamId ?? ""} onChange={(e) => setTeamId(e.target.value || null)}>
+          <Select id="team" value={teamId ?? ""} onChange={(e) => setTeamId(e.target.value || null)}>
             <option value="">무소속</option>
             {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
+          </Select>
         </div>
         <UserAttrFields state={attr} set={set} />
         <div className="space-y-1">
           <Label>systemRole</Label>
-          <select className={selectCls} value={systemRole} onChange={(e) => setSystemRole(e.target.value as SystemRole)}>
+          <Select value={systemRole} onChange={(e) => setSystemRole(e.target.value as SystemRole)}>
             {SYSTEM_ROLE_OPTIONS.map((v) => <option key={v} value={v}>{SYSTEM_ROLE_LABEL[v]}</option>)}
-          </select>
+          </Select>
         </div>
         {m.isError ? <p className="text-sm text-destructive">{(m.error as Error).message}</p> : null}
         <div className="flex justify-end">

@@ -5,6 +5,9 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { Select } from "@/components/ui/select";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableEmpty } from "@/components/ui/table";
+import { LoadingState, ErrorState } from "@/components/ui/states";
 
 interface Row {
   id: string;
@@ -54,18 +57,10 @@ export function StatusClient() {
           value={year}
           onChange={(e) => setYear(Number(e.target.value) || year)}
         />
-        <select
-          className="h-9 rounded-md border border-border bg-background px-3 text-sm"
-          value={team}
-          onChange={(e) => setTeam(e.target.value)}
-        >
+        <Select className="w-auto" value={team} onChange={(e) => setTeam(e.target.value)}>
           <option value="">전체 팀</option>
-          {teams.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
+          {teams.map((t) => <option key={t} value={t}>{t}</option>)}
+        </Select>
         <Input
           className="w-40"
           placeholder="이름 검색"
@@ -82,56 +77,39 @@ export function StatusClient() {
       </div>
 
       {isLoading ? (
-        <p className="text-sm text-muted-foreground">불러오는 중…</p>
+        <LoadingState />
       ) : isError ? (
-        <p className="text-sm text-destructive">불러오지 못했습니다.</p>
+        <ErrorState />
       ) : (
         <Card className="overflow-hidden p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-left text-muted-foreground">
-                <tr>
-                  <th className="p-2">이름</th>
-                  <th className="p-2">팀</th>
-                  <th className="p-2 text-right">총</th>
-                  <th className="p-2 text-right">사용</th>
-                  <th className="p-2 text-right">대기</th>
-                  <th className="p-2 text-right">잔여</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="p-4 text-center text-muted-foreground">
-                      데이터가 없습니다.
-                    </td>
-                  </tr>
-                ) : (
-                  filtered.map((r) => (
-                    <tr key={r.id} className="border-t border-border">
-                      <td className="p-2">{r.name}</td>
-                      <td className="p-2 text-muted-foreground">{r.teamName ?? "-"}</td>
-                      <td className="p-2 text-right tabular-nums">{r.totalDays}</td>
-                      <td className="p-2 text-right tabular-nums">{r.usedDays}</td>
-                      <td className="p-2 text-right tabular-nums">{r.pendingDays}</td>
-                      <td
-                        className={cn(
-                          "p-2 text-right tabular-nums font-medium",
-                          r.remainingDays < 3
-                            ? "text-destructive"
-                            : r.remainingDays < 7
-                              ? "text-amber-600"
-                              : "text-foreground",
-                        )}
-                      >
-                        {r.remainingDays}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          <Table bordered={false}>
+            <TableHeader>
+              <TableRow>
+                <TableHead>이름</TableHead>
+                <TableHead>팀</TableHead>
+                <TableHead className="text-right">총</TableHead>
+                <TableHead className="text-right">사용</TableHead>
+                <TableHead className="text-right">대기</TableHead>
+                <TableHead className="text-right">잔여</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.length === 0 ? (
+                <TableEmpty colSpan={6}>데이터가 없습니다.</TableEmpty>
+              ) : (
+                filtered.map((r) => (
+                  <TableRow key={r.id}>
+                    <TableCell>{r.name}</TableCell>
+                    <TableCell className="text-muted-foreground">{r.teamName ?? "-"}</TableCell>
+                    <TableCell className="text-right tabular-nums">{r.totalDays}</TableCell>
+                    <TableCell className="text-right tabular-nums">{r.usedDays}</TableCell>
+                    <TableCell className="text-right tabular-nums">{r.pendingDays}</TableCell>
+                    <TableCell className={cn("text-right tabular-nums font-medium", r.remainingDays < 3 ? "text-destructive" : r.remainingDays < 7 ? "text-amber-600" : "text-foreground")}>{r.remainingDays}</TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
         </Card>
       )}
     </div>

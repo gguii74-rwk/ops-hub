@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Modal } from "@/app/(app)/leave/_components/modal";
+import { Modal } from "@/components/ui/modal";
+import { Select } from "@/components/ui/select";
 import { UserAttrFields, type AttrState } from "./user-fields";
 import { SYSTEM_ROLE_LABEL, SYSTEM_ROLE_OPTIONS } from "./labels";
 import type { EmploymentType, JobFunction, SystemRole } from "@/lib/auth/types";
@@ -13,8 +14,6 @@ import type { EmploymentType, JobFunction, SystemRole } from "@/lib/auth/types";
 // NF2: name·teamId는 admin 확정값(승인이 프로필 권위 — 선점 덮어쓰기).
 // updatedAt: 클라가 본 행 버전 — approve mutation body로 보내 stale-tab lost-update를 차단(409).
 interface Target { id: string; name: string; email: string; teamId: string | null; teamName: string | null; employmentType: EmploymentType; jobFunction: JobFunction; systemRole: string; roleKeys: string[]; updatedAt: string; }
-
-const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
 
 export function ApproveModal({ target, teams, onClose, onDone }: { target: Target; teams: Array<{ id: string; name: string }>; onClose: () => void; onDone: () => void }) {
   const [name, setName] = useState(target.name);
@@ -76,18 +75,18 @@ export function ApproveModal({ target, teams, onClose, onDone }: { target: Targe
             </div>
             <div className="space-y-1">
               <Label htmlFor="ap-team">팀 (admin 확정)</Label>
-              <select id="ap-team" className={selectCls} value={teamId} onChange={(e) => setTeamId(e.target.value)}>
+              <Select id="ap-team" value={teamId} onChange={(e) => setTeamId(e.target.value)}>
                 <option value="">무소속</option>
                 {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              </Select>
             </div>
           </div>
           <UserAttrFields state={attr} set={set} />
           <div className="space-y-1">
             <Label>systemRole</Label>
-            <select className={selectCls} value={systemRole} onChange={(e) => setSystemRole(e.target.value as SystemRole)}>
+            <Select value={systemRole} onChange={(e) => setSystemRole(e.target.value as SystemRole)}>
               {SYSTEM_ROLE_OPTIONS.map((v) => <option key={v} value={v}>{SYSTEM_ROLE_LABEL[v]}</option>)}
-            </select>
+            </Select>
             <p className="text-xs text-muted-foreground">OWNER·ADMIN 부여는 OWNER만 가능합니다(서버 검증).</p>
           </div>
           {err ? <p className="text-sm text-destructive">{err.message}</p> : null}

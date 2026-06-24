@@ -3,6 +3,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { QUARTER_TIME_SLOTS } from "@/modules/leave/labels";
+import { Select } from "@/components/ui/select";
 
 export interface LeaveFormState {
   leaveType: "ANNUAL" | "HALF" | "QUARTER";
@@ -22,9 +23,6 @@ export const emptyLeaveForm: LeaveFormState = {
   reason: "",
 };
 
-const selectCls =
-  "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
-
 export function LeaveFields({
   state,
   set,
@@ -37,43 +35,27 @@ export function LeaveFields({
     <div className="grid gap-3 sm:grid-cols-2">
       <div className="space-y-1">
         <Label>유형</Label>
-        <select
-          className={selectCls}
-          value={state.leaveType}
-          onChange={(e) => set("leaveType", e.target.value as LeaveFormState["leaveType"])}
-        >
+        <Select value={state.leaveType} onChange={(e) => set("leaveType", e.target.value as LeaveFormState["leaveType"])}>
           <option value="ANNUAL">연차</option>
           <option value="HALF">반차(0.5)</option>
           <option value="QUARTER">반반차(0.25)</option>
-        </select>
+        </Select>
       </div>
       {state.leaveType === "HALF" && (
         <div className="space-y-1">
           <Label>반차 시간대</Label>
-          <select
-            className={selectCls}
-            value={state.leaveSubType}
-            onChange={(e) => set("leaveSubType", e.target.value as "MORNING" | "AFTERNOON")}
-          >
+          <Select value={state.leaveSubType} onChange={(e) => set("leaveSubType", e.target.value as "MORNING" | "AFTERNOON")}>
             <option value="MORNING">오전 반차</option>
             <option value="AFTERNOON">오후 반차</option>
-          </select>
+          </Select>
         </div>
       )}
       {state.leaveType === "QUARTER" && (
         <div className="space-y-1">
           <Label>시간대</Label>
-          <select
-            className={selectCls}
-            value={state.quarterStartTime}
-            onChange={(e) => set("quarterStartTime", e.target.value)}
-          >
-            {QUARTER_TIME_SLOTS.map((s) => (
-              <option key={s.start} value={s.start}>
-                {s.label}
-              </option>
-            ))}
-          </select>
+          <Select value={state.quarterStartTime} onChange={(e) => set("quarterStartTime", e.target.value)}>
+            {QUARTER_TIME_SLOTS.map((s) => <option key={s.start} value={s.start}>{s.label}</option>)}
+          </Select>
         </div>
       )}
       <div className="space-y-1">

@@ -1,5 +1,6 @@
 "use client";
 import { useQuery } from "@tanstack/react-query";
+import { Select } from "@/components/ui/select";
 
 export interface LeaveUser {
   id: string;
@@ -31,17 +32,13 @@ export function UserSelect({
 }) {
   const { data = [], isLoading } = useLeaveUsers();
   return (
-    <select
-      className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-    >
+    <Select value={value} onChange={(e) => onChange(e.target.value)}>
       <option value="">{isLoading ? "불러오는 중…" : "사용자를 선택하세요"}</option>
       {data.map((u) => (
         <option key={u.id} value={u.id}>
           {u.name} - {u.team?.name ?? "-"} ({u.email})
         </option>
       ))}
-    </select>
+    </Select>
   );
 }

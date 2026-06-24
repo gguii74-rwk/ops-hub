@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { getPermissionSummary } from "@/kernel/access";
 import { listActiveTeamOptions } from "@/modules/admin/teams/services";
+import { PageSection } from "@/components/ui/page-section";
 import { CreateUserForm } from "./_components/create-user-form";
 
 export default async function NewUserPage() {
@@ -15,9 +16,8 @@ export default async function NewUserPage() {
   if (!keys.has("admin.users:create")) redirect("/admin/users");
 
   return (
-    <section className="mx-auto w-full max-w-lg space-y-4">
-      <h1 className="font-display text-2xl font-semibold tracking-tight">사용자 직접 추가</h1>
+    <PageSection title="사용자 직접 추가" width="form">
       <CreateUserForm teams={teams} />
-    </section>
+    </PageSection>
   );
 }

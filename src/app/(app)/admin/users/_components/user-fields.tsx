@@ -1,9 +1,8 @@
 "use client";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import type { EmploymentType, JobFunction } from "@/lib/auth/types";
 import { EMPLOYMENT_LABEL, EMPLOYMENT_OPTIONS, JOB_LABEL, JOB_OPTIONS, ROLE_OPTIONS } from "./labels";
-
-const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
 
 export interface AttrState {
   employmentType: EmploymentType;
@@ -31,15 +30,15 @@ export function UserAttrFields({
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label>고용형태</Label>
-          <select className={selectCls} value={state.employmentType} onChange={(e) => set("employmentType", e.target.value as EmploymentType)}>
+          <Select value={state.employmentType} onChange={(e) => set("employmentType", e.target.value as EmploymentType)}>
             {EMPLOYMENT_OPTIONS.map((v) => <option key={v} value={v}>{EMPLOYMENT_LABEL[v]}</option>)}
-          </select>
+          </Select>
         </div>
         <div className="space-y-1">
           <Label>직무</Label>
-          <select className={selectCls} value={state.jobFunction} onChange={(e) => set("jobFunction", e.target.value as JobFunction)}>
+          <Select value={state.jobFunction} onChange={(e) => set("jobFunction", e.target.value as JobFunction)}>
             {JOB_OPTIONS.map((v) => <option key={v} value={v}>{JOB_LABEL[v]}</option>)}
-          </select>
+          </Select>
         </div>
       </div>
       <div className="space-y-1">

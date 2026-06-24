@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Modal } from "./modal";
+import { Modal } from "@/components/ui/modal";
 import { LeaveFields, toLeavePayload, type LeaveFormState } from "./leave-fields";
 
 export interface EditTarget {

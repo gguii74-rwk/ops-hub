@@ -4,6 +4,9 @@ import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
+import { LoadingState, ErrorState } from "@/components/ui/states";
 import {
   TYPE_LABEL,
   STATUS_LABEL,
@@ -81,17 +84,9 @@ export function AdminHistory({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <select
-          className="h-9 rounded-md border border-border bg-background px-3 text-sm"
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
-        >
-          {STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s === "ALL" ? "전체 상태" : STATUS_LABEL[s as LeaveStatus]}
-            </option>
-          ))}
-        </select>
+        <Select className="w-auto" value={status} onChange={(e) => setStatus(e.target.value)}>
+          {STATUSES.map((s) => <option key={s} value={s}>{s === "ALL" ? "전체 상태" : STATUS_LABEL[s as LeaveStatus]}</option>)}
+        </Select>
         <Input
           type="number"
           className="w-24"
@@ -113,66 +108,63 @@ export function AdminHistory({
         )}
       </div>
       {isLoading ? (
-        <p className="text-sm text-muted-foreground">불러오는 중…</p>
+        <LoadingState />
       ) : isError ? (
-        <p className="text-sm text-destructive">불러오지 못했습니다.</p>
+        <ErrorState />
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-border">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50 text-left text-muted-foreground">
-              <tr>
-                <th className="p-2">이름</th>
-                <th className="p-2">팀</th>
-                <th className="p-2">유형</th>
-                <th className="p-2">기간</th>
-                <th className="p-2">상태</th>
-                <th className="p-2"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((r) => (
-                <tr key={r.id} className="border-t border-border">
-                  <td className="p-2">{r.user?.name ?? r.userId}</td>
-                  <td className="p-2 text-muted-foreground">{r.user?.team?.name ?? "-"}</td>
-                  <td className="p-2">
-                    <Badge variant="outline">{TYPE_LABEL[r.leaveType] ?? r.leaveType}</Badge>{" "}
-                    {getFullLeaveText(r.leaveType, r.leaveSubType, r.quarterStartTime)}
-                  </td>
-                  <td className="p-2 text-muted-foreground">
-                    {fmt(r.startDate)}
-                    {r.endDate !== r.startDate ? ` ~ ${fmt(r.endDate)}` : ""}
-                  </td>
-                  <td className="p-2">
-                    <Badge variant={STATUS_VARIANT[r.status]}>{STATUS_LABEL[r.status]}</Badge>
-                  </td>
-                  <td className="p-2 text-right">
-                    {/* 수정 버튼 진입은 canUpdate||canDelete 게이트; 서버가 PATCH=update, DELETE=delete 각각 가드. */}
-                    {(canUpdate || canDelete) && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() =>
-                          setEdit({
-                            id: r.id,
-                            leaveType: r.leaveType,
-                            leaveSubType: r.leaveSubType,
-                            quarterStartTime: r.quarterStartTime,
-                            startDate: r.startDate,
-                            endDate: r.endDate,
-                            reason: r.reason,
-                            updatedAt: r.updatedAt,
-                          })
-                        }
-                      >
-                        수정·삭제
-                      </Button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>이름</TableHead>
+              <TableHead>팀</TableHead>
+              <TableHead>유형</TableHead>
+              <TableHead>기간</TableHead>
+              <TableHead>상태</TableHead>
+              <TableHead></TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {filtered.map((r) => (
+              <TableRow key={r.id}>
+                <TableCell>{r.user?.name ?? r.userId}</TableCell>
+                <TableCell className="text-muted-foreground">{r.user?.team?.name ?? "-"}</TableCell>
+                <TableCell>
+                  <Badge variant="outline">{TYPE_LABEL[r.leaveType] ?? r.leaveType}</Badge>{" "}
+                  {getFullLeaveText(r.leaveType, r.leaveSubType, r.quarterStartTime)}
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  {fmt(r.startDate)}
+                  {r.endDate !== r.startDate ? ` ~ ${fmt(r.endDate)}` : ""}
+                </TableCell>
+                <TableCell>
+                  <Badge variant={STATUS_VARIANT[r.status]}>{STATUS_LABEL[r.status]}</Badge>
+                </TableCell>
+                <TableCell className="text-right">
+                  {(canUpdate || canDelete) && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() =>
+                        setEdit({
+                          id: r.id,
+                          leaveType: r.leaveType,
+                          leaveSubType: r.leaveSubType,
+                          quarterStartTime: r.quarterStartTime,
+                          startDate: r.startDate,
+                          endDate: r.endDate,
+                          reason: r.reason,
+                          updatedAt: r.updatedAt,
+                        })
+                      }
+                    >
+                      수정·삭제
+                    </Button>
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       )}
       {edit && <EditLeaveModal target={edit} onClose={() => setEdit(null)} />}
       {creating && <CreateLeaveModal onClose={() => setCreating(false)} />}

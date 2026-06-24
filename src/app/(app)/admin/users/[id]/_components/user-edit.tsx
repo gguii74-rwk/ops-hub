@@ -6,12 +6,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
+import { LoadingState, ErrorState } from "@/components/ui/states";
 import { UserAttrFields, type AttrState } from "../../_components/user-fields";
 import { SYSTEM_ROLE_LABEL, SYSTEM_ROLE_OPTIONS, STATUS_LABEL, STATUS_VARIANT, type UserStatusKey } from "../../_components/labels";
 import { OverridePanel } from "./override-panel";
 import type { SystemRole } from "@/lib/auth/types";
-
-const selectCls = "h-9 w-full rounded-md border border-border bg-background px-3 text-sm";
 
 interface UserDetail {
   id: string; email: string; name: string; status: string;
@@ -102,8 +102,8 @@ export function UserEdit({ userId, canUpdate, teams }: { userId: string; canUpda
     },
   });
 
-  if (isLoading) return <p className="text-sm text-muted-foreground">불러오는 중…</p>;
-  if (isError || !data) return <p className="text-sm text-destructive">불러오지 못했습니다.</p>;
+  if (isLoading) return <LoadingState />;
+  if (isError || !data) return <ErrorState />;
 
   return (
     <div className="space-y-4">
@@ -124,18 +124,18 @@ export function UserEdit({ userId, canUpdate, teams }: { userId: string; canUpda
                 </div>
                 <div className="space-y-1">
                   <Label htmlFor="edit-team">팀</Label>
-                  <select id="edit-team" className={selectCls} value={teamId ?? ""} onChange={(e) => setTeamId(e.target.value || null)}>
+                  <Select id="edit-team" value={teamId ?? ""} onChange={(e) => setTeamId(e.target.value || null)}>
                     <option value="">무소속</option>
                     {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
+                  </Select>
                 </div>
               </div>
               <UserAttrFields state={attr} set={set} />
               <div className="space-y-1">
                 <Label>systemRole</Label>
-                <select className={selectCls} value={systemRole} onChange={(e) => setSystemRole(e.target.value as SystemRole)}>
+                <Select value={systemRole} onChange={(e) => setSystemRole(e.target.value as SystemRole)}>
                   {SYSTEM_ROLE_OPTIONS.map((v) => <option key={v} value={v}>{SYSTEM_ROLE_LABEL[v]}</option>)}
-                </select>
+                </Select>
               </div>
               {update.isError ? <p className="text-sm text-destructive">{(update.error as Error).message}</p> : null}
               <div className="flex flex-wrap gap-2">
