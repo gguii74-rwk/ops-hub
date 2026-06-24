@@ -50,14 +50,16 @@ async function applyRoles(tx: PrismaTx, userId: string, roleKeys: string[]): Pro
 }
 
 // ── 조회 ──
-export async function listUsers(f: UserListFilter): Promise<{ rows: UserRow[]; total: number; pendingCount: number }> {
+export async function listUsers(
+  f: UserListFilter,
+): Promise<{ rows: UserRow[]; total: number; pendingCount: number; stats: { total: number; active: number; contractor: number } }> {
   const where: Prisma.UserWhereInput = {
     ...(f.status ? { status: f.status } : {}),
     ...(f.employmentType ? { employmentType: f.employmentType as Prisma.UserWhereInput["employmentType"] } : {}),
     ...(f.jobFunction ? { jobFunction: f.jobFunction as Prisma.UserWhereInput["jobFunction"] } : {}),
     ...(f.q ? { OR: [{ name: { contains: f.q, mode: "insensitive" } }, { email: { contains: f.q, mode: "insensitive" } }] } : {}),
   };
-  const [rows, total, pendingCount] = await Promise.all([
+  const [rows, total, pendingCount, statTotal, statActive, statContractor] = await Promise.all([
     prisma.user.findMany({
       where, orderBy: { createdAt: "desc" }, skip: (f.page - 1) * f.pageSize, take: f.pageSize,
       select: {
@@ -68,6 +70,9 @@ export async function listUsers(f: UserListFilter): Promise<{ rows: UserRow[]; t
     }),
     prisma.user.count({ where }),
     prisma.user.count({ where: { status: "PENDING" } }),
+    prisma.user.count(),
+    prisma.user.count({ where: { status: "ACTIVE" } }),
+    prisma.user.count({ where: { employmentType: "CONTRACTOR" } }),
   ]);
   return {
     rows: rows.map((u) => ({
@@ -76,6 +81,7 @@ export async function listUsers(f: UserListFilter): Promise<{ rows: UserRow[]; t
       teamId: u.teamId, teamName: u.team?.name ?? null, createdAt: u.createdAt, updatedAt: u.updatedAt, roleKeys: u.roleAssignments.map((ra) => ra.role.key),
     })),
     total, pendingCount,
+    stats: { total: statTotal, active: statActive, contractor: statContractor },
   };
 }
 
