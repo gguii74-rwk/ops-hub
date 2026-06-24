@@ -79,9 +79,9 @@ SDD 내장 리뷰와 codex review-loop는 **중복이 아니라 보완**이다:
 
 ## 컨텍스트 규율(자동/수동 경계)
 
-- **자동**: Stop 훅(`scripts/context-threshold-hook.mjs`)이 transcript 사용량을 계산해 40% 초과 시 "핸드오프 쓰고 /clear 안내"를 1회 넛지. review-loop도 같은 시점을 자체 점검.
+- **자동**: dev-workflow 플러그인의 Stop 훅이 transcript 사용량을 계산해 40% 초과 시 "핸드오프 쓰고 /clear 안내"를 1회 넛지. review-loop도 같은 시점을 자체 점검.
 - **수동(원리적 한계)**: 실제 `/clear` 입력은 사람이 한다. 자가 `/clear`·자동 단계전환은 Claude Code가 지원하지 않는다(설계 §2).
-- 임계 조정: env `OPS_HUB_CTX_THRESHOLD`(0~1), 한도 override `OPS_HUB_CTX_LIMIT`.
+- 임계 조정: env `CLAUDE_CTX_THRESHOLD`(0~1), 한도 override `CLAUDE_CTX_LIMIT`(미설정 시 모델명 `[1m]` 자동감지로 1M/200K 결정).
 - **능동적 /clear 권장**: 40%를 기다리기보다 **task/단계 경계라는 깨끗한 절단면**에서 끊는 게 핸드오프 품질이 좋다(40% 훅은 안전망). impl은 task 2~3개를 한 세션으로 묶고 그 끝에서 핸드오프+/clear.
 
 ### 핸드오프 표준 섹션
