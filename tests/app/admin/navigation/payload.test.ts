@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   toCreatePayload, toUpdatePayload, toReparentPayload, toDeletePayload, hrefWarning, deleteConfirmLabel, PUBLIC_OPTION,
   isLatestRequest,
+  moveItem,
+  toToggleActivePayload,
   type NavFormState,
 } from "@/app/(app)/admin/navigation/_components/navigation-editor";
 
@@ -56,6 +58,29 @@ describe("deleteConfirmLabel(D11)", () => {
   it("자식 수에 따라 cascade 문구", () => {
     expect(deleteConfirmLabel({ label: "관리", children: [{}, {}] as never[] })).toMatch(/하위 메뉴 2개/);
     expect(deleteConfirmLabel({ label: "대시보드", children: [] })).not.toMatch(/하위/);
+  });
+});
+
+describe("moveItem", () => {
+  it("moves an element forward (불변, 새 배열)", () => {
+    const a = ["a", "b", "c", "d"];
+    expect(moveItem(a, 0, 2)).toEqual(["b", "c", "a", "d"]);
+    expect(a).toEqual(["a", "b", "c", "d"]); // 원본 불변
+  });
+  it("moves an element backward", () => {
+    expect(moveItem(["a", "b", "c", "d"], 3, 1)).toEqual(["a", "d", "b", "c"]);
+  });
+  it("no-op when from === to", () => {
+    expect(moveItem(["a", "b", "c"], 1, 1)).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("toToggleActivePayload", () => {
+  it("negates isActive and carries updatedAt(낙관락)", () => {
+    expect(toToggleActivePayload({ isActive: true, updatedAt: "2026-01-01T00:00:00.000Z" }))
+      .toEqual({ isActive: false, updatedAt: "2026-01-01T00:00:00.000Z" });
+    expect(toToggleActivePayload({ isActive: false, updatedAt: "2026-02-02T00:00:00.000Z" }))
+      .toEqual({ isActive: true, updatedAt: "2026-02-02T00:00:00.000Z" });
   });
 });
 

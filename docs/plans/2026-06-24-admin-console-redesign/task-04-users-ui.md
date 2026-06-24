@@ -1,3 +1,76 @@
+# Task 04 — 사용자 관리 화면 재디자인 (Aurora)
+
+`users-list.tsx`를 Aurora로 재조립한다: PageHeader(eyebrow "구성원" + "＋ 직접 추가") → StatStrip(승인 대기/전체/활성/외주) → Card{pill 툴바 + Chip 테이블}. **react-query·필터 state·페이지네이션·ApproveModal·낙관락은 그대로** 두고 표현만 바꾼다.
+
+## Files
+
+- Modify `src/app/(app)/admin/users/_components/users-list.tsx` (표현 재조립)
+- Modify `src/app/(app)/admin/users/page.tsx` (PageSection 래퍼 제거 — 헤더를 UsersList가 소유)
+
+## Prep
+
+- entrypoint §Shared Contracts(프리미티브·stats·톤맵).
+- task-01 프리미티브, task-02 톤/표시명 맵, task-03 `stats`.
+- 현재 `users-list.tsx`(전문 숙지): `fetchUsers`/`useQuery`/필터 state(`status`/`employmentType`/`jobFunction`/`q`/`page`)/`reset`/`ApproveModal` — **변경 금지**, JSX만 교체.
+- 현재 `page.tsx`: `<PageSection title="사용자 관리"><UsersList .../></PageSection>`.
+
+## Deps
+
+01, 02, 03.
+
+## Cautions
+
+- **데이터/권한 로직 불변:** `params` 구성, `queryKey`, `fetchUsers`, `canCreate/canUpdate/canApprove` 분기, `approveTarget` 흐름, `u.updatedAt`(낙관락) 전달 — 한 글자도 바꾸지 않는다. Reason: stale-tab lost-update 차단 등 검증된 동작.
+- **`STATUS_VARIANT`(Badge용) 제거하고 `STATUS_TONE`(Chip용)으로 교체.** 다른 화면이 STATUS_VARIANT를 쓰지 않는지 grep 확인 후 import만 교체(파일 내 사용처만). Reason: Chip은 tone, Badge는 variant — 혼용 금지.
+- Card 안의 Table은 `bordered={false}`로(이중 테두리 방지). Reason: Card가 이미 테두리.
+- page.tsx에서 `PageSection` import 제거 시 **다른 사용처 없음 확인**(이 파일만).
+
+## TDD steps
+
+표현 컴포넌트라 단위테스트 대신 typecheck/lint/build로 계약을 보장한다(기존 패턴 — users-list에 렌더 테스트 없음). 톤/표시명/stats 로직은 task-02/03에서 이미 테스트됨.
+
+### 1. page.tsx — PageSection 래퍼 제거
+
+현재:
+
+```tsx
+import { PageSection } from "@/components/ui/page-section";
+import { UsersList } from "./_components/users-list";
+...
+  return (
+    <PageSection title="사용자 관리">
+      <UsersList
+        canCreate={keys.has("admin.users:create")}
+        canUpdate={keys.has("admin.users:update")}
+        canApprove={keys.has("admin.users:approve")}
+        teams={teams}
+      />
+    </PageSection>
+  );
+```
+
+수정(헤더는 UsersList가 소유):
+
+```tsx
+import { UsersList } from "./_components/users-list";
+...
+  return (
+    <UsersList
+      canCreate={keys.has("admin.users:create")}
+      canUpdate={keys.has("admin.users:update")}
+      canApprove={keys.has("admin.users:approve")}
+      teams={teams}
+    />
+  );
+```
+
+(`PageSection` import 줄 삭제. 다른 import는 유지.)
+
+### 2. users-list.tsx — 전체 교체
+
+아래 전문으로 교체한다:
+
+```tsx
 "use client";
 import { useState } from "react";
 import Link from "next/link";
@@ -173,3 +246,23 @@ export function UsersList({ canCreate, canUpdate, canApprove, teams }: { canCrea
     </div>
   );
 }
+```
+
+### 3. 검증·커밋
+
+```bash
+npm run typecheck && npm run lint && npm test && npm run build
+git add src/app/(app)/admin/users/_components/users-list.tsx "src/app/(app)/admin/users/page.tsx"
+git commit -m "feat(admin): 사용자 관리 화면 Aurora 재디자인(StatStrip·pill 툴바·컬러칩)"
+```
+
+## Acceptance Criteria
+
+```bash
+npm run typecheck   # 0 errors
+npm run lint        # 0 errors
+npm test            # green (회귀 없음)
+npm run build       # 성공
+```
+
+수동 확인 포인트(휴대폰 미리보기): 헤더 eyebrow "구성원" + 직접 추가 버튼, 4개 스탯(승인 대기 강조·클릭 시 PENDING 필터), 상태 pill 토글, 상태/고용/직무/역할이 컬러칩, 페이지네이션 동작. 권한 없는 사용자는 추가/편집 버튼 미노출(분기 불변).

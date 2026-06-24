@@ -1,3 +1,76 @@
+# Task 07 — 메뉴 트리 Handle Cards (드래그 정렬 + 활성 토글)
+
+`navigation-editor.tsx`의 트리 렌더를 **Handle Cards**로 재설계한다: 각 메뉴 = 카드 행, 왼쪽 드래그 핸들(포인터+키보드), 도메인 색 점(대메뉴), 권한칩, 활성 `Switch`. 드래그는 **같은 부모 안에서만** → 기존 `reorder`(형제 updatedAt 낙관락)에 매핑. 폼·RolePreview(out-of-order 가드)·reparent("이동")·delete(cascade TOCTOU)·미리보기 aside는 **그대로 보존**한다.
+
+## Files
+
+- Modify `src/app/(app)/admin/navigation/_components/navigation-editor.tsx`
+- Modify `tests/app/admin/navigation/payload.test.ts` (moveItem·toToggleActivePayload describe 추가)
+
+## Prep
+
+- entrypoint §Shared Contracts(프리미티브·메뉴 헬퍼) + 불변식.
+- 현재 `navigation-editor.tsx` 전문 숙지. **보존 대상**(verbatim): export 헬퍼(`PUBLIC_OPTION`/`NavFormState`/`requiredPermissionIdOf`/`toCreatePayload`/`toUpdatePayload`/`toReparentPayload`/`toDeletePayload`/`hrefWarning`/`deleteConfirmLabel`/`isLatestRequest`), `permLabel`/`jsonOrThrow`, 폼 Card 전체, mutations(`save`/`remove`/`reorder`/`reparent`), `RolePreview`, 미리보기 aside.
+- 메뉴 PATCH는 `isActive` 토글 지원(`updateNavSchema.isActive` optional, task 조사 확인) → 토글은 `{ isActive, updatedAt }` PATCH.
+- `reorder` mutation 인자: `{ parentId, orderedItems: Array<{id, updatedAt}> }` — 변경 금지.
+
+## Deps
+
+01 (Chip·Switch). PageHeader eyebrow(01).
+
+## Cautions
+
+- **드래그는 같은 부모 내 순서변경만.** reparent(부모 변경)는 폼의 "이동" 버튼으로만 — 드래그로 부모를 바꾸지 않는다. Reason: cascade·권한 검증 복잡(디자인 결정).
+- **`reorder.mutate` 호출 시 각 형제의 관측 `updatedAt`을 동반**(P6 lost-update 차단). `ordered.map((s) => ({ id: s.id, updatedAt: s.updatedAt }))`. Reason: 동시 재정렬 충돌 시 409.
+- **RolePreview·reparent·delete(confirmedChildIds)·삭제 확인 UI(가시 텍스트 경고)는 손대지 않는다.** Reason: out-of-order 가드·TOCTOU·데이터 손실 방지 검증 동작.
+- 드래그 핸들은 **포커스 가능한 button + onKeyDown(ArrowUp/Down)** — 키보드 재정렬을 겸한다(↑↓ 버튼 제거). Reason: a11y 유지(결정 ③).
+- 활성 토글은 대·중메뉴 **모든 행**에 노출(결정 ②). 읽기전용은 Switch 대신 Chip.
+- 로컬 드래그 상태는 **이벤트 핸들러에서만** setState(useEffect에서 props→state 동기화 금지). Reason: lint `react-hooks/set-state-in-effect`(RolePreview 주석 참조). 비드래그 시 `view = drag?.order ?? items`로 항상 최신 props 렌더.
+
+## TDD steps
+
+### 1. 순수 헬퍼 실패 테스트
+
+`tests/app/admin/navigation/payload.test.ts` 말미에 추가(상단 import에 `moveItem`, `toToggleActivePayload` 추가):
+
+```ts
+import {
+  // ...기존 import에 이어서
+  moveItem,
+  toToggleActivePayload,
+} from "@/app/(app)/admin/navigation/_components/navigation-editor";
+
+describe("moveItem", () => {
+  it("moves an element forward (불변, 새 배열)", () => {
+    const a = ["a", "b", "c", "d"];
+    expect(moveItem(a, 0, 2)).toEqual(["b", "c", "a", "d"]);
+    expect(a).toEqual(["a", "b", "c", "d"]); // 원본 불변
+  });
+  it("moves an element backward", () => {
+    expect(moveItem(["a", "b", "c", "d"], 3, 1)).toEqual(["a", "d", "b", "c"]);
+  });
+  it("no-op when from === to", () => {
+    expect(moveItem(["a", "b", "c"], 1, 1)).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("toToggleActivePayload", () => {
+  it("negates isActive and carries updatedAt(낙관락)", () => {
+    expect(toToggleActivePayload({ isActive: true, updatedAt: "2026-01-01T00:00:00.000Z" }))
+      .toEqual({ isActive: false, updatedAt: "2026-01-01T00:00:00.000Z" });
+    expect(toToggleActivePayload({ isActive: false, updatedAt: "2026-02-02T00:00:00.000Z" }))
+      .toEqual({ isActive: true, updatedAt: "2026-02-02T00:00:00.000Z" });
+  });
+});
+```
+
+실행: `npm test -- payload` → FAIL(두 헬퍼 미export).
+
+### 2. navigation-editor.tsx — 전체 교체
+
+아래 전문으로 교체한다(보존 영역은 원본과 동일, 트리/행만 신규).
+
+```tsx
 "use client";
 
 import { useState, useEffect, useRef } from "react";
@@ -579,3 +652,25 @@ function RolePreview({ permissionId, selected }: { permissionId: string | null; 
     </p>
   );
 }
+```
+
+실행: `npm test -- payload` → PASS.
+
+### 3. 검증·커밋
+
+```bash
+npm run typecheck && npm run lint && npm test && npm run build
+git add "src/app/(app)/admin/navigation/_components/navigation-editor.tsx" tests/app/admin/navigation/payload.test.ts
+git commit -m "feat(admin): 메뉴 트리 Handle Cards(드래그·키보드 정렬 + 활성 토글)"
+```
+
+## Acceptance Criteria
+
+```bash
+npm run typecheck   # 0 errors
+npm run lint        # 0 errors (set-state-in-effect 없음 — 드래그 state는 핸들러에서만)
+npm test            # payload(moveItem·toToggleActivePayload) 통과 + 기존 navigation 테스트 무회귀
+npm run build       # 성공
+```
+
+수동 확인(휴대폰 미리보기 — 터치 드래그 포함): eyebrow "내비게이션" + 메뉴 추가; 핸들 드래그로 **같은 묶음 내** 순서 변경(대메뉴끼리/한 부모의 자식끼리), 드롭 시 저장·갱신; 핸들 포커스 후 ↑↓ 키로도 재정렬; 대메뉴 도메인 색 점; 권한칩; 활성 Switch 토글; 삭제 시 자식 수 경고 후 확정; "이동"(reparent)·RolePreview 정상; 읽기전용은 핸들·Switch·수정/삭제 미노출(Chip만).

@@ -1,3 +1,35 @@
+# Task 06 — 권한 매트릭스 화면 재디자인 (Aurora)
+
+`matrix-editor.tsx`를 Aurora로 재조립한다: PageHeader(eyebrow "접근 제어") + StatStrip(역할 수·권한 수) + Card{table}. 셀의 native `<select effect>`를 **컬러 세그먼트 토글**(허용=brand / 거부=rose / · =중립)로, 묶음 native `<select>`를 `Select` 프리미티브로 교체. **setCell·bulkSet·grouping·PM 잠금·ROLE_DISPLAY 정렬·scope 셀렉트는 그대로** 둔다.
+
+## Files
+
+- Modify `src/app/(app)/admin/roles/_components/matrix-editor.tsx`
+
+## Prep
+
+- entrypoint §Shared Contracts(프리미티브) + 불변식(매트릭스).
+- 현재 `matrix-editor.tsx`(전문): `ruleKey`/`byCell`/`grouped`(groupPermissions)/`collapsed`/`busy`/`setCell`/`bulkSet` — **로직 변경 금지**. 셀 잠금 `locked = !canConfigure || role.key === "pm"`.
+- 역할 열은 서버 `getMatrix`가 `ROLE_DISPLAY_ORDER`로 정렬·`role.name`(한글) 제공 — 표시명 재매핑 불필요.
+- scope 셀렉트는 `scopeOptions[`${resource}:${action}`]`가 2개 이상일 때만(ALLOW). 유지.
+
+## Deps
+
+01. (Chip 톤맵 task-02 불필요 — 세그먼트는 자체 색.)
+
+## Cautions
+
+- **`setCell(roleId, permissionId, effect, scope)` 호출 시 scope 규칙 보존:** ALLOW가 아니면 `scope="all"`. 현 코드의 `e.target.value === "ALLOW" ? scope : "all"` 분기를 세그먼트에서도 동일 적용. Reason: 서버 `assertCellAllowed`가 DENY/none의 scope를 all로 정규화하지만, 클라도 동일 의미를 보내야 함.
+- **PM 열·읽기전용은 텍스트로만**(편집 컨트롤 렌더 금지). 현 `locked` 분기 유지. Reason: D6 pm read-only + 위임 admin read-only.
+- **`bulkSet`의 인자·busy 가드 유지.** Select로 바꿔도 `value=""` 고정(선택 후 자동 복귀) + `disabled={busy}`. Reason: 묶음부여 동시성·UX.
+- raw `<table>`(sticky 첫 열·group colspan) 구조는 유지 — Table 프리미티브로 바꾸지 말 것. Reason: sticky/colspan 미지원, 회귀 위험.
+- 새 순수 로직 없음 → 단위테스트 추가 없음(grouping/setCell은 기존 테스트). typecheck/lint/build로 검증.
+
+## Steps
+
+### 1. matrix-editor.tsx — 전체 교체
+
+```tsx
 "use client";
 import { Fragment, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -202,3 +234,23 @@ export function MatrixEditor({
     </div>
   );
 }
+```
+
+### 2. 검증·커밋
+
+```bash
+npm run typecheck && npm run lint && npm test && npm run build
+git add "src/app/(app)/admin/roles/_components/matrix-editor.tsx"
+git commit -m "feat(admin): 권한 매트릭스 Aurora 재디자인(세그먼트 토글·PageHeader·StatStrip)"
+```
+
+## Acceptance Criteria
+
+```bash
+npm run typecheck   # 0 errors
+npm run lint        # 0 errors
+npm test            # green (matrix-getmatrix 등 기존 테스트 무회귀)
+npm run build       # 성공
+```
+
+수동 확인: eyebrow "접근 제어", 역할/권한 스탯, 그룹 접기/펼치기, 셀 세그먼트(허용=파랑·거부=빨강·· =중립) 클릭 시 즉시 반영, ALLOW + 다중 scope 셀렉트 노출, PM 열·읽기전용은 텍스트, 묶음부여 Select 동작·결과 notice, 동시 편집 시 err 노출.
