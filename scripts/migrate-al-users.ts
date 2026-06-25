@@ -52,7 +52,6 @@ interface Mapped {
   email: string;
   name: string;
   passwordHash: string;
-  department: string | null;
   position: string | null;
   joinDate: Date | null;
   employmentType: EmploymentType;
@@ -77,7 +76,6 @@ function mapUser(u: AlUser): Mapped {
     email,
     name: u.name,
     passwordHash: u.password,
-    department: u.department,
     position: u.position,
     joinDate: u.joinDate ? new Date(u.joinDate) : null,
     employmentType,
@@ -147,7 +145,6 @@ async function main() {
         email: m.email,
         name: m.name,
         passwordHash: m.passwordHash,
-        department: m.department,
         position: m.position,
         joinDate: m.joinDate,
         employmentType: m.employmentType,
