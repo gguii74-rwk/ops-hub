@@ -1,22 +1,23 @@
 "use client";
 import { useEffect, useState } from "react";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { buildMonthGrid } from "@/modules/calendar/ui/grid";
 import type { FeedResponse, ViewKey } from "@/modules/calendar/types";
+import { CalendarMonth } from "@/modules/calendar/ui/calendar-month";
+import { eventChipClass } from "@/modules/calendar/ui/kind-styles";
 import { Button } from "@/components/ui/button";
+import { feedToEvents } from "./feed-adapter";
 
 const VIEW_LABEL: Record<ViewKey, string> = { work: "업무", leave: "휴가", personal: "개인", team: "팀", admin: "관리자" };
-const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 
-// kind별 칩 색(브랜드 팔레트 semantic 토큰).
-const KIND_CLASS: Record<string, string> = {
-  INTERNAL_LEAVE: "bg-emerald-100 text-emerald-950 ring-1 ring-emerald-300/70 dark:bg-emerald-500/20 dark:text-emerald-100 dark:ring-emerald-400/30",
-  EXTERNAL_VACATION: "bg-lime-100 text-lime-950 ring-1 ring-lime-300/70 dark:bg-lime-400/20 dark:text-lime-100 dark:ring-lime-300/30",
-  WORKFLOW_TASK: "bg-orange-100 text-orange-950 ring-1 ring-orange-300/70 dark:bg-orange-500/20 dark:text-orange-100 dark:ring-orange-300/30",
-  HOLIDAY: "bg-rose-100 text-rose-950 ring-1 ring-rose-300/70 dark:bg-rose-500/20 dark:text-rose-100 dark:ring-rose-300/30",
-  EXTERNAL_EVENT: "bg-slate-200 text-slate-800 ring-1 ring-slate-300 dark:bg-slate-700/50 dark:text-slate-100 dark:ring-slate-600",
-  PERSONAL_EVENT: "bg-blue-100 text-blue-950 ring-1 ring-blue-300/70 dark:bg-blue-500/20 dark:text-blue-100 dark:ring-blue-300/30",
-  TEAM_EVENT: "bg-cyan-100 text-cyan-950 ring-1 ring-cyan-300/70 dark:bg-cyan-500/20 dark:text-cyan-100 dark:ring-cyan-300/30",
+// kind 표시명(범례·팝오버용).
+const KIND_LABEL: Record<string, string> = {
+  INTERNAL_LEAVE: "휴가",
+  EXTERNAL_VACATION: "외부 휴가",
+  WORKFLOW_TASK: "업무",
+  HOLIDAY: "공휴일",
+  EXTERNAL_EVENT: "외부 일정",
+  PERSONAL_EVENT: "개인",
+  TEAM_EVENT: "팀",
 };
 
 async function fetchFeed(view: ViewKey, anchorISO: string): Promise<FeedResponse> {
@@ -34,7 +35,6 @@ function addMonths(d: Date, n: number): Date {
   return new Date(d.getFullYear(), d.getMonth() + n, 1);
 }
 // 서버에 보내는 앵커: 표시 중인 연/월의 KST 정오(15일 12:00 KST = UTC 03:00)로 고정.
-// 월 경계 시각·브라우저 TZ에 무관하게 서버의 KST 정규화가 항상 같은 달을 잡게 한다.
 function monthAnchorISO(d: Date): string {
   return new Date(Date.UTC(d.getFullYear(), d.getMonth(), 15, 3, 0, 0)).toISOString();
 }
@@ -72,7 +72,7 @@ export function CalendarView({ allowedViews }: { allowedViews: ViewKey[] }) {
   }
 
   const feed = query.data;
-  const grid = feed ? buildMonthGrid(anchor, feed.events) : [];
+  const events = feed ? feedToEvents(feed.events) : [];
 
   return (
     <div className="space-y-4">
@@ -100,39 +100,27 @@ export function CalendarView({ allowedViews }: { allowedViews: ViewKey[] }) {
         </p>
       )}
 
-      <div className="grid grid-cols-7 overflow-hidden rounded-lg border border-border bg-border">
-        {WEEKDAYS.map((w) => (
-          <div key={w} className="border-b border-border bg-card p-2 text-center text-xs font-medium text-muted-foreground">{w}</div>
-        ))}
-        {grid.map((day) => {
-          const dayNum = Number(day.dateKey.slice(-2));
-          // 셀 배경: 지난날은 회색 음영(muted는 거의 흰색이라 muted-foreground 기반으로 확실히 구분),
-          // 이번 달 외 미래는 옅게, 오늘·이번 달 미래는 기본.
-          const cellTone = day.isPast ? "bg-muted-foreground/10" : !day.inMonth ? "bg-muted/40" : "";
-          const dimNumber = day.isPast || !day.inMonth; // 지난날·달력 외 → 숫자 흐리게
-          return (
-            <div key={day.dateKey} className={`min-h-24 border-b border-r border-border bg-background p-1 ${cellTone}`}>
-              <div className="text-xs">
-                {day.isToday ? (
-                  // 오늘: 브랜드 색 동그라미로 강조.
-                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[11px] font-semibold leading-none text-primary-foreground">
-                    {dayNum}
-                  </span>
-                ) : (
-                  <span className={dimNumber ? "text-muted-foreground" : "font-medium"}>{dayNum}</span>
-                )}
-              </div>
-              <div className={`mt-1 space-y-0.5 ${day.isPast ? "opacity-60" : ""}`}>
-                {day.events.map((e) => (
-                  <div key={e.id} className={`truncate rounded-md px-1.5 py-0.5 text-[11px] ${KIND_CLASS[e.kind] ?? "bg-accent"}`} title={e.title}>
-                    {e.title}
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      <CalendarMonth
+        anchor={anchor}
+        events={events}
+        intensity="bold"
+        legend
+        legendLabel={(k) => KIND_LABEL[k] ?? k}
+        renderDayDetail={({ events: dayEvents }) => (
+          <ul className="space-y-1">
+            {dayEvents.length === 0 && <li className="text-muted-foreground">일정 없음</li>}
+            {dayEvents.map((e) => (
+              <li
+                key={e.id}
+                className={`truncate rounded px-1.5 py-0.5 text-xs ${eventChipClass(e.kind, "soft", e.status)}`}
+                title={e.title}
+              >
+                {e.title}
+              </li>
+            ))}
+          </ul>
+        )}
+      />
 
       {query.isError && <p className="text-sm text-destructive">캘린더를 불러오지 못했습니다.</p>}
     </div>
