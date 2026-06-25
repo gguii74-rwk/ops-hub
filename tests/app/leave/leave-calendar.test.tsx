@@ -2,17 +2,17 @@
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// react-query useQuery → 빈 이벤트 고정(패칭 무력화). leave-calendar는 useQuery만 사용.
-vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: [] }) }));
-// next/navigation useRouter → push 캡처(자가신청 라우팅 검증)
-const router = vi.hoisted(() => ({ push: vi.fn() }));
-vi.mock("next/navigation", () => ({ useRouter: () => router }));
+// react-query 모킹: useQuery(빈 이벤트) + RequestLeaveModal이 쓰는 useMutation/useQueryClient.
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: () => ({ data: [] }),
+  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+  useMutation: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
+}));
 
 import { LeaveCalendar } from "@/app/(app)/leave/_components/leave-calendar";
 
 afterEach(() => {
   cleanup();
-  router.push.mockClear();
 });
 
 // 현재 KST 달의 15일 셀(항상 inMonth)을 열어 팝오버를 띄운다.
@@ -43,11 +43,17 @@ describe("LeaveCalendar — 능력별 진입 분리(R1/R4)", () => {
     expect(within(dialog).getByText("관리자 직접 입력")).toBeTruthy();
   });
 
-  it("자가신청 버튼은 /leave/request?date= 로 라우팅(제출 경로 보존)", () => {
+  it("팝오버 '이 날짜로 연차 신청' 클릭 시 자가신청 모달이 열린다", () => {
     render(<LeaveCalendar canCreate canManage={false} />);
     open15th();
     fireEvent.click(within(screen.getByRole("dialog")).getByText("이 날짜로 연차 신청"));
-    expect(router.push).toHaveBeenCalledTimes(1);
-    expect(String(router.push.mock.calls[0][0])).toMatch(/^\/leave\/request\?date=\d{4}-\d{2}-\d{2}$/);
+    // 팝오버는 닫히고 자가신청 모달(title "연차 신청")만 남는다
+    expect(within(screen.getByRole("dialog")).getByText("연차 신청")).toBeTruthy();
+  });
+
+  it("'+' 빠른추가 클릭 시 자가신청 모달이 열린다", () => {
+    render(<LeaveCalendar canCreate canManage={false} />);
+    fireEvent.click(screen.getAllByRole("button", { name: /추가/ })[0]);
+    expect(within(screen.getByRole("dialog")).getByText("연차 신청")).toBeTruthy();
   });
 });

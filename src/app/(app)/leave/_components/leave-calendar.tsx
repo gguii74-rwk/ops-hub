@@ -1,6 +1,5 @@
 "use client";
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -10,6 +9,7 @@ import { CalendarMonth } from "@/modules/calendar/ui/calendar-month";
 import { eventChipClass } from "@/modules/calendar/ui/kind-styles";
 import { TYPE_LABEL } from "@/modules/leave/labels";
 import { CreateLeaveModal } from "./create-leave-modal";
+import { RequestLeaveModal } from "./request-leave-modal";
 import { leaveToEvents, type Ev } from "./leave-adapter";
 
 // 현재 KST 연/월 — UTC 기준이면 KST 월초 0~9시에 전월로 잡혀 엉뚱한 달을 패칭한다(R3 medium).
@@ -19,9 +19,9 @@ function kstNow() {
 }
 
 export function LeaveCalendar({ canCreate, canManage }: { canCreate: boolean; canManage: boolean }) {
-  const router = useRouter();
   const [cursor, setCursor] = useState(kstNow); // KST 기준 현재 월
   const [creating, setCreating] = useState<string | null>(null); // 관리자 직접입력 모달 defaultDate(null=닫힘)
+  const [requesting, setRequesting] = useState<string | null>(null); // 자가신청 모달 defaultDate(null=닫힘)
 
   const anchor = new Date(Date.UTC(cursor.y, cursor.m, 15, 3, 0, 0));
   // 표시되는 42칸 그리드(인접월 포함) 전체를 패칭 — 보이는 셀에 데이터 누락(가짜 빈칸) 없도록. R1 medium.
@@ -47,8 +47,8 @@ export function LeaveCalendar({ canCreate, canManage }: { canCreate: boolean; ca
       return { y: d.getUTCFullYear(), m: d.getUTCMonth() };
     });
 
-  // 빠른추가 + = 본인 자가신청(self-service). 라우트 보존(/leave/request 페이지가 create 권한 enforce).
-  const quickAdd = canCreate ? (dateKey: string) => router.push(`/leave/request?date=${dateKey}`) : undefined;
+  // 빠른추가 + = 본인 자가신청(self-service) 모달 오픈. /api/leave/requests가 create 권한 enforce.
+  const quickAdd = canCreate ? (dateKey: string) => setRequesting(dateKey) : undefined;
 
   return (
     <div className="space-y-3">
@@ -93,7 +93,7 @@ export function LeaveCalendar({ canCreate, canManage }: { canCreate: boolean; ca
                     className="w-full"
                     onClick={() => {
                       close();
-                      router.push(`/leave/request?date=${dateKey}`);
+                      setRequesting(dateKey);
                     }}
                   >
                     이 날짜로 연차 신청
@@ -129,6 +129,9 @@ export function LeaveCalendar({ canCreate, canManage }: { canCreate: boolean; ca
 
       {creating !== null && (
         <CreateLeaveModal defaultDate={creating || undefined} onClose={() => setCreating(null)} />
+      )}
+      {requesting !== null && (
+        <RequestLeaveModal defaultDate={requesting || undefined} onClose={() => setRequesting(null)} />
       )}
     </div>
   );
