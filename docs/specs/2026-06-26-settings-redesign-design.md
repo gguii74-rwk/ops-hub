@@ -122,7 +122,8 @@ export async function getSmtpConfig(): Promise<MailTransportConfig>;
 
 ### 5.3 상태 진실화 (D4·D5) — `src/modules/integrations/status.ts`, `src/app/(app)/admin/settings/page.tsx`
 
-- `smtpConfigured()`: `getSmtpConfig()`(tolerant, throw 없음) 사용 → `secretOk(SMTP_PASSWORD)` AND `cfg.host.length > 0`. (host가 DB·env 어느 쪽에든 있으면 충족 → 실제 발송 가능 여부와 일치. SMTP는 throw하지 않으므로 `safe()` 래핑 불필요 — `unknown` 미발생.)
+- `smtpConfigured()`: `getSmtpConfig()`(tolerant, throw 없음) 사용 → `secretOk(SMTP_PASSWORD)` AND `cfg.host.length > 0`. (host가 DB·env 어느 쪽에든 있으면 충족. SMTP는 throw하지 않으므로 `safe()` 래핑 불필요 — `unknown` 미발생.)
+  - **`configured` 계약(명시)**: 정적으로 검증 가능한 **필수 설정의 존재**만 본다 — secret(env password) + 해석된 host 비어있지 않음. port·from은 tolerant 해석기가 항상 유효값으로 보장(무효 시 default/env)하므로 추가 게이트 불필요. 이 배지는 "**메일이 반드시 성공한다**"는 보장이 **아니다** — user↔password 짝의 정확성·SMTP 서버 도달성·인증 성공은 **라이브 핸드셰이크 없이는 정적으로 알 수 없다**(어떤 설정 UI도 시도 없이 자격증명을 증명 못 함). 실제 발송 가능 여부의 확정은 후속 "연결 테스트" 액션(§10, PR-B Google 도달성 테스트와 동형)으로 분리한다. 잘못 저장된 행은 항목별 INVALID 배지로 별도 노출된다.
 - `googleConfigured()`: `secretOk(GOOGLE_APPLICATION_CREDENTIALS)` AND 활성 `GOOGLE_CALENDAR` 소스 ≥1.
   - 카운트는 `prisma.calendarSource.count({ where: { kind: "GOOGLE_CALENDAR", syncStatus: "ACTIVE" } })` — status.ts(module)는 `@/lib/prisma`(lib) import 허용. (calendar 모듈 import는 경계 위반이라 직접 count.)
 - `templatesConfigured()`: 현행 유지.
@@ -155,7 +156,7 @@ PR-A 머지 후 새 세션에서 상세 plan. 합의된 결정:
 - **kernel**: `getSmtpConfig` 폴백 규칙(DB 우선, env 폴백, 빈 값 처리) 단위 테스트.
 - **lib**: `sendMail(msg, config)` — config 주입 시 transport 인자(host/port/secure/user, pass=env), config 미주입 시 현행 env 동작 보존(`setMailTransportForTests` fake로 인자 검증).
 - **kernel(getSmtpConfig tolerant, D10)**: ① **무효 DB port row + 유효 env SMTP → throw 없이 env/ default로 해석, 발송 가능**(무회귀 회귀 테스트), ② settings 읽기 실패(인프라 오류) + env present → env config 반환·throw 없음, ③ DB 채움 시 DB 우선·빈 값 시 env 폴백 필드별 검증.
-- **integrations 상태**: `smtpConfigured`(host 유무·secret 유무 조합), `googleConfigured`(소스 카운트·secret 조합), `unknown` 환원 회귀.
+- **integrations 상태**: `smtpConfigured` — host 있음+secret 있음→정상, host 없음→설정 필요, **secret(password) 없음→설정 필요**(user/host만 있어도 미발송이므로), **무효 DB port여도 host+secret 있으면 정상**(tolerant 해석 결과 기준, 배지 계약과 일치). `googleConfigured`(소스 카운트·secret 조합), Google·문서 `unknown` 환원 회귀.
 - **catalog/service**: 신규 키 등록·group/groupOrder 전파, `calendarIds` relational 전환.
 - **UI(편집기)**: list 추가/삭제/형식검증, string/number 편집기 저장·롤백(rejected)·refetch 경로, boolean 회귀.
 - 기존 스위트 그린 유지(현재 1380 통과 기준).
@@ -172,3 +173,15 @@ PR-A 머지 후 새 세션에서 상세 plan. 합의된 결정:
 - `sendMail` 시그니처 확장 — 호출자 2곳(leave·workflows) 동시 갱신 필수.
 - 상태 점검에 prisma count 추가(google) — feed 성능엔 영향 없음(설정 화면 1회 조회).
 - 표현계층(IA·편집기) 변경은 도메인 불변식·동시성 패턴 무영향(설정 쓰기 토큰 패턴·audit 유지).
+
+## 10. 적대검증 판정(ledger)
+
+spec 단계 적대검증 결과와 판정. blocking은 모두 닫음(미판정 0).
+
+| # | finding | sev | disposition | 근거 / 연결 |
+| --- | --- | --- | --- | --- |
+| F1 | 메일 lib이 kernel 타입을 import → boundary 위반 | high | **FIXED** | D3·§5.2 — 전송 config 타입 `MailTransportConfig`를 lib에 정의, kernel `getSmtpConfig`가 채택(kernel→lib 허용). lib→kernel import 없음. |
+| F2 | 전송 경로 `getSmtpConfig` throw가 env 유효해도 발송 차단(D1 무회귀 모순) | high | **FIXED** | D10·§5.2 — tolerant 해석기(필드별 env 폴백·throw 금지) + §7 무회귀 테스트. |
+| F3 | SMTP 상태가 port/from/auth 일치 등 전송 전제를 무시 → "정상"인데 발송 실패 가능 | medium | **ACCEPTED** | port·from은 tolerant 해석기가 유효값 보장(정적 게이트 불필요). user↔password 정확성·서버 도달성은 **라이브 핸드셰이크 없이 정적 검증 불가** — 배지 계약을 "필수 설정 존재"로 명시(§5.3). 깨진 행은 항목별 INVALID 배지로 노출. **보완 단계(후속)**: SMTP "연결 테스트" 액션(실 핸드셰이크 발송 검증) — PR-B Google 도달성 테스트와 동형으로 추후 추가. |
+
+**후속(follow-up)**: SMTP/Google 연결 테스트(라이브 검증) 액션은 본 변경 범위 밖. PR-B(또는 별도 과제)에서 도입 검토.
