@@ -17,6 +17,7 @@
 - [Laptop sync stale artifacts](laptop-sync-stale-artifacts.md) — 노트북 전환 후 typecheck 거짓 실패 시 prisma:generate(stale client)·rm .next(stale build types) 먼저
 - [ops-hub OWNER email changed](ops-hub-owner-email-changed.md) — dev 로그인 ID admin@→ggui74@uracle.co.kr, 서버 .env SEED_ADMIN_EMAIL도 갱신
 - [annual-leave users migrated](annual-leave-users-migrated.md) — 운영 16명 dev opshub 적재(해시 그대로 재로그인 가능), 운영DB=/opt/annual-leave root PM2
+- [annual-leave data migrated](annual-leave-data-migrated.md) — 연차 할당25·신청120·이력15 dev 적재(2026-06-25); 운영 cutover 증분 워터마크 T=1781660787623(2026-06-17 10:46 KST), upsert 증분 전략
 - [Cross-app cookie collision](cross-app-cookie-collision.md) — day-sync·ops-hub 같은 IP·같은 기본 쿠키 이름 → 세션 충돌(500). ops-hub 전용 쿠키 이름으로 해결(브랜치 fix/auth-cookie-name-collision)
 - [Codex shell and sync lessons](codex-session-shell-and-sync-lessons.md) — 2026-06-22 세션 재발 방지: PowerShell `(app)` 경로 quoting, `npm.cmd`, `.next/dev/types` 충돌, 개발서버/로컬 브랜치 비교, ops-hub DB SSH 터널, `frontend-skill` 공식성 확인.
 - [dev-workflow plugin](dev-workflow-plugin.md) — review-loop·writing-plans-split·context-hook을 dev-workflow 플러그인으로 패키징, public repo gguii74-rwk/claude-dev-workflow 배포(2026-06-23); **ops-hub 전환 PR #17 머지 완료**(dee35d2, 2026-06-24); 집 그램 잔여=`/plugin install dev-workflow@claude-dev-workflow` 1회(codex 이미 설치라 `/codex:setup` 불필요)
