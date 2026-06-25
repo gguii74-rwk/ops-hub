@@ -157,3 +157,18 @@ export interface CalendarMonthProps {
 5. 연차 진입이 팝오버/빠른추가로 대체되되 **두 경로가 모두 보존**된다: 자가신청(`canCreate`)→`/leave/request?date=`(라우트 불변), 관리자 직접입력(`canManage`)→`CreateLeaveModal`(불변). 일반 사용자(create 가능·approve-all 불가)도 캘린더 자가신청이 유지된다. 제출 경로·트랜잭션 동작 변화 없음.
 6. 휴대폰 폭에서 그리드·막대 안 깨짐, 키보드만으로 셀 이동·팝오버 열기/닫기.
 7. `lint`/`typecheck`/`test`/`build` 그린. 서버/도메인 코드 diff 없음.
+
+## Plan review-loop ledger (적대검증, base=main)
+
+6회 반복, blocking score 4→4→2→1→3→0, 최종 **verdict approve**. 모든 finding **FIXED**(다음 라운드에서 소멸 확인). ACCEPTED/DEFERRED_TO_IMPL/OUT_OF_SCOPE/ESCALATE 없음 → impl로 넘길 미해결 blocking 0.
+
+| R | severity | finding | disposition |
+| --- | --- | --- | --- |
+| 1 | high | 연차 자가신청 동선을 `canManage`로 게이트해 일반 사용자 자가신청 제거·제출 경로 혼동 | FIXED — 자가신청(`canCreate`→`/leave/request?date=`)·관리자(`canManage`→`CreateLeaveModal`) 분리(task-05) |
+| 1 | medium | 인접월 활성 셀이 월 단위 패칭으로 가짜 빈칸 | FIXED — 42칸 그리드 윈도우(`normalizeToGridWindow`) 패칭(task-05) |
+| 2 | high | spec D8/D9/D11이 여전히 `canManage`로 자가신청 프레이밍(plan과 모순) | FIXED — spec D8/D9/D11 이중 경로로 갱신 |
+| 2 | medium | 열린 팝오버가 리패칭 후 stale 목록(`selected.dayEvents` 캡처) | FIXED — `selected={index,day}`만 보관·렌더 시 `visible`에서 파생(task-03) |
+| 3 | medium | 연차 cursor를 UTC로 산출 → KST 월초 0~9시 전월 표시 | FIXED — `toKstDateKey` 기반 `kstNow` 파생(task-05) |
+| 3 | medium | 팝오버에 약속된 포커스 트랩 부재 | FIXED — (R3) Modal 재사용 시도 → (R5) module→ui 위반 판명 → 인라인 트랩으로 최종 해결(task-03) |
+| 4 | medium | spec §7 표·§9 AC가 잔여 `canManage` 프레이밍 | FIXED — §7/§9 이중 경로 정리 + 자가신청 보존 회귀 테스트 추가(task-05) |
+| 5 | high | `CalendarMonth`(module)의 `@/components/ui/modal` import = `module→ui` boundary 위반(lint 실패) | FIXED — `Modal` import 철회·인라인 포커스 트랩 구현(task-03), D1 placement 제약 준수 |
