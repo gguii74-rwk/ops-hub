@@ -32,7 +32,9 @@ REQUIRED SUB-SKILL: `superpowers:subagent-driven-development`. This plan is spli
 | `leave.notifications.onApprove` | 51 | 연차 승인 알림 메일 | 연차가 승인되면 신청자 본인에게 알림 메일을 보냅니다. |
 | `leave.notifications.onReject` | 52 | 연차 반려 알림 메일 | 연차가 반려되면 신청자 본인에게 알림 메일을 보냅니다. |
 
-`SYSTEM_KEYS`는 `CATALOG`에서 파생되므로 자동 포함. **권한(D6)**: 쓰기 = PUT 라우트가 base `admin.settings:configure` + entry `leave.admin:configure` 둘 다 요구. `leave.admin:configure`는 `prisma/seed-permissions.ts`의 `EXTRA_PERMISSIONS`에 `["leave.admin", "configure"]`로 신규 추가(기존 `leave.admin` 리소스의 configure 액션 — 새 리소스 아님). 보유: OWNER + pm(`"*"`). leave 권한 없는 위임 user-admin은 차단. 배포 시 `npm run db:seed`로 권한 등록 필요.
+`SYSTEM_KEYS`는 `CATALOG`에서 파생되므로 자동 포함. **권한(D6)**: 쓰기 = PUT 라우트가 base `admin.settings:configure` + entry `leave.admin:configure` 둘 다 요구. `leave.admin:configure`는 `prisma/seed-permissions.ts`의 `EXTRA_PERMISSIONS`에 `["leave.admin", "configure"]`로 신규 추가(기존 `leave.admin` 리소스의 configure 액션 — 새 리소스 아님). 보유: OWNER(systemRole 자동) + pm. leave 권한 없는 위임 user-admin은 차단.
+- **fresh install**: `bootstrapRolePermissions`가 pm `"*"`로 grant(task-01).
+- **기존 DB**(RolePermission 행 존재 → bootstrap 스킵): task-05의 멱등 upgrade-once 헬퍼가 pm에 grant(R4 — 이게 없으면 기존 배포 pm이 토글 403/미노출).
 
 ### SC-2. 게이트 의미론 (서비스)
 
@@ -90,6 +92,7 @@ Switch({ checked: boolean; onCheckedChange: (next: boolean) => void; disabled?: 
 | 02 | 설정 에디터 boolean 분기(Switch) | [ ] | [task-02](2026-06-25-leave-notification-toggle/task-02-settings-editor-boolean.md) | — | |
 | 03 | 연차 서비스 알림 게이트 | [ ] | [task-03](2026-06-25-leave-notification-toggle/task-03-service-gate.md) | 01 | |
 | 04 | 사이드바 "설정" 메뉴 노출(NAV) | [ ] | [task-04](2026-06-25-leave-notification-toggle/task-04-nav-menu.md) | — | |
+| 05 | leave.admin:configure 권한 업그레이드(기존 DB) | [ ] | [task-05](2026-06-25-leave-notification-toggle/task-05-leave-permission-upgrade.md) | 01 | |
 
 ## 적대검증 판정(ledger)
 
@@ -103,6 +106,7 @@ plan 단계 codex 적대검증 결과 — 모든 blocking finding 판정 완료:
 | 모호한 쓰기 결과를 미반영으로 단정·롤백 — task-02 (R3) | high | **FIXED** | `putSetting`을 판별 유니온(ok/rejected/ambiguous)으로. 응답 미수신(fetch 거부)·2xx 본문 파싱 실패=ambiguous → 롤백 대신 `router.refresh()`로 권위 상태 재조회 + `useEffect` props 재동기화. 롤백은 409/422 등 확정 미반영에만. |
 | 토글 쓰기가 generic admin.settings:configure로 도메인 경계 위반 — task-01 (R3) | high | **FIXED** | 사용자 결정(2026-06-25, D6)으로 entry 권한을 `leave.admin:configure`(도메인 스코프)로 변경 — 기존 SMTP/weekly 패턴 일치. `EXTRA_PERMISSIONS`에 추가, OWNER+pm 보유, 위임 user-admin 차단. |
 | 감사 summary가 OFF/ON 방향 미기록 — task-01 (R3) | medium | **FIXED** | 토글 `audit: "summary"` → `"full"`. boolean은 비민감이라 before/after 그대로 기록 → 방향 식별 가능. |
+| 신규 권한이 기존 DB의 pm에 grant 안 됨(db:seed bootstrap-if-empty 스킵) — task-05 (R4) | high | **FIXED** | `EXTRA_PERMISSIONS` 추가만으론 기존 배포 pm이 grant 못 받아 토글 403/미노출. task-05 신설: `applyTeamsPermissionUpgrade` 패턴의 멱등 upgrade-once 헬퍼로 pm에 `leave.admin:configure` 1회 grant(위임 admin 제외, fail-closed). 정적 배열 테스트가 못 잡는 배포 skew를 비빈 DB 테스트로 커버. |
 
 ## 배포 주의
 
