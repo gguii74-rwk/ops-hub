@@ -54,6 +54,7 @@ export const NAV: readonly NavEntry[] = [
       { key: "admin-teams", label: "팀 관리", href: "/admin/teams", permission: "admin.teams:view" },
       { key: "admin-roles", label: "권한 매트릭스", href: "/admin/roles", permission: "admin.roles:view" },
       { key: "admin-navigation", label: "메뉴 관리", href: "/admin/navigation", permission: "admin.navigation:view" },
+      { key: "admin-settings", label: "설정", href: "/admin/settings", permission: "admin.settings:view" },
     ],
   },
 ] as const;
