@@ -3,7 +3,7 @@ import type { Action } from "@/kernel/access";
 import type { Prisma } from "@prisma/client";
 
 export type JsonValue = Prisma.InputJsonValue;
-export type SettingCategory = "security" | "integrations" | "workflows" | "general";
+export type SettingCategory = "security" | "integrations" | "workflows" | "leave" | "general";
 export type AuditMode = "full" | "redacted" | "summary";
 export type SettingStatus = "OK" | "INVALID" | "configured" | "attention_required" | "LINK";
 

@@ -14,9 +14,10 @@ const CATEGORY_LABELS: Record<string, string> = {
   security: "보안",
   integrations: "연동",
   workflows: "업무",
+  leave: "연차",
   general: "일반",
 };
-const CATEGORY_ORDER = ["security", "integrations", "workflows", "general"] as const;
+const CATEGORY_ORDER = ["security", "integrations", "workflows", "leave", "general"] as const;
 const INTEGRATION_LABELS: Record<string, string> = { smtp: "메일(SMTP)", google: "Google", templates: "문서/템플릿" };
 // 연동 상태 3-state: configured/attention_required/unknown(인프라 장애 — 설정 누락과 구분, task-06).
 const INTEGRATION_HEALTH_LABELS: Record<string, string> = {

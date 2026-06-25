@@ -8,7 +8,7 @@ describe("settings catalog 정합성", () => {
   it("모든 엔트리에 key·category·order·title·description·permission 존재", () => {
     for (const e of CATALOG) {
       expect(e.key, `${e.key} key`).toBeTruthy();
-      expect(["security", "integrations", "workflows", "general"]).toContain(e.category);
+      expect(["security", "integrations", "workflows", "leave", "general"]).toContain(e.category);
       expect(typeof e.order).toBe("number");
       expect(e.title).toBeTruthy();
       expect(e.description).toBeTruthy();
@@ -59,11 +59,35 @@ describe("settings catalog 정합성", () => {
     expect(getEntry("nope.nope.nope")).toBeUndefined();
   });
 
-  it("카탈로그 항목 수 고정 (5 systemSetting, 5 envSecret, 1 relational)", () => {
+  it("카탈로그 항목 수 고정 (8 systemSetting, 5 envSecret, 1 relational)", () => {
     const byKind = (k: string) => CATALOG.filter((e) => e.kind === k).length;
-    expect(byKind("systemSetting")).toBe(5);
+    expect(byKind("systemSetting")).toBe(8);
     expect(byKind("envSecret")).toBe(5);
     expect(byKind("relational")).toBe(1);
-    expect(CATALOG.length).toBe(11);
+    expect(CATALOG.length).toBe(14);
+  });
+
+  it("leave 알림 3키 — category=leave·default true·z.boolean·leave.admin:configure·audit full", () => {
+    const keys = [
+      "leave.notifications.onRequest",
+      "leave.notifications.onApprove",
+      "leave.notifications.onReject",
+    ];
+    for (const key of keys) {
+      const e = getEntry(key);
+      expect(e, `${key} 존재`).toBeDefined();
+      expect(e!.kind).toBe("systemSetting");
+      expect(e!.category).toBe("leave");
+      expect(e!.permission).toEqual({ resource: "leave.admin", action: "configure" }); // D6 도메인 스코프
+      if (e!.kind !== "systemSetting") throw new Error("unreachable");
+      expect(e!.default).toBe(true);
+      expect(e!.audit).toBe("full"); // E: OFF/ON 방향 감사 기록
+      expect(e!.fallbackSafe).toBe(true);
+      // z.boolean(): true/false 통과, 비boolean reject
+      expect(e!.schema.safeParse(true).success).toBe(true);
+      expect(e!.schema.safeParse(false).success).toBe(true);
+      expect(e!.schema.safeParse("true").success).toBe(false);
+      expect(e!.schema.safeParse(1).success).toBe(false);
+    }
   });
 });
