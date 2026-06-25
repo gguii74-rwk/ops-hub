@@ -9,5 +9,5 @@ export default async function LeaveCalendarPage() {
   if (!set.has("leave.request:view"))
     return <p className="text-sm text-muted-foreground">연차 캘린더 권한이 없습니다.</p>;
   const approvalScope = session?.user ? await getEffectiveScope(session.user.id, "leave.approval", "approve") : null;
-  return <LeaveCalendar canManage={approvalScope === "all"} />;
+  return <LeaveCalendar canCreate={set.has("leave.request:create")} canManage={approvalScope === "all"} />;
 }
