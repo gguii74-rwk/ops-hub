@@ -11,7 +11,7 @@
 
 - 읽기: spec D3·D6·D7·D8·D9·D12·D13, §5(인터페이스 개요), entrypoint §Shared Contracts(`CalendarMonth` 인터페이스·핵심 재사용/규칙·테스트 컨벤션).
 - 재사용: `buildMonthGrid`/`GridDay`(`grid.ts`, 무변경), `packWeekLanes`/`eventsForDay`(task 01), `kindClass`/`statusOverlay`/`eventChipClass`(task 02), `cn`(`@/lib/utils`).
-- 팝오버 컨테이너 = `src/components/ui/modal.tsx`(`Modal`) **재사용** — 포커스 트랩(Tab/Shift+Tab)·`aria-modal`·Esc·바깥클릭·focus 복원·scroll-lock을 전부 제공(R3). 손수 dialog/effect를 만들지 않는다. `Modal` 트랩은 `tests/components/ui/modal.test.tsx`가 이미 검증.
+- 팝오버 컨테이너 = **인라인 다이얼로그**(raw `<div role="dialog">`) — `src/components/ui/modal.tsx`의 동작(포커스 트랩 Tab/Shift+Tab·`aria-modal`·Esc·바깥클릭·focus 복원·scroll-lock)을 **모듈 내부에 재현**한다. `Modal`(ui)을 import하지 **않는다** — `module → ui`는 eslint boundaries 위반(D1, R5 high). modal.tsx는 동작 참고용(복붙)일 뿐 import 대상이 아니다.
 - §Shared Contracts items 사용: `CalendarEventInput`/`Intensity`(task 01), `DayDetailContext`/`CalendarMonthProps`(이 task가 정의·export).
 
 ## Deps
@@ -77,7 +77,7 @@ describe("CalendarMonth — 팝오버(D8)", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "2026-06-10" }));
     const dialog = screen.getByRole("dialog");
-    expect(dialog.getAttribute("aria-modal")).toBe("true"); // Modal 재사용 → 포커스 트랩 계약(D8/D13)
+    expect(dialog.getAttribute("aria-modal")).toBe("true"); // 인라인 다이얼로그 포커스 트랩 계약(D8/D13)
     expect(screen.getByText("상세:2026-06-10")).toBeTruthy();
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -111,6 +111,32 @@ describe("CalendarMonth — 팝오버(D8)", () => {
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).queryByText("기존연차")).toBeNull();
     expect(within(dialog).getByText("갱신연차")).toBeTruthy();
+  });
+
+  it("포커스 트랩: 마지막 포커스 요소에서 Tab → 첫 요소로 순환 (R5 — module 내부 인라인 트랩)", () => {
+    render(
+      <CalendarMonth
+        anchor={ANCHOR}
+        now={NOW}
+        events={[]}
+        renderDayDetail={() => (
+          <>
+            <button type="button">액션A</button>
+            <button type="button">액션B</button>
+          </>
+        )}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "2026-06-10" }));
+    const dialog = screen.getByRole("dialog");
+    const focusables = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    focusables[focusables.length - 1].focus(); // 마지막(액션B)
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(document.activeElement).toBe(focusables[0]); // 첫(닫기 ✕)로 순환
   });
 });
 
@@ -166,13 +192,14 @@ npm test -- tests/modules/calendar/calendar-month.test.tsx
 
 ```tsx
 "use client";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { buildMonthGrid, type GridDay } from "@/modules/calendar/ui/grid";
 import { eventsForDay, packWeekLanes } from "@/modules/calendar/ui/lanes";
 import { eventChipClass, kindClass, statusOverlay } from "@/modules/calendar/ui/kind-styles";
 import type { CalendarEventInput, Intensity } from "@/modules/calendar/ui/event-input";
-import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/utils";
+// ⚠ ui 프리미티브(@/components/ui/*)를 import하지 않는다 — module→ui는 eslint boundaries 위반(D1, R5 high).
+// 팝오버(다이얼로그)는 raw 엘리먼트 + 인라인 포커스 트랩으로 구현(modal.tsx 동작을 모듈 내부에 재현).
 
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 const MAX_LANES = 3; // 셀에 표시할 최대 막대 수, 초과는 "+N"
@@ -222,6 +249,8 @@ export function CalendarMonth({
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<Selected | null>(null);
   const cellRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const labelId = useId();
 
   const skeleton = useMemo(() => buildMonthGrid(anchor, [], now), [anchor, now]);
   const weeks = useMemo(() => chunk(skeleton, 7), [skeleton]);
@@ -233,7 +262,7 @@ export function CalendarMonth({
     return order;
   }, [events]);
 
-  // 닫기 = 선택 해제. 포커스 복원·Esc·바깥클릭·Tab 트랩·scroll-lock은 Modal이 제공(R2/R3).
+  // 닫기 = 선택 해제(직전 포커스 복원은 아래 트랩 effect cleanup이 수행).
   const close = useCallback(() => setSelected(null), []);
 
   const openDay = useCallback((index: number, day: GridDay) => {
@@ -242,6 +271,48 @@ export function CalendarMonth({
 
   // 팝오버 이벤트는 캡처하지 않고 매 렌더 visible에서 파생 — 열린 채 리패칭돼도 갱신(R2 medium).
   const selectedEvents = selected ? eventsForDay(selected.day, visible) : [];
+
+  // 팝오버 a11y(인라인): 패널 포커스 + Tab/Shift+Tab 트랩 + Esc + scroll-lock + 직전 포커스 복원(R3/R5).
+  // modal.tsx와 동일 동작을 모듈 내부에 재현(ui import 금지, D1/R5).
+  useEffect(() => {
+    if (!selected) return;
+    const prevActive = document.activeElement as HTMLElement | null;
+    const panel = dialogRef.current;
+    panel?.focus();
+    const FOCUSABLE =
+      'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        close();
+        return;
+      }
+      if (e.key !== "Tab" || !panel) return;
+      const nodes = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
+      if (nodes.length === 0) {
+        e.preventDefault();
+        panel.focus();
+        return;
+      }
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || active === panel)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+      prevActive?.focus?.();
+    };
+  }, [selected, close]);
 
   function focusCell(i: number) {
     if (i < 0 || i >= cellRefs.current.length) return;
@@ -424,31 +495,50 @@ export function CalendarMonth({
       </div>
 
       {selected && (
-        <Modal title={selected.day.dateKey} onClose={close}>
-          {renderDayDetail ? (
-            renderDayDetail({
-              dateKey: selected.day.dateKey,
-              iso: selected.day.iso,
-              isPast: selected.day.isPast,
-              isToday: selected.day.isToday,
-              events: selectedEvents,
-              close,
-            })
-          ) : (
-            <ul className="space-y-1">
-              {selectedEvents.length === 0 && <li className="text-muted-foreground">일정 없음</li>}
-              {selectedEvents.map((e) => (
-                <li
-                  key={e.id}
-                  className={cn("truncate rounded px-1.5 py-0.5", eventChipClass(e.kind, "soft", e.status))}
-                  title={e.title}
-                >
-                  {e.title}
-                </li>
-              ))}
-            </ul>
-          )}
-        </Modal>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={close}
+        >
+          <div
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={labelId}
+            tabIndex={-1}
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[85vh] w-full max-w-sm space-y-2 overflow-y-auto rounded-xl border border-border bg-card p-4 text-sm text-card-foreground shadow-lg outline-none"
+          >
+            <div className="flex items-center justify-between">
+              <h3 id={labelId} className="font-medium">{selected.day.dateKey}</h3>
+              <button type="button" aria-label="닫기" onClick={close} className="text-muted-foreground hover:text-foreground">
+                ✕
+              </button>
+            </div>
+            {renderDayDetail ? (
+              renderDayDetail({
+                dateKey: selected.day.dateKey,
+                iso: selected.day.iso,
+                isPast: selected.day.isPast,
+                isToday: selected.day.isToday,
+                events: selectedEvents,
+                close,
+              })
+            ) : (
+              <ul className="space-y-1">
+                {selectedEvents.length === 0 && <li className="text-muted-foreground">일정 없음</li>}
+                {selectedEvents.map((e) => (
+                  <li
+                    key={e.id}
+                    className={cn("truncate rounded px-1.5 py-0.5", eventChipClass(e.kind, "soft", e.status))}
+                    title={e.title}
+                  >
+                    {e.title}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -483,3 +573,4 @@ npm run lint                                                 # boundaries 통과
 - **`buildMonthGrid(anchor, [], now)`로 호출**(events=빈 배열). 이유: 스켈레톤(날짜 메타데이터)만 필요. 이벤트 배치는 `packWeekLanes`가 `CalendarEventInput`으로 수행. `grid.ts` 무변경(D10).
 - **범례 필터를 서버 재요청과 연결하지 말 것.** 이유: D12 — 클라이언트 로컬 state, 표시 전용. 이미 받은 events를 `visible`로 필터.
 - **팝오버 이벤트를 `selected` state에 캡처하지 말 것(R2 medium).** 이유: 소비처 events는 react-query 파생 → 백그라운드 리패칭 시 캡처본은 stale(취소/승인/추가 미반영). `selected`는 `{index, day}`만 두고 `selectedEvents = eventsForDay(selected.day, visible)`로 **매 렌더 파생**한다. 위 리렌더 테스트가 회귀를 막는다.
+- **`@/components/ui/*`(Button·Card·Modal 등 ui 프리미티브)를 import하지 말 것(R5 high).** 이유: 이 파일은 `module`(`src/modules/calendar/ui`) 레이어 — eslint boundaries는 `module→ui`를 금지(`from:["module"], allow:["kernel","lib",같은 module]`). 팝오버/막대/셀은 raw 엘리먼트 + `cn`(lib) + `kindClass`(같은 module)로만 구성. 포커스 트랩도 인라인(modal.tsx 복붙, import 아님). app 소비처(task 04/05)는 app 레이어라 ui import 가능하지만 이 컴포넌트는 아님.

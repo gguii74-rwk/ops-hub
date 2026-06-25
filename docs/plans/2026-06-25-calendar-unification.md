@@ -131,7 +131,7 @@ export interface CalendarMonthProps {
 
 - **스켈레톤**: `CalendarMonth`는 `buildMonthGrid(anchor, [], now)`로 42칸 `GridDay`를 얻는다(events=`[]`로 호출 — 날짜 메타데이터만 필요, 이벤트 배치는 `packWeekLanes`가 따로 수행). `grid.ts`는 **무변경**(D10/surgical).
 - **범례 해석(D12)**: 내장 범례는 **kind 토글 필터**(색 차원, 보편적). 연차의 **상태(대기/반려·취소)는 오버레이(D5)로 표현**하며 별도 토글 필터로 만들지 않는다 — 소비처가 오버레이 의미를 설명하는 **정적 범례 키**를 컴포넌트 밖에 둔다. (종류=토글, 상태=오버레이 키.)
-- **팝오버 형태(D8)**: 기존 `Modal` 프리미티브(`src/components/ui/modal.tsx`)를 **재사용**한 중앙 정렬 다이얼로그 — 포커스 트랩(Tab/Shift+Tab)·`aria-modal="true"`·Esc·바깥클릭·focus 복원·scroll-lock을 모두 상속(R3에서 손수 구현 대신 재사용으로 전환). 셀 좌표 앵커링 대신 중앙정렬 — 모바일 견고성(D13)·뷰포트 클램프 자동·테스트 안정성. D8의 컨테이너·키보드·트랩 요건 충족.
+- **팝오버 형태(D8)**: 중앙 정렬 **인라인 다이얼로그**(raw `<div role="dialog" aria-modal="true">`) — 포커스 트랩(Tab/Shift+Tab)·Esc·바깥클릭·focus 복원·scroll-lock을 `modal.tsx` 동작 그대로 모듈 내부에 재현. **`Modal`(ui) import 금지** — `CalendarMonth`는 `module` 레이어라 `module→ui` boundary 위반(D1/R5). 셀 좌표 앵커링 대신 중앙정렬 — 모바일 견고성(D13)·뷰포트 클램프 자동·테스트 안정성.
 - **공휴일 강조(spec §2)**: 공휴일은 통합 feed의 `HOLIDAY` kind 이벤트로 들어와 **rose 색 막대**(D4)로 표시된다 — 이것이 강조다. `CalendarMonth`는 `"HOLIDAY"` 문자열을 특별취급하지 않는다(D2: 도메인 모름) → 셀 별도 틴팅 없음. 주말 요일 헤더만 색 구분(일=rose/토=blue).
 - **reduced-motion(D13)**: v1은 팝오버 진입/슬라이드 애니메이션이 없다(즉시 표시). 유일한 transition은 범례 opacity·hover 색뿐(전정기관 자극 없음) → `prefers-reduced-motion`은 구성상 충족(별도 `motion-safe:` 래핑 불필요).
 - **불변식 보존(D10)**: 어떤 task도 서버/도메인 호출 시그니처를 바꾸지 않는다. 어댑터는 순수 변환, 신청은 기존 `CreateLeaveModal` 재사용(폼·검증·제출 무변경, D11).
