@@ -87,6 +87,7 @@ repository의 `createPendingRequest`/`approveTx`/`rejectRequest`는 **이미 `ma
 - 연차 도메인 불변식과 **무관**: `usedDays` 캐시·status-CAS 트랜잭션·할당 차감은 그대로. 이번 변경은 **메일 enqueue의 조건부 스킵**과 표현계층(에디터·메뉴)뿐.
 - 발송 시점 권한 재확정(REQUESTED를 drain이 `getLeaveAdminRecipients`로 재확정하는 SSOT)은 불변 — 토글은 **enqueue 시점 게이트**이고, 권한 경계는 발송 시점 게이트로 직교한다.
 - REQUESTED "수신자 0명이어도 durable 적재"(phase-5 spec §8)와의 관계: 그 규칙은 "보내려 했으나 수신자가 없다"는 운영 가시성을 위한 것이다. 토글 OFF는 "보내지 않기로 한 명시적 결정"이므로 durable 적재 대상이 아니다(D2와 일관).
+- 읽기 실패 fail-closed 억제의 관측성(R5 적대검증): 설정 조회 예외로 미발송한 경우 의도적 OFF(무로그)와 구분되도록 고유 마커(`LEAVE_NOTIFICATION_SUPPRESSED_BY_SETTINGS_READ_ERROR`)로 error 로깅한다(alert/grep). leave mutation 자체는 막지 않는다(메일↔업무 성공 분리 — phase-5). durable outbox 행(SKIPPED 등)은 두지 않는다: D2(enum 무변경)와 충돌하고, settings·leave가 동일 PostgreSQL이라 이 경로가 실무상 거의 도달하지 않기 때문(과설계 회피). 운영에서 마커가 실제 관측되면 durable trail을 재검토한다.
 - Prisma 마이그레이션 없음 → 표준 restart 배포. 단 메뉴 노출은 `db:seed` 재실행으로 nav 항목을 등록해야 반영된다.
 - 권한(D6): 토글 조작은 base `admin.settings:configure` + entry `leave.admin:configure`(둘 다 필요), 설정 화면 진입은 `admin.settings:view`. `leave.admin:configure`는 `EXTRA_PERMISSIONS`에 추가하는 신규 권한(기존 `leave.admin` 리소스의 configure 액션 — 새 리소스 아님). 설정 화면의 `listSettings`도 entry 권한으로 필터하므로, leave.admin:configure 없는 사용자에겐 토글이 노출되지 않는다.
 

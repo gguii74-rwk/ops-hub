@@ -49,7 +49,8 @@ REQUIRED SUB-SKILL: `superpowers:subagent-driven-development`. This plan is spli
     try {
       return (await getSetting(key)) === true;
     } catch (e) {
-      console.warn(`[leave] 알림 설정 조회 실패(${key}) — fail-closed로 미발송:`, e);
+      // 읽기 실패 억제 ≠ 의도적 OFF(R5): 고유 마커로 error 로깅 → alert/grep. 동일 DB라 이 경로는 거의 도달 안 함.
+      console.error(`[leave] LEAVE_NOTIFICATION_SUPPRESSED_BY_SETTINGS_READ_ERROR key=${key} — fail-closed(미발송):`, e);
       return false;
     }
   }
@@ -103,10 +104,12 @@ plan 단계 codex 적대검증 결과 — 모든 blocking finding 판정 완료:
 | fetch 거부 시 토글 상태 고착 — task-02 (R1) | high | **FIXED** | 실제 결함(spec §3 롤백 의도 미충족). `putSetting`을 try/catch로 절대 throw 안 하게 + 호출부 try/finally로 `saving` 항상 해제 + fetch 거부 롤백 테스트 추가. R2에서 소멸 확인. |
 | 설정 조회 실패 시 fail-open — task-03 (R1·R2) | high | **FIXED** | codex 2회 no-ship 지적 → 사용자 결정(2026-06-25)으로 **D4 개정: 읽기 예외 fail-closed**. `notificationsEnabled` catch가 `false` 반환, 헬퍼 `=== true` 비교, fail-closed 테스트로 잠금. spec D4·§4·§불변식 갱신. |
 | OFF가 enqueue 시점만 게이트(발송 시점 미게이트) — task-03 (R2) | high | **ACCEPTED** | 발송 워커 무변경은 spec **명시적 비목표**. 사용자 결정(2026-06-25)으로 in-flight/큐된 메일 발송 유지 확정(best-effort enqueue preference, 규정용 kill-switch 아님). 보완: spec §불변식에 토글 계약 명문화. |
-| 모호한 쓰기 결과를 미반영으로 단정·롤백 — task-02 (R3) | high | **FIXED** | `putSetting`을 판별 유니온(ok/rejected/ambiguous)으로. 응답 미수신(fetch 거부)·2xx 본문 파싱 실패=ambiguous → 롤백 대신 `router.refresh()`로 권위 상태 재조회 + `useEffect` props 재동기화. 롤백은 409/422 등 확정 미반영에만. |
+| 모호한 쓰기 결과를 미반영으로 단정·롤백 — task-02 (R3) | high | **FIXED** | `putSetting`을 판별 유니온으로. 응답 미수신(fetch 거부)·2xx 본문 파싱 실패 → 롤백 대신 `router.refresh()`로 권위 재조회 + `useEffect` props 재동기화. (**R5에서 정정**: 409도 stale이라 refetch 대상 — 아래 R5 행 참조. 롤백은 422 등 행-불변에만.) |
 | 토글 쓰기가 generic admin.settings:configure로 도메인 경계 위반 — task-01 (R3) | high | **FIXED** | 사용자 결정(2026-06-25, D6)으로 entry 권한을 `leave.admin:configure`(도메인 스코프)로 변경 — 기존 SMTP/weekly 패턴 일치. `EXTRA_PERMISSIONS`에 추가, OWNER+pm 보유, 위임 user-admin 차단. |
 | 감사 summary가 OFF/ON 방향 미기록 — task-01 (R3) | medium | **FIXED** | 토글 `audit: "summary"` → `"full"`. boolean은 비민감이라 before/after 그대로 기록 → 방향 식별 가능. |
 | 신규 권한이 기존 DB의 pm에 grant 안 됨(db:seed bootstrap-if-empty 스킵) — task-05 (R4) | high | **FIXED** | `EXTRA_PERMISSIONS` 추가만으론 기존 배포 pm이 grant 못 받아 토글 403/미노출. task-05 신설: `applyTeamsPermissionUpgrade` 패턴의 멱등 upgrade-once 헬퍼로 pm에 `leave.admin:configure` 1회 grant(위임 admin 제외, fail-closed). 정적 배열 테스트가 못 잡는 배포 skew를 비빈 DB 테스트로 커버. |
+| 409를 prev로 롤백 → stale 권위 상태 표시 — task-02 (R5) | high | **FIXED** | R3에서 409를 rejected(롤백)로 분류한 게 오류 — 409는 "행 이미 변경"이라 prev도 stale. `PutResult`에 `refetch` 도입: 409 + 결과 불명(fetch 거부·파싱 실패)는 `router.refresh()` 재조회, 롤백은 `rejected`(422 등 행-불변)에만. 409=refetch·422=rollback 테스트로 잠금. |
+| 읽기 실패 fail-closed 억제가 의도적 OFF와 구분 불가·복구 불가 — task-03 (R5) | high | **FIXED(경량) + ACCEPTED(잔여)** | FIXED: console.warn→고유 마커 `LEAVE_NOTIFICATION_SUPPRESSED_BY_SETTINGS_READ_ERROR` error 로깅으로 alert/grep 가능(의도적 OFF는 무로그라 구분됨). ACCEPTED 잔여: mutation 차단(메일↔업무 분리 위반)·durable outbox 행(D2 no-enum-change, 동일-DB라 near-unreachable=과설계)은 미채택. 운영 관측 시 durable trail 재검토. **사용자 surface 대상.** |
 
 ## 배포 주의
 
