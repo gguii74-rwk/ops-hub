@@ -13,6 +13,7 @@ export const EXTRA_PERMISSIONS: Array<[string, string]> = [
   ["leave.approval", "approve"],
   ["leave.allocation", "view"],
   ["leave.allocation", "configure"],
+  ["leave.admin", "configure"],
   ["admin.users", "update"],
   ["admin.users", "create"],
   ["admin.users", "approve"],

@@ -15,6 +15,7 @@ describe("leave 권한", () => {
     expect(hasExtra("leave.request", "delete")).toBe(true);
     expect(hasExtra("leave.approval", "view")).toBe(true);
     expect(hasExtra("leave.allocation", "view")).toBe(true);
+    expect(hasExtra("leave.admin", "configure")).toBe(true); // D6 — 알림 토글 쓰기 권한
   });
   it("작업자 role 전원이 leave.request:cancel 보유", () => {
     for (const key of ["regular-developer", "contractor-developer", "contractor-content", "contractor-civil-response"]) {
@@ -23,7 +24,7 @@ describe("leave 권한", () => {
     }
   });
   it("작업자 role에 관리자 전용 키 없음", () => {
-    const adminKeys = ["leave.approval:approve", "leave.allocation:configure", "leave.request:update", "leave.request:delete"];
+    const adminKeys = ["leave.approval:approve", "leave.allocation:configure", "leave.request:update", "leave.request:delete", "leave.admin:configure"];
     for (const role of ["regular-developer", "contractor-developer", "contractor-content", "contractor-civil-response"]) {
       for (const key of adminKeys) {
         expect(ROLE_ALLOW[role]).not.toContain(key);

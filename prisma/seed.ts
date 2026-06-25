@@ -6,6 +6,7 @@ import { ACCESS_ROLE_KEYS, NAV as NAV_CATALOG, RESOURCES } from "../src/kernel/a
 import { EXTRA_PERMISSIONS } from "./seed-permissions";
 import { ROLE_ALLOW } from "./seed-roles";
 import { applyTeamsPermissionUpgrade } from "./migrate-helpers/teams-upgrade";
+import { applyLeaveNotificationsPermissionUpgrade } from "./migrate-helpers/leave-notifications-upgrade";
 import { bootstrapRolePermissions } from "./migrate-helpers/roles-bootstrap";
 import { planGoogleSources } from "./seed-google";
 import { seedNavigation } from "./seed-navigation";
@@ -64,6 +65,8 @@ async function main() {
 
   // 3b. 업그레이드-once(D10·F4·F-K) — 트랜잭션으로 감싸 upsert+플래그 원자화. 비어있지 않은 DB의 위임-admin 신규 grant를 1회 멱등 upsert.
   await prisma.$transaction((tx) => applyTeamsPermissionUpgrade(tx, roleIdByKey, permissionIdByKey));
+  // 3c. 업그레이드-once(D6) — 기존 DB에 leave.admin:configure를 pm에 멱등 grant(bootstrap 스킵 보완, R4).
+  await prisma.$transaction((tx) => applyLeaveNotificationsPermissionUpgrade(tx, roleIdByKey, permissionIdByKey));
 
   // 4. Admin (PM, OWNER). 특권 계정은 약한/기본 비밀번호로 만들지 않는다 — 미설정/짧으면 즉시 중단(E1).
   const email = process.env.SEED_ADMIN_EMAIL ?? "admin@uracle.co.kr";

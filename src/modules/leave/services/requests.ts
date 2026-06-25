@@ -20,12 +20,26 @@ import {
   buildRequestNotification, buildApprovedNotification, buildRejectedNotification, buildAdminCreatedNotification, type MailReqLike,
 } from "../mail-templates";
 import { assertTargetUser } from "../authz";
+import { getSetting } from "@/kernel/settings/reader"; // 모듈 경계 허용 read-only facade
 import { QUARTER_START_TIMES } from "../labels"; // effective-state 교차검증(반반차 화이트리스트)
 
 // 템플릿 출력({subject,html})을 outbox MailJob({recipients,subject,bodyHtml})로 어댑트.
 const toMailJob = (recipients: string[], tpl: { subject: string; html: string }): MailJob => ({
   recipients, subject: tpl.subject, bodyHtml: tpl.html,
 });
+
+// 알림 토글 — 명시적 true일 때만 발송(기본 ON: 미설정/무효 저장값은 getSetting이 catalog default true 반환).
+// 조회 예외(인프라 장애·UnknownSettingError 등)는 fail-closed로 미발송(D4 개정 — 사용자 결정 2026-06-25).
+async function notificationsEnabled(key: string): Promise<boolean> {
+  try {
+    return (await getSetting(key)) === true;
+  } catch (e) {
+    // 읽기 실패 억제는 의도적 OFF(로그 없음)와 구분돼야 한다(R5). 고유 마커로 error 레벨 로깅 → 운영 alert/grep 가능.
+    // 이 경로는 실무상 거의 도달 안 함: settings·leave가 동일 PostgreSQL이라 settings 읽기가 실패하면 leave 트랜잭션도 실패한다.
+    console.error(`[leave] LEAVE_NOTIFICATION_SUPPRESSED_BY_SETTINGS_READ_ERROR key=${key} — fail-closed(미발송):`, e);
+    return false;
+  }
+}
 
 // 신청 기간이 걸친 연도(시작~종료 inclusive — 다년 범위의 중간 연도까지 포함).
 const spannedYears = (start: Date, end: Date) => {
@@ -50,18 +64,22 @@ export async function createLeaveRequest(userId: string, input: CreateLeaveInput
   if (!(await findActiveAllocation(userId, year))) throw new LeaveValidationError(`${year}년도 연차 할당 정보가 없습니다.`);
   if (await findOverlap(userId, start, end)) throw new LeaveConflictError("해당 기간에 이미 신청된 연차가 있습니다.");
 
-  const applicant = await prisma.user.findUnique({ where: { id: userId }, select: { name: true, teamId: true } });
-  // enqueue 스냅샷: REQUESTED 행을 항상 적재하기 위한 durable 기록. 단 **실제 발송 수신자 결정의 SSOT는 drain**이며,
-  // worker가 REQUESTED 발송 직전 getLeaveAdminRecipients()로 재확정한다(결정 A) — claim~발송 사이 권한 변동 반영.
-  const recipients = await getLeaveAdminRecipients(applicant?.teamId ?? null);
-  const reqLike: MailReqLike = { leaveType: input.leaveType, leaveSubType: input.leaveSubType ?? null, quarterStartTime: input.quarterStartTime ?? null, startDate: start, endDate: end, reason: input.reason ?? null };
-  // 수신자 0명(승인권한자 없음/조회 저하)이어도 REQUESTED 행은 **항상** 적재 — durable 기록(spec §8). worker가 "수신자 없음" FAILED로 종결해 운영자가 누락을 본다.
-  const mailJob = toMailJob(recipients, buildRequestNotification(applicant?.name ?? "직원", reqLike));
+  const notify = await notificationsEnabled("leave.notifications.onRequest");
+  let mailJob: MailJob | null = null;
+  if (notify) {
+    const applicant = await prisma.user.findUnique({ where: { id: userId }, select: { name: true, teamId: true } });
+    // enqueue 스냅샷: REQUESTED 행을 항상 적재하기 위한 durable 기록. 단 **실제 발송 수신자 결정의 SSOT는 drain**이며,
+    // worker가 REQUESTED 발송 직전 getLeaveAdminRecipients()로 재확정한다(결정 A) — claim~발송 사이 권한 변동 반영.
+    const recipients = await getLeaveAdminRecipients(applicant?.teamId ?? null);
+    const reqLike: MailReqLike = { leaveType: input.leaveType, leaveSubType: input.leaveSubType ?? null, quarterStartTime: input.quarterStartTime ?? null, startDate: start, endDate: end, reason: input.reason ?? null };
+    // 수신자 0명(승인권한자 없음/조회 저하)이어도 REQUESTED 행은 적재 — durable 기록(spec §8). 단 토글 OFF는 "보내지 않기로 한 결정"이라 적재 자체를 스킵(D2).
+    mailJob = toMailJob(recipients, buildRequestNotification(applicant?.name ?? "직원", reqLike));
+  }
   const created = await createPendingRequest({
     userId, leaveType: input.leaveType, leaveSubType: input.leaveSubType,
     quarterStartTime: input.quarterStartTime, startDate: start, endDate: end, days, reason: input.reason,
   }, mailJob);
-  triggerLeaveMailDrain();
+  if (mailJob) triggerLeaveMailDrain();
   return created;
 }
 
@@ -162,7 +180,8 @@ export async function approve(requestId: string, adminId: string) {
   const req = await preflightApproveScope(requestId, adminId);
   const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { email: true, teamId: true } });
   await requirePermissionForTarget(adminId, "leave.approval", "approve", { teamId: user?.teamId ?? null });
-  const mailJob = user?.email ? toMailJob([user.email], buildApprovedNotification(req)) : null;
+  const notify = await notificationsEnabled("leave.notifications.onApprove");
+  const mailJob = notify && user?.email ? toMailJob([user.email], buildApprovedNotification(req)) : null;
   await approveTx(requestId, adminId, mailJob, { actorId: adminId, applicantId: req.userId });
   triggerLeaveMailDrain();
 }
@@ -171,7 +190,8 @@ export async function reject(requestId: string, adminId: string, rejectionReason
   const req = await preflightApproveScope(requestId, adminId);
   const user = await prisma.user.findUnique({ where: { id: req.userId }, select: { email: true, teamId: true } });
   await requirePermissionForTarget(adminId, "leave.approval", "approve", { teamId: user?.teamId ?? null });
-  const mailJob = user?.email ? toMailJob([user.email], buildRejectedNotification(req, rejectionReason)) : null;
+  const notify = await notificationsEnabled("leave.notifications.onReject");
+  const mailJob = notify && user?.email ? toMailJob([user.email], buildRejectedNotification(req, rejectionReason)) : null;
   await rejectRequest(requestId, adminId, rejectionReason, mailJob, { actorId: adminId, applicantId: req.userId });
   triggerLeaveMailDrain();
 }
