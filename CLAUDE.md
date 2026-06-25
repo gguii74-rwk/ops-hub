@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 현재 상태 (중요)
 
-앱이 **스캐폴드되어 동작하는 상태**입니다. Phase 0~2(실사·기준선 / 앱 골격·공통 기반 / 설정 체계), **디자인 시스템 기반**, Phase 3(통합 캘린더 `src/modules/calendar`), Phase 4(워크플로 `src/modules/workflows`), Phase 5 Leave **백엔드 + 연차 영역 재설계(UI·현황·전용 캘린더·관리자 모달·알림 메일)**까지 `main`에 머지된 상태입니다. **현재 활성 작업은 git 브랜치 + `docs/plans/`의 최신 plan으로 확인**하세요(작성 시점 예: 사용자 관리 `feat/user-management`, `docs/plans/2026-06-21-user-management.md`).
+앱이 **스캐폴드되어 동작하는 상태**입니다. Phase 0~2(실사·기준선 / 앱 골격·공통 기반 / 설정 체계), **디자인 시스템 기반**, Phase 3(통합 캘린더 `src/modules/calendar`), Phase 4(워크플로 `src/modules/workflows`), Phase 5 Leave **백엔드 + 연차 영역 재설계(UI·현황·전용 캘린더·관리자 모달·알림 메일)**, 그리고 이후 **사용자 관리(계정 수명주기)·네비게이션 CMS·사이드바 트리/아코디언·팀 + 권한 매트릭스·공용 UI 프리미티브·관리 콘솔 재디자인(Aurora)·통합/연차 캘린더 통일(`CalendarMonth`)**까지 `main`에 머지된 상태입니다(최신 머지: PR #22 캘린더 통일, `91d808b`, 2026-06-25). **현재 진행 중인 feature 브랜치는 없습니다(main clean).** 새 작업을 시작·확인할 때는 git 브랜치 + `docs/plans/`의 최신 plan을 보세요.
 
 이미 존재하는 것:
 
@@ -146,7 +146,7 @@ src/app/{(auth),dashboard,workflows,leave,admin,api}/
 
 ## 작업 진행 맥락
 
-전체 계획은 `docs/product/modernization-roadmap.md`의 Phase 0~6. **Phase 0~4 + Phase 5 Leave 백엔드**가 머지됐고, **현재는 연차 영역 재설계**(Phase 5 UI 확장)가 활성 작업입니다. 마이그레이션 시 기존 운영 DB는 직접 수정하지 않고(이메일을 사용자 병합 키로 사용) 새 PostgreSQL에 적재 후 병행 검증한다 — `docs/migration/initial-migration-plan.md`.
+전체 계획은 `docs/product/modernization-roadmap.md`의 Phase 0~6. **Phase 0~5(Leave 백엔드 + 연차 UI 재설계)와 이후 관리·UX·캘린더 개선(사용자 관리·네비 CMS·팀/권한 매트릭스·공용 프리미티브·Aurora 관리 콘솔·캘린더 통일)**까지 모두 `main`에 머지됐고, **현재 활성 feature 작업은 없습니다(main clean)**. 남은 큰 미완 단계는 **Phase 6 데이터 마이그레이션 + 운영 cutover**(기존 SQLite annual-leave → PostgreSQL, `172.21.10.27:3000`으로 이전)이며, day-sync 주간보고는 단순 포팅이 아니라 다중 직무 보고 시스템으로 별도 재설계 예정입니다. 마이그레이션 시 기존 운영 DB는 직접 수정하지 않고(이메일을 사용자 병합 키로 사용) 새 PostgreSQL에 적재 후 병행 검증한다 — `docs/migration/initial-migration-plan.md`.
 
 확장·분리 아키텍처 전략(모듈 경계·이벤트·신원 연동)은 `docs/specs/2026-06-17-modular-extensibility-design.md` 참조.
 

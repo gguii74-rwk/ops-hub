@@ -305,10 +305,14 @@ const canSendBilling = useCan("workflows.billing", "send");
   권한 변경 이력
 ```
 
-## 남은 결정
+## 남은 결정 (해소됨 — 2026-06-25)
 
-- PM 한 명만 `OWNER`인지, 복수 OWNER를 허용할지
-- 정규 개발자에게 대금청구 생성 권한을 줄지
-- 외주 개발자의 주간보고 생성 권한 범위
-- 민원응대 담당자의 알림톡 발송 권한 범위
-- 부서/팀 개념을 `department` 문자열로 충분히 둘지, `Team` 모델을 추가할지
+초기에 남겨둔 결정은 모두 구현으로 확정됐다. 전체 현황은 `docs/product/modernization-roadmap.md` §"주요 설계 결정 — 현황".
+
+- **PM 단일/복수 OWNER** → 복수 허용 + 최소 1 OWNER 보존(권한상승 가드 D12/D14, `docs/specs/2026-06-21-user-management-account-admin-design.md`).
+- **정규 개발자 대금청구 생성** → 미부여(`workflows.billing:view`만). `prisma/seed-roles.ts`.
+- **외주 개발자 주간보고 생성 범위** → `workflows.weekly:create` 부여(`contractor-developer`). `prisma/seed-roles.ts`.
+- **민원응대 알림톡 발송 범위** → 발송(`send`)은 어떤 역할에도 미부여(자료 입력 `notification:create`만). `prisma/seed-roles.ts`.
+- **부서/팀 개념** → `department` 문자열 대신 **`Team` 모델 신설**(`scope=team`). PR #15.
+
+매트릭스의 세부 셀은 시드(`prisma/seed-roles.ts`)와 OWNER의 권한 매트릭스 편집기가 SSOT다.

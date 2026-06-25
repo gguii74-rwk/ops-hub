@@ -219,13 +219,17 @@ UX:
 - 월별 캘린더 결과
 - 생성 파일 경로 접근
 
-## 주요 설계 결정 필요
+## 주요 설계 결정 — 현황 (2026-06-25 기준)
 
-1. 기존 비밀번호 해시를 이전할지, 전체 재설정을 할지
-2. PM을 단일 `OWNER`로 둘지, 복수 `OWNER`를 허용할지
-3. 정규/외주, 직무별 초기 permission matrix를 어디까지 열지
-4. 부서별 승인자 모델을 둘지
-5. Google Calendar 목록을 개인별로 둘지, 시스템 공통으로 둘지
-6. 캘린더 DB 캐시 TTL
-7. 파일 저장 위치를 `/NAS/ops-hub/output`으로 둘지
-8. `day-sync` 운영 DB를 언제 read-only로 전환할지
+초기에 열어둔 8개 결정의 현재 상태. ✅=결정·구현됨, 🔶=방향 확정·일부 잔여, ⏳=미결(주로 운영 cutover 시점).
+
+| # | 결정 항목 | 상태 | 결론 / 근거(SSOT) |
+| --- | --- | --- | --- |
+| 1 | 비밀번호 해시 이전 vs 전체 재설정 | ✅ | bcrypt 동일 알고리즘이라 **해시 그대로 이전**(재로그인 가능). dev에 운영 16명 적재로 검증. `docs/migration/initial-migration-plan.md` |
+| 2 | PM 단일 `OWNER` vs 복수 `OWNER` | ✅ | **복수 OWNER 허용 + 최소 1 OWNER 보존.** PM `AccessRole`(`"*"`)과 OWNER `systemRole`을 분리. 권한상승 가드(비-OWNER는 OWNER/ADMIN 부여 불가, 마지막 OWNER 강등·비활성 거부 — spec D12/D14). `docs/specs/2026-06-21-user-management-account-admin-design.md` |
+| 3 | 정규/외주·직무별 초기 permission matrix 범위 | ✅ | `prisma/seed-roles.ts`의 `ROLE_ALLOW`가 구체 매트릭스(초안의 "제한" 항목 확정 — 예: 정규 개발자 대금청구는 view만, 알림톡 send는 어떤 역할에도 미부여). OWNER가 매트릭스 편집기(PR #15·#19)로 조정. `docs/architecture/access-control.md` |
+| 4 | 부서별 승인자 모델 | ✅ | `department` 문자열 폐기, **`Team` 모델 신설**(1인 1팀 `User.teamId`) + `scope=team` 능력. 팀 단위 승인(`leave.approval` team scope)은 기본 미부여, OWNER가 편집기로 부여. PR #15 |
+| 5 | Google Calendar 개인별 vs 시스템 공통 | 🔶 | 모델이 **둘 다 지원**(`CalendarSource.ownerUserId`·`visibility`). 현재 시드는 시스템 공통 `holiday-kr` 1개뿐 — 개인/업무 Google 캘린더 실제 연동은 미완(휴가는 내부 `LeaveRequest`가 대체). `docs/architecture/calendar-design.md` |
+| 6 | 캘린더 DB 캐시 TTL | ✅ | 공휴일 24h, Google 5~15분 stale-while-revalidate(`CalendarSource.cacheTtlSeconds` 기본 900). `docs/architecture/calendar-design.md` |
+| 7 | 파일 저장 위치 `/NAS/ops-hub/output` | 🔶 | shared storage(`output`/`Template`/`keys`)를 릴리즈와 **분리**하는 원칙 확정. 정확한 NAS 마운트 절대경로는 운영 cutover 시 확정(dev는 `/home/kgs/apps/ops-hub`). `docs/architecture.md` 배포 방향 |
+| 8 | `day-sync` 운영 DB read-only 전환 시점 | ⏳ | **미결** — Phase 6 데이터 마이그레이션·운영 cutover 시점에 결정. |
