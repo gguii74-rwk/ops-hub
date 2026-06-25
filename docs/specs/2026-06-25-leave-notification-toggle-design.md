@@ -23,6 +23,7 @@
 - **D3. 관리자 직접등록은 토글 대상에서 제외.** 이미 `sendNotification`으로 건별 제어되므로 중복 게이트를 만들지 않는다.
 - **D4. 기본값 ON(미설정), 읽기 실패는 fail-closed.** 설정이 없으면(미설정 행) 또는 저장값이 무효면 catalog `default: true`로 ON — 기존 동작(무조건 발송) 보존(`fallbackSafe: true` 유지: 무효 저장값 → default ON 폴백). 단 설정 **조회가 예외로 실패(인프라 장애·`UnknownSettingError` 등)** 하면 **미발송(fail-closed)** — 서비스 헬퍼가 예외를 catch해 `false` 반환. (애초 fail-open이었으나 codex 적대검증 2회 no-ship 지적 → 2026-06-25 사용자 결정으로 "읽기 실패만 fail-closed"로 개정. "미설정 행 → ON"과 "조회 예외 → 미발송"은 별개 경로.)
 - **D5. 설정 키 = 개별 boolean 3키.** 객체 1키가 아니라 catalog의 SMTP(host/port/fromAddress) 개별 키 패턴을 따른다 — 설정 화면이 키별 title/description을 노출해 관리자가 각 토글을 이해하기 쉽다.
+- **D6. 토글 쓰기 권한 = `leave.admin:configure`(도메인 스코프).** (codex 적대검증 R3 지적 → 2026-06-25 사용자 결정.) 애초 generic `admin.settings:configure`를 쓰려 했으나, 기존 도메인 설정은 모두 도메인 스코프 configure(`integrations.smtp:configure`·`workflows.weekly:configure` 등)를 entry 권한으로 쓴다. 일관성·신뢰경계상 leave 알림 토글도 `leave.admin:configure`를 entry 권한으로 둔다 — 기존 `leave.admin` 리소스에 `configure` 액션을 `EXTRA_PERMISSIONS`에 추가(새 리소스 아님). 보유: OWNER + pm(`"*"`). leave 권한 없는 위임 user-admin(`admin`)은 base `admin.settings:configure`는 가져도 entry 게이트에서 차단된다.
 
 ## 설계
 
@@ -36,7 +37,11 @@
 | `leave.notifications.onApprove` | 연차 승인 알림 메일 | 연차가 승인되면 신청자 본인에게 알림 메일을 보냅니다. |
 | `leave.notifications.onReject` | 연차 반려 알림 메일 | 연차가 반려되면 신청자 본인에게 알림 메일을 보냅니다. |
 
-공통 필드: `kind: "systemSetting"`, `category: "leave"`, `schema: z.boolean()`, `default: true`, `audit: "summary"`, `fallbackSafe: true`, `permission: { resource: "admin.settings", action: "configure" }`. `order`는 기존 워크플로(40번대) 다음 50/51/52.
+공통 필드: `kind: "systemSetting"`, `category: "leave"`, `schema: z.boolean()`, `default: true`, `audit: "full"`, `fallbackSafe: true`, `permission: { resource: "leave.admin", action: "configure" }`. `order`는 기존 워크플로(40번대) 다음 50/51/52.
+
+> `audit: "full"` — boolean 토글값은 비민감(true/false)이라 before/after를 그대로 감사에 남겨 OFF/ON **방향**을 식별할 수 있게 한다(summary 모드는 type·changed만 남겨 `true→false`와 `false→true`를 구분 못 함 — 알림 억제 제어의 사고 추적에 불리).
+>
+> `permission` = `leave.admin:configure` — 기존 도메인 설정이 모두 도메인 스코프 configure를 쓰는 패턴(SMTP→`integrations.smtp:configure`, weekly→`workflows.weekly:configure`)을 따른다(§결정 D6). PUT 라우트는 base `admin.settings:configure` + entry `leave.admin:configure` 둘 다 요구 → leave 권한 없는 위임 user-admin은 차단.
 
 `SYSTEM_KEYS`는 `CATALOG`에서 파생되므로 자동 포함된다.
 
@@ -83,11 +88,12 @@ repository의 `createPendingRequest`/`approveTx`/`rejectRequest`는 **이미 `ma
 - 발송 시점 권한 재확정(REQUESTED를 drain이 `getLeaveAdminRecipients`로 재확정하는 SSOT)은 불변 — 토글은 **enqueue 시점 게이트**이고, 권한 경계는 발송 시점 게이트로 직교한다.
 - REQUESTED "수신자 0명이어도 durable 적재"(phase-5 spec §8)와의 관계: 그 규칙은 "보내려 했으나 수신자가 없다"는 운영 가시성을 위한 것이다. 토글 OFF는 "보내지 않기로 한 명시적 결정"이므로 durable 적재 대상이 아니다(D2와 일관).
 - Prisma 마이그레이션 없음 → 표준 restart 배포. 단 메뉴 노출은 `db:seed` 재실행으로 nav 항목을 등록해야 반영된다.
-- 권한: 토글 조작은 `admin.settings:configure`(기존 설정 쓰기 권한), 설정 화면 진입은 `admin.settings:view`. 신규 권한 없음.
+- 권한(D6): 토글 조작은 base `admin.settings:configure` + entry `leave.admin:configure`(둘 다 필요), 설정 화면 진입은 `admin.settings:view`. `leave.admin:configure`는 `EXTRA_PERMISSIONS`에 추가하는 신규 권한(기존 `leave.admin` 리소스의 configure 액션 — 새 리소스 아님). 설정 화면의 `listSettings`도 entry 권한으로 필터하므로, leave.admin:configure 없는 사용자에겐 토글이 노출되지 않는다.
 
 ## 테스트
 
-- `tests/kernel/settings/catalog.test.ts`(또는 기존 catalog 테스트): 3키 존재, `default === true`, `z.boolean()` 파싱(true/false 통과, 비boolean reject), `category === "leave"`.
-- `tests/modules/leave/services/requests.test.ts`: 각 이벤트별로 토글 ON→`insertPendingDelivery` 호출(mailJob 전달), OFF→미호출(null 전달). `getSetting` 모킹. 관리자등록은 토글 무관·`sendNotification`만 따름을 확인(회귀 가드).
-- `tests/kernel/access/catalog.test.ts`(NAV 테스트): `admin` children에 `admin-settings` 포함, href·permission 일치.
-- `tests/app/admin/settings-editor.test.tsx`: boolean `initialValue` → 체크박스 렌더, 토글 시 PUT 호출 body(`value: boolean`). 비boolean → textarea 유지.
+- `tests/kernel/settings/catalog.test.ts`: 3키 존재, `default === true`, `z.boolean()` 파싱(true/false 통과, 비boolean reject), `category === "leave"`, `audit === "full"`(D6/E), `permission === { resource: "leave.admin", action: "configure" }`(D6). 카테고리 화이트리스트·항목 수(8/5/1/14) 갱신.
+- `tests/kernel/access/*`(권한 catalog 테스트): `EXTRA_PERMISSIONS`에 `["leave.admin", "configure"]` 포함(D6 — 신규 권한 시드 가드).
+- `tests/modules/leave/mail-wiring.test.ts`: 각 이벤트별 토글 ON→`insertPendingDelivery` 호출(mailJob 전달), OFF→미호출(null 전달). `getSetting` 모킹. 조회 예외→fail-closed 미발송(D4). 관리자등록은 토글 무관·`sendNotification`만 따름(D3 회귀 가드).
+- `tests/kernel/access/nav-catalog.test.ts`(NAV 테스트): `admin` children에 `admin-settings` 포함, href·permission 일치.
+- `tests/app/admin/settings-editor.test.tsx`: boolean `initialValue` → Switch 렌더, 토글 시 PUT body(`value: boolean`). 409→롤백, fetch 거부=ambiguous→`router.refresh`. 비boolean → textarea 유지.

@@ -24,7 +24,7 @@ REQUIRED SUB-SKILL: `superpowers:subagent-driven-development`. This plan is spli
 
 ### SC-1. 설정 키 3개 (catalog `systemSetting`)
 
-신규 카테고리 `"leave"` 아래 개별 boolean 3키. 공통 필드: `kind: "systemSetting"`, `category: "leave"`, `permission: { resource: "admin.settings", action: "configure" }`, `schema: z.boolean()`, `default: true`, `audit: "summary"`, `fallbackSafe: true`.
+신규 카테고리 `"leave"` 아래 개별 boolean 3키. 공통 필드: `kind: "systemSetting"`, `category: "leave"`, `permission: { resource: "leave.admin", action: "configure" }`(D6 — 도메인 스코프), `schema: z.boolean()`, `default: true`, `audit: "full"`(E — OFF/ON 방향 감사 기록), `fallbackSafe: true`.
 
 | key | order | title | description |
 | --- | --- | --- | --- |
@@ -32,7 +32,7 @@ REQUIRED SUB-SKILL: `superpowers:subagent-driven-development`. This plan is spli
 | `leave.notifications.onApprove` | 51 | 연차 승인 알림 메일 | 연차가 승인되면 신청자 본인에게 알림 메일을 보냅니다. |
 | `leave.notifications.onReject` | 52 | 연차 반려 알림 메일 | 연차가 반려되면 신청자 본인에게 알림 메일을 보냅니다. |
 
-`SYSTEM_KEYS`는 `CATALOG`에서 파생되므로 자동 포함. 신규 권한 없음(`admin.settings:configure`는 기존 권한 — 기존 설정 write 라우트가 이미 사용).
+`SYSTEM_KEYS`는 `CATALOG`에서 파생되므로 자동 포함. **권한(D6)**: 쓰기 = PUT 라우트가 base `admin.settings:configure` + entry `leave.admin:configure` 둘 다 요구. `leave.admin:configure`는 `prisma/seed-permissions.ts`의 `EXTRA_PERMISSIONS`에 `["leave.admin", "configure"]`로 신규 추가(기존 `leave.admin` 리소스의 configure 액션 — 새 리소스 아님). 보유: OWNER + pm(`"*"`). leave 권한 없는 위임 user-admin은 차단. 배포 시 `npm run db:seed`로 권한 등록 필요.
 
 ### SC-2. 게이트 의미론 (서비스)
 
@@ -100,7 +100,10 @@ plan 단계 codex 적대검증 결과 — 모든 blocking finding 판정 완료:
 | fetch 거부 시 토글 상태 고착 — task-02 (R1) | high | **FIXED** | 실제 결함(spec §3 롤백 의도 미충족). `putSetting`을 try/catch로 절대 throw 안 하게 + 호출부 try/finally로 `saving` 항상 해제 + fetch 거부 롤백 테스트 추가. R2에서 소멸 확인. |
 | 설정 조회 실패 시 fail-open — task-03 (R1·R2) | high | **FIXED** | codex 2회 no-ship 지적 → 사용자 결정(2026-06-25)으로 **D4 개정: 읽기 예외 fail-closed**. `notificationsEnabled` catch가 `false` 반환, 헬퍼 `=== true` 비교, fail-closed 테스트로 잠금. spec D4·§4·§불변식 갱신. |
 | OFF가 enqueue 시점만 게이트(발송 시점 미게이트) — task-03 (R2) | high | **ACCEPTED** | 발송 워커 무변경은 spec **명시적 비목표**. 사용자 결정(2026-06-25)으로 in-flight/큐된 메일 발송 유지 확정(best-effort enqueue preference, 규정용 kill-switch 아님). 보완: spec §불변식에 토글 계약 명문화. |
+| 모호한 쓰기 결과를 미반영으로 단정·롤백 — task-02 (R3) | high | **FIXED** | `putSetting`을 판별 유니온(ok/rejected/ambiguous)으로. 응답 미수신(fetch 거부)·2xx 본문 파싱 실패=ambiguous → 롤백 대신 `router.refresh()`로 권위 상태 재조회 + `useEffect` props 재동기화. 롤백은 409/422 등 확정 미반영에만. |
+| 토글 쓰기가 generic admin.settings:configure로 도메인 경계 위반 — task-01 (R3) | high | **FIXED** | 사용자 결정(2026-06-25, D6)으로 entry 권한을 `leave.admin:configure`(도메인 스코프)로 변경 — 기존 SMTP/weekly 패턴 일치. `EXTRA_PERMISSIONS`에 추가, OWNER+pm 보유, 위임 user-admin 차단. |
+| 감사 summary가 OFF/ON 방향 미기록 — task-01 (R3) | medium | **FIXED** | 토글 `audit: "summary"` → `"full"`. boolean은 비민감이라 before/after 그대로 기록 → 방향 식별 가능. |
 
 ## 배포 주의
 
-Prisma 마이그레이션 없음 → **표준 restart**. 단 메뉴 노출(task-04)은 `npm run db:seed` 재실행으로 신규 nav 항목(`admin-settings`)을 등록해야 화면에 반영된다(`seedNavigation`은 create-if-absent).
+Prisma 마이그레이션 없음 → **표준 restart**. 단 `npm run db:seed` 재실행이 필요하다: ① 신규 nav 항목(`admin-settings`, task-04) 등록(`seedNavigation` create-if-absent), ② 신규 권한 `leave.admin:configure`(task-01, D6) 등록. 둘 다 seed 누락 시 메뉴 미노출/토글 권한 OWNER 한정이 된다.
