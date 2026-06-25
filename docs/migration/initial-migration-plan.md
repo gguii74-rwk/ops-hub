@@ -72,6 +72,8 @@ ADMIN > MANAGER > MEMBER
 | REJECTED | REJECTED |
 | CANCELLED | CANCELLED |
 
+> **dev 마이그레이션 완료(2026-06-25)**: 위 4개 테이블의 dev 적재 결과와 운영 cutover **증분(delta) 전략·워터마크**(소스 `updatedAt > 1781660787623` = 2026-06-17 10:46:27 KST 이후만 upsert)는 `docs/migration/2026-06-25-annual-leave-data.md` 참조. 아래 §7-2 "최종 delta migration"이 이 워터마크 이후 증분을 가져온다 — **단, dev DB를 운영으로 승격하는 경우에 한함**(운영을 새 DB로 시작하면 cutover 시 전체 1회 재마이그레이션). 사용자(`User`)는 `docs/migration/2026-06-22-annual-leave-users.md`.
+
 ### 5. 파일과 템플릿
 
 `day-sync`의 `Template`, `keys`, `output` 운영 구조를 계승합니다.

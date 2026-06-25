@@ -72,3 +72,41 @@ rm ~/al-leave.json
 - 사용자별 `(year)` `usedDays` = 해당 사용자 `APPROVED` 신청 `days` 합(시작연도 귀속).
 - 임의 사용자 로그인 → `/leave` 본인 요약·신청 이력 표시, `/leave/calendar` 기간 막대 표시 확인.
 - 관리자(`/admin/leave/approvals`) 승인 대기(PENDING) 목록 표시 확인.
+
+## 실행 결과 (dev, 2026-06-25 적재 완료)
+
+kgs-dev에서 SSH로 export→dry-run→적재→검증 완료(서버 git `6764722`, src·schema 무변경이라 재빌드 불필요).
+
+- 적재: allocation **25** / request **120** / history **15**(소스 id=uuid 보존으로 식별). 제외: ggui74(OWNER) allocation 1.
+- 신청 상태: APPROVED 99 · REJECTED 4 · CANCELLED 18 · **PENDING 0**(소스에 미결 신청 없음 → 승인 큐 테스트는 데모 데이터로).
+- `usedDays` 재계산: 1건 보정(`source=2 → 2.25`).
+- 참조 null 15(opshub에 없는 검토자/생성자).
+- ⚠ DB 총계 26/121은 배포 `db:seed:demo`의 기존 데모 leave 1건씩 포함(이번 적재와 무관, 미변경).
+
+## 운영 cutover 증분 전략 (이 스냅샷 이후 증분만 가져오기)
+
+이 dev 마이그레이션은 소스의 **스냅샷**이다. 운영 cutover 때 스냅샷 이후 변경분만 가져올 수 있도록 워터마크·절차를 남긴다.
+
+### 워터마크 (이 마이그레이션이 포착한 경계)
+
+- **스냅샷 시각**: 2026-06-25 16:26 KST(export 시점).
+- **소스 최신 활동(실측)**: `leave_requests`·`leave_allocations` `max(updatedAt)` = **2026-06-17 10:46:27 KST**(epoch-ms `1781660787623`), `leave_allocation_history` `max(createdAt)` = 2025-12-31 14:00:22 KST. 스냅샷 8일 전부터 소스 변경 없음 → 스냅샷 완전.
+- 소스 SQLite는 타임스탬프를 **epoch ms**로 저장. **머신 워터마크 `T = 1781660787623`**(이보다 큰 updatedAt/createdAt = 증분).
+
+### 증분 추출 (cutover용 export 변형)
+
+- `leave_requests`: `WHERE updatedAt > T` (신규 + 상태변경·관리자수정 포함)
+- `leave_allocations`: `WHERE updatedAt > T`
+- `leave_allocation_history`: `WHERE createdAt > T` (append-only)
+- `usersIdEmail`는 매핑 다리라 **전량 export**(증분 아님). 신규 사용자가 생겼으면 사용자 증분(`migrate-al-users*`) 선행.
+
+### 증분 적재 (load 변형)
+
+- 현재 `migrate-al-leave.ts`는 **create-only(skip-duplicate)** — 증분엔 **upsert로 변경 필요**(스냅샷 이후 상태가 바뀐 기존 레코드가 skip되면 갱신 누락). 행 id(uuid) 보존이라 `prisma.upsert({ where:{ id } })` 키 일치.
+- `usedDays`는 증분 적재 후 **영향 받은 `(userId, year)` 전체 재계산**(증분만 가산하면 취소·반려 반영 누락).
+
+### 한계·주의 (cutover 설계 시 반드시 검토)
+
+- **하드 삭제 미포착**: 타임스탬프 워터마크는 스냅샷 이후 소스에서 *물리삭제*된 행을 못 잡는다(연차 취소=상태변경이라 보통 무관하나, 물리삭제가 있으면 id 집합 대조 필요).
+- ⚠️ **전제 — 증분은 "이 dev opshub DB를 그대로 운영으로 승격"하는 경우에만 의미 있다.** 운영을 **새 DB로 시작**하면 증분이 아니라 cutover 시점에 **전체 마이그레이션 1회**(현 스크립트 그대로)가 맞다.
+- dev 승격 경로라면 cutover 전에 **dev 테스트로 생긴 데이터(데모 신청·테스트 변경·재계산 usedDays)를 정리/조정**해야 한다(소스에 없는 dev측 변경이 증분과 충돌). 이 선택은 미정 → cutover 설계 시 확정(`docs/migration/initial-migration-plan.md`).
