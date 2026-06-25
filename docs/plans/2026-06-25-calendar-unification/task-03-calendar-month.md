@@ -92,6 +92,24 @@ describe("CalendarMonth — 팝오버(D8)", () => {
     fireEvent.click(screen.getByRole("button", { name: "2026-06-10" }));
     expect(within(screen.getByRole("dialog")).getByText("이벤트")).toBeTruthy();
   });
+
+  it("열린 팝오버는 events 변경(리패칭) 시 갱신된다 (R2 — stale 캡처 방지)", () => {
+    const detail = (events: CalendarEventInput[]) => (
+      <ul>{events.map((e) => <li key={e.id}>{e.title}</li>)}</ul>
+    );
+    const { rerender } = render(
+      <CalendarMonth anchor={ANCHOR} now={NOW} events={[ev({ id: "a", title: "기존연차" })]} renderDayDetail={(c) => detail(c.events)} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "2026-06-10" }));
+    expect(within(screen.getByRole("dialog")).getByText("기존연차")).toBeTruthy();
+    // 백그라운드 리패칭으로 그 날 이벤트가 교체됨 — 팝오버는 열린 채 갱신되어야 함
+    rerender(
+      <CalendarMonth anchor={ANCHOR} now={NOW} events={[ev({ id: "b", title: "갱신연차" })]} renderDayDetail={(c) => detail(c.events)} />,
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).queryByText("기존연차")).toBeNull();
+    expect(within(dialog).getByText("갱신연차")).toBeTruthy();
+  });
 });
 
 describe("CalendarMonth — 빠른추가(D9)", () => {
@@ -179,7 +197,7 @@ export interface CalendarMonthProps {
 interface Selected {
   index: number;
   day: GridDay;
-  dayEvents: CalendarEventInput[];
+  // dayEvents를 캡처하지 않는다 — 리패칭 시 stale(R2 medium). 렌더 시점에 visible에서 파생.
 }
 
 function chunk<T>(arr: T[], size: number): T[][] {
@@ -239,12 +257,12 @@ export function CalendarMonth({
     };
   }, [selected, close]);
 
-  const openDay = useCallback(
-    (index: number, day: GridDay) => {
-      setSelected({ index, day, dayEvents: eventsForDay(day, visible) });
-    },
-    [visible],
-  );
+  const openDay = useCallback((index: number, day: GridDay) => {
+    setSelected({ index, day });
+  }, []);
+
+  // 팝오버 이벤트는 캡처하지 않고 매 렌더 visible에서 파생 — 열린 채 리패칭돼도 갱신(R2 medium).
+  const selectedEvents = selected ? eventsForDay(selected.day, visible) : [];
 
   function focusCell(i: number) {
     if (i < 0 || i >= cellRefs.current.length) return;
@@ -453,13 +471,13 @@ export function CalendarMonth({
               iso: selected.day.iso,
               isPast: selected.day.isPast,
               isToday: selected.day.isToday,
-              events: selected.dayEvents,
+              events: selectedEvents,
               close,
             })
           ) : (
             <ul className="space-y-1">
-              {selected.dayEvents.length === 0 && <li className="text-muted-foreground">일정 없음</li>}
-              {selected.dayEvents.map((e) => (
+              {selectedEvents.length === 0 && <li className="text-muted-foreground">일정 없음</li>}
+              {selectedEvents.map((e) => (
                 <li
                   key={e.id}
                   className={cn("truncate rounded px-1.5 py-0.5", eventChipClass(e.kind, "soft", e.status))}
@@ -504,3 +522,4 @@ npm run lint                                                 # boundaries 통과
 - **셀은 `div role="button"`(중첩 button 금지).** 이유: 빠른추가 `+`가 셀 안의 실제 `<button>`이라, 셀을 `<button>`으로 하면 button 중첩(무효 HTML). `+`는 `stopPropagation`으로 셀 클릭과 분리.
 - **`buildMonthGrid(anchor, [], now)`로 호출**(events=빈 배열). 이유: 스켈레톤(날짜 메타데이터)만 필요. 이벤트 배치는 `packWeekLanes`가 `CalendarEventInput`으로 수행. `grid.ts` 무변경(D10).
 - **범례 필터를 서버 재요청과 연결하지 말 것.** 이유: D12 — 클라이언트 로컬 state, 표시 전용. 이미 받은 events를 `visible`로 필터.
+- **팝오버 이벤트를 `selected` state에 캡처하지 말 것(R2 medium).** 이유: 소비처 events는 react-query 파생 → 백그라운드 리패칭 시 캡처본은 stale(취소/승인/추가 미반영). `selected`는 `{index, day}`만 두고 `selectedEvents = eventsForDay(selected.day, visible)`로 **매 렌더 파생**한다. 위 리렌더 테스트가 회귀를 막는다.
