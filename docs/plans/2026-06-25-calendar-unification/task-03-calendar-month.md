@@ -11,7 +11,7 @@
 
 - 읽기: spec D3·D6·D7·D8·D9·D12·D13, §5(인터페이스 개요), entrypoint §Shared Contracts(`CalendarMonth` 인터페이스·핵심 재사용/규칙·테스트 컨벤션).
 - 재사용: `buildMonthGrid`/`GridDay`(`grid.ts`, 무변경), `packWeekLanes`/`eventsForDay`(task 01), `kindClass`/`statusOverlay`/`eventChipClass`(task 02), `cn`(`@/lib/utils`).
-- a11y 패턴 참고(복붙 아님): `src/components/ui/modal.tsx`(Esc·포커스·바깥클릭).
+- 팝오버 컨테이너 = `src/components/ui/modal.tsx`(`Modal`) **재사용** — 포커스 트랩(Tab/Shift+Tab)·`aria-modal`·Esc·바깥클릭·focus 복원·scroll-lock을 전부 제공(R3). 손수 dialog/effect를 만들지 않는다. `Modal` 트랩은 `tests/components/ui/modal.test.tsx`가 이미 검증.
 - §Shared Contracts items 사용: `CalendarEventInput`/`Intensity`(task 01), `DayDetailContext`/`CalendarMonthProps`(이 task가 정의·export).
 
 ## Deps
@@ -76,14 +76,16 @@ describe("CalendarMonth — 팝오버(D8)", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "2026-06-10" }));
-    expect(screen.getByRole("dialog")).toBeTruthy();
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true"); // Modal 재사용 → 포커스 트랩 계약(D8/D13)
     expect(screen.getByText("상세:2026-06-10")).toBeTruthy();
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "2026-06-10" }));
     expect(screen.getByRole("dialog")).toBeTruthy();
-    fireEvent.mouseDown(document.body);
+    // 바깥(오버레이) 클릭 닫힘 — Modal 오버레이는 dialog의 부모(backdrop)
+    fireEvent.click(screen.getByRole("dialog").parentElement!);
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
@@ -164,11 +166,12 @@ npm test -- tests/modules/calendar/calendar-month.test.tsx
 
 ```tsx
 "use client";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { buildMonthGrid, type GridDay } from "@/modules/calendar/ui/grid";
 import { eventsForDay, packWeekLanes } from "@/modules/calendar/ui/lanes";
 import { eventChipClass, kindClass, statusOverlay } from "@/modules/calendar/ui/kind-styles";
 import type { CalendarEventInput, Intensity } from "@/modules/calendar/ui/event-input";
+import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/utils";
 
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
@@ -219,8 +222,6 @@ export function CalendarMonth({
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<Selected | null>(null);
   const cellRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const popoverRef = useRef<HTMLDivElement | null>(null);
-  const labelId = useId();
 
   const skeleton = useMemo(() => buildMonthGrid(anchor, [], now), [anchor, now]);
   const weeks = useMemo(() => chunk(skeleton, 7), [skeleton]);
@@ -232,30 +233,8 @@ export function CalendarMonth({
     return order;
   }, [events]);
 
-  const close = useCallback(() => {
-    setSelected((cur) => {
-      if (cur) cellRefs.current[cur.index]?.focus();
-      return null;
-    });
-  }, []);
-
-  // 팝오버: 열릴 때 패널 포커스, Esc·바깥(mousedown) 닫기.
-  useEffect(() => {
-    if (!selected) return;
-    popoverRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    const onDown = (e: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) close();
-    };
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onDown);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onDown);
-    };
-  }, [selected, close]);
+  // 닫기 = 선택 해제. 포커스 복원·Esc·바깥클릭·Tab 트랩·scroll-lock은 Modal이 제공(R2/R3).
+  const close = useCallback(() => setSelected(null), []);
 
   const openDay = useCallback((index: number, day: GridDay) => {
     setSelected({ index, day });
@@ -445,26 +424,7 @@ export function CalendarMonth({
       </div>
 
       {selected && (
-        <div
-          ref={popoverRef}
-          role="dialog"
-          aria-labelledby={labelId}
-          tabIndex={-1}
-          className="fixed left-1/2 top-1/2 z-50 w-72 max-w-[90vw] -translate-x-1/2 -translate-y-1/2 space-y-2 rounded-xl border border-border bg-card p-3 text-sm shadow-lg outline-none"
-        >
-          <div className="flex items-center justify-between">
-            <h3 id={labelId} className="font-medium">
-              {selected.day.dateKey}
-            </h3>
-            <button
-              type="button"
-              aria-label="닫기"
-              onClick={close}
-              className="text-muted-foreground hover:text-foreground"
-            >
-              ✕
-            </button>
-          </div>
+        <Modal title={selected.day.dateKey} onClose={close}>
           {renderDayDetail ? (
             renderDayDetail({
               dateKey: selected.day.dateKey,
@@ -488,7 +448,7 @@ export function CalendarMonth({
               ))}
             </ul>
           )}
-        </div>
+        </Modal>
       )}
     </div>
   );

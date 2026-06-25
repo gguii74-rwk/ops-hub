@@ -140,10 +140,15 @@ import { TYPE_LABEL } from "@/modules/leave/labels";
 import { CreateLeaveModal } from "./create-leave-modal";
 import { leaveToEvents, type Ev } from "./leave-adapter";
 
+// 현재 KST 연/월 — UTC 기준이면 KST 월초 0~9시에 전월로 잡혀 엉뚱한 달을 패칭한다(R3 medium).
+function kstNow() {
+  const key = toKstDateKey(new Date()); // 'YYYY-MM-DD' (KST)
+  return { y: Number(key.slice(0, 4)), m: Number(key.slice(5, 7)) - 1 }; // m: 0-based
+}
+
 export function LeaveCalendar({ canCreate, canManage }: { canCreate: boolean; canManage: boolean }) {
   const router = useRouter();
-  const today = new Date();
-  const [cursor, setCursor] = useState({ y: today.getUTCFullYear(), m: today.getUTCMonth() }); // m: 0-based
+  const [cursor, setCursor] = useState(kstNow); // KST 기준 현재 월
   const [creating, setCreating] = useState<string | null>(null); // 관리자 직접입력 모달 defaultDate(null=닫힘)
 
   const anchor = new Date(Date.UTC(cursor.y, cursor.m, 15, 3, 0, 0));
@@ -177,11 +182,7 @@ export function LeaveCalendar({ canCreate, canManage }: { canCreate: boolean; ca
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <Button size="sm" variant="outline" onClick={() => move(-1)}>이전</Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => setCursor({ y: today.getUTCFullYear(), m: today.getUTCMonth() })}
-        >
+        <Button size="sm" variant="outline" onClick={() => setCursor(kstNow())}>
           오늘
         </Button>
         <Button size="sm" variant="outline" onClick={() => move(1)}>다음</Button>
@@ -305,3 +306,4 @@ npm run build       # 성공
 - **상단 `+ 연차 입력` 버튼을 남기지 말 것.** 이유: D11 — 진입점을 팝오버/빠른추가로 흡수. 자가신청은 셀 `+`(canCreate) 또는 팝오버 "연차 신청", 관리자 직접입력은 팝오버 "관리자 직접 입력"(canManage). (모바일은 hover 없으니 팝오버 버튼이 주 경로.)
 - **상태를 색으로 되돌리지 말 것.** 이유: 기존 `colorFor`의 `PENDING=amber`·`반려=muted`는 D5로 폐기 — 종류는 색(soft), 상태는 오버레이. `colorFor` 부활 금지.
 - **연차 fetch는 월(first~last)이 아니라 42칸 그리드 윈도우로(R1 medium).** 이유: `CalendarMonth`는 인접월 날짜를 **활성 클릭 가능 셀**로 렌더한다. 월만 패칭하면 그 셀들이 연차가 있어도 빈칸으로 보이는 **가짜 빈칸** 결함이 생긴다(기존은 인접월을 blank로 안 그렸음). `normalizeToGridWindow(anchor)` 범위를 `/api/leave/calendar`에 넘긴다(API 무변경, 범위만 확대).
+- **cursor 연/월을 `getUTCMonth()`로 잡지 말 것(R3 medium, 기존 코드 버그 교정).** 이유: 이 캘린더의 날짜 모델은 KST다. UTC로 잡으면 KST 월초 00:00~09:00 사이엔 전월(UTC)이 되어 초기/“오늘” 화면이 엉뚱한 달을 렌더·패칭한다. `toKstDateKey(new Date())`로 KST 연/월을 파생(`kstNow`). KST 경계는 `time.ts`의 `toKstDateKey` 테스트가 이미 커버.
