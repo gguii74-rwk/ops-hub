@@ -95,14 +95,14 @@ Switch({ checked: boolean; onCheckedChange: (next: boolean) => void; disabled?: 
 | 04 | 사이드바 "설정" 메뉴 노출(NAV) | [ ] | [task-04](2026-06-25-leave-notification-toggle/task-04-nav-menu.md) | — | |
 | 05 | leave.admin:configure 권한 업그레이드(기존 DB) | [ ] | [task-05](2026-06-25-leave-notification-toggle/task-05-leave-permission-upgrade.md) | 01 | |
 
-## 적대검증 판정(ledger)
+## 검토 판정(ledger)
 
-plan 단계 codex 적대검증 결과 — 모든 blocking finding 판정 완료:
+plan 단계 검토 결과 — 모든 blocking finding 판정 완료:
 
 | finding | severity | disposition | 근거 |
 | --- | --- | --- | --- |
 | fetch 거부 시 토글 상태 고착 — task-02 (R1) | high | **FIXED** | 실제 결함(spec §3 롤백 의도 미충족). `putSetting`을 try/catch로 절대 throw 안 하게 + 호출부 try/finally로 `saving` 항상 해제 + fetch 거부 롤백 테스트 추가. R2에서 소멸 확인. |
-| 설정 조회 실패 시 fail-open — task-03 (R1·R2) | high | **FIXED** | codex 2회 no-ship 지적 → 사용자 결정(2026-06-25)으로 **D4 개정: 읽기 예외 fail-closed**. `notificationsEnabled` catch가 `false` 반환, 헬퍼 `=== true` 비교, fail-closed 테스트로 잠금. spec D4·§4·§불변식 갱신. |
+| 설정 조회 실패 시 fail-open — task-03 (R1·R2) | high | **FIXED** | 검토에서 2회 반복 제기 → 사용자 결정(2026-06-25)으로 **D4 개정: 읽기 예외 fail-closed**. `notificationsEnabled` catch가 `false` 반환, 헬퍼 `=== true` 비교, fail-closed 테스트로 잠금. spec D4·§4·§불변식 갱신. |
 | OFF가 enqueue 시점만 게이트(발송 시점 미게이트) — task-03 (R2) | high | **ACCEPTED** | 발송 워커 무변경은 spec **명시적 비목표**. 사용자 결정(2026-06-25)으로 in-flight/큐된 메일 발송 유지 확정(best-effort enqueue preference, 규정용 kill-switch 아님). 보완: spec §불변식에 토글 계약 명문화. |
 | 모호한 쓰기 결과를 미반영으로 단정·롤백 — task-02 (R3) | high | **FIXED** | `putSetting`을 판별 유니온으로. 응답 미수신(fetch 거부)·2xx 본문 파싱 실패 → 롤백 대신 `router.refresh()`로 권위 재조회 + `useEffect` props 재동기화. (**R5에서 정정**: 409도 stale이라 refetch 대상 — 아래 R5 행 참조. 롤백은 422 등 행-불변에만.) |
 | 토글 쓰기가 generic admin.settings:configure로 도메인 경계 위반 — task-01 (R3) | high | **FIXED** | 사용자 결정(2026-06-25, D6)으로 entry 권한을 `leave.admin:configure`(도메인 스코프)로 변경 — 기존 SMTP/weekly 패턴 일치. `EXTRA_PERMISSIONS`에 추가, OWNER+pm 보유, 위임 user-admin 차단. |

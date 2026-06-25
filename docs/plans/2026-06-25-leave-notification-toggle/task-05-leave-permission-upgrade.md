@@ -1,6 +1,6 @@
 # task-05 — leave.admin:configure 권한 업그레이드(기존 DB)
 
-`leave.admin:configure`(D6)는 task-01이 `EXTRA_PERMISSIONS`에 등록해 Permission 행은 생기지만, **기존(비어있지 않은) DB는 `bootstrapRolePermissions`가 스킵**되어 pm이 grant를 못 받는다(R4 적대검증). 기존 `applyTeamsPermissionUpgrade`와 동형의 **멱등 upgrade-once 헬퍼**로 pm에 1회 grant한다.
+`leave.admin:configure`(D6)는 task-01이 `EXTRA_PERMISSIONS`에 등록해 Permission 행은 생기지만, **기존(비어있지 않은) DB는 `bootstrapRolePermissions`가 스킵**되어 pm이 grant를 못 받는다(R4 검토). 기존 `applyTeamsPermissionUpgrade`와 동형의 **멱등 upgrade-once 헬퍼**로 pm에 1회 grant한다.
 
 ## Files
 

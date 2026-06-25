@@ -343,7 +343,7 @@ git commit -m "feat(settings): boolean 설정 토글 에디터(Switch)"
 - **기존 textarea 동작을 바꾸지 마라.** `JsonSettingEditor`는 기존 `SettingEditor` 로직과 동일(저장 버튼·JSON 파싱·토큰 흐름). PUT 호출만 공통 `putSetting`으로 추출 — 동작 동일.
 - 토글은 **별도 저장 버튼 없음**(변경 즉시 PUT). 저장 중(`saving`) Switch 비활성화로 더블클릭 방지.
 - **`putSetting`은 절대 throw하면 안 된다.** fetch 거부(네트워크 끊김·abort)·`res.json()` 파싱 실패를 catch하지 않으면 호출부의 `setSaving(false)`·롤백이 건너뛰어져 토글이 "비활성·잘못된 값"으로 고착된다. 호출부는 `try/finally`로 `saving`을 항상 해제한다(이중 방어).
-- **409를 롤백하지 마라 — refetch하라(R5 적대검증).** 409는 "다른 사용자가 행을 이미 바꿈"이라 낙관값 `next`도 롤백 대상 `prev`도 **둘 다 stale**이다. 롤백하면 "DB는 OFF인데 화면은 ON"인 거짓 권위 상태를 보인다. boolean 토글은 `router.refresh()`로 권위 재조회. **롤백(`setChecked(prev)`)은 `rejected`(422 등 값-거부·행-불변)에만** — 그땐 `prev`가 여전히 권위값이다.
+- **409를 롤백하지 마라 — refetch하라(R5 검토).** 409는 "다른 사용자가 행을 이미 바꿈"이라 낙관값 `next`도 롤백 대상 `prev`도 **둘 다 stale**이다. 롤백하면 "DB는 OFF인데 화면은 ON"인 거짓 권위 상태를 보인다. boolean 토글은 `router.refresh()`로 권위 재조회. **롤백(`setChecked(prev)`)은 `rejected`(422 등 값-거부·행-불변)에만** — 그땐 `prev`가 여전히 권위값이다.
 - **응답 미수신(fetch 거부)·2xx 본문 파싱 실패도 refetch.** 서버가 반영했을 수 있어 단정 금지. `refetch` = {409 stale} ∪ {결과 불명}. JSON 경로는 textarea 입력 보존을 위해 refresh하지 않고 토스트만(putSetting이 전담).
 - **`useEffect`로 props→state 재동기화 필수.** `router.refresh()`가 새 `initialValue`/`updatedAt`을 내려보내도 `useState` 초기화는 1회뿐이라 자동 반영되지 않는다 — `useEffect(() => { setChecked(initialValue); setToken(updatedAt); }, [initialValue, updatedAt])`로 동기화해야 refresh가 토글 표시에 반영된다.
 - `putSetting`은 `@/components/ui` 프리미티브를 새로 만들지 않는다(`Switch` 재사용 — 신설은 비목표).
