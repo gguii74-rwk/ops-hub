@@ -90,6 +90,15 @@ Switch({ checked: boolean; onCheckedChange: (next: boolean) => void; disabled?: 
 | 03 | 연차 서비스 알림 게이트 | [ ] | [task-03](2026-06-25-leave-notification-toggle/task-03-service-gate.md) | 01 | |
 | 04 | 사이드바 "설정" 메뉴 노출(NAV) | [ ] | [task-04](2026-06-25-leave-notification-toggle/task-04-nav-menu.md) | — | |
 
+## 적대검증 판정(ledger)
+
+plan 단계 codex 적대검증 결과 — 모든 blocking finding 판정 완료:
+
+| finding | severity | disposition | 근거 |
+| --- | --- | --- | --- |
+| 설정 조회 실패 시 fail-open(발송 유지) — task-03 | high | **ACCEPTED** | spec 결정 **D4**(브레인스토밍 확정): 대상은 내부 연차 알림 메일(보안/규정 메일 아님). "알림 누락 > 발송"이라 의도적 fail-open. 보완: 헬퍼가 `console.warn`로 운영 가시성 확보 + task-03에 fail-open 잠금 테스트 추가(향후 fail-closed "수정" 회귀 방지). 키는 코드 카탈로그 정의라 단일 배포 내 `UnknownSettingError` 불가. |
+| fetch 거부 시 토글 상태 고착 — task-02 | high | **FIXED** | 실제 결함(spec §3 롤백 의도 미충족). `putSetting`을 try/catch로 절대 throw 안 하게 + 호출부 try/finally로 `saving` 항상 해제 + fetch 거부 롤백 테스트 추가. |
+
 ## 배포 주의
 
 Prisma 마이그레이션 없음 → **표준 restart**. 단 메뉴 노출(task-04)은 `npm run db:seed` 재실행으로 신규 nav 항목(`admin-settings`)을 등록해야 화면에 반영된다(`seedNavigation`은 create-if-absent).

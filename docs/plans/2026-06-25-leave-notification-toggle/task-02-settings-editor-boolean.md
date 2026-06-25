@@ -75,6 +75,17 @@ describe("SettingEditor — boolean 분기", () => {
     await waitFor(() => expect(sw.getAttribute("aria-checked")).toBe("true"));
   });
 
+  it("PUT fetch 거부(네트워크 오류) → 토글 롤백 + 재활성화", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("network down"));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SettingEditor settingKey="leave.notifications.onApprove" initialValue={true} updatedAt={null} />);
+    const sw = screen.getByRole("switch") as HTMLButtonElement;
+    fireEvent.click(sw);
+    // fetch 거부 → putSetting catch → null → finally로 saving 해제 + 롤백
+    await waitFor(() => expect(sw.getAttribute("aria-checked")).toBe("true"));
+    expect(sw.disabled).toBe(false); // 재활성화(saving 해제)
+  });
+
   it("비boolean initialValue → 기존 textarea 경로 유지(Switch 없음)", () => {
     render(<SettingEditor settingKey="integrations.smtp.host" initialValue={"smtp.example.com"} updatedAt={null} />);
     expect(document.querySelector("textarea")).toBeTruthy();
@@ -124,31 +135,39 @@ export function SettingEditor(props: EditorProps) {
 }
 
 // PUT 공통: 성공 시 새 토큰 반환, 실패 시 사용자 토스트 후 null.
+// **절대 throw하지 않는다** — fetch 거부(네트워크 끊김/abort)·json 파싱 실패까지 catch해 null 반환.
+// (호출부가 await 뒤 saving 해제·롤백을 반드시 수행할 수 있도록 — 미처리 rejection 시 토글이 잘못된 상태로 고착되는 것 방지.)
 async function putSetting(
   settingKey: string,
   value: unknown,
   token: string | null,
 ): Promise<string | null> {
-  const res = await fetch(`/api/admin/settings/${encodeURIComponent(settingKey)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ value, expectedUpdatedAt: token }),
-  });
-  if (res.status === 409) {
-    toast.error("다른 사용자가 먼저 변경했습니다. 새로고침 후 다시 시도하세요.");
+  try {
+    const res = await fetch(`/api/admin/settings/${encodeURIComponent(settingKey)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value, expectedUpdatedAt: token }),
+    });
+    if (res.status === 409) {
+      toast.error("다른 사용자가 먼저 변경했습니다. 새로고침 후 다시 시도하세요.");
+      return null;
+    }
+    if (res.status === 422) {
+      toast.error("검증 실패: 값 형식을 확인하세요.");
+      return null;
+    }
+    if (!res.ok) {
+      toast.error("저장에 실패했습니다.");
+      return null;
+    }
+    const body = (await res.json()) as { updatedAt: string };
+    toast.success("저장되었습니다.");
+    return body.updatedAt;
+  } catch {
+    // fetch 거부(네트워크/abort) 또는 응답 파싱 실패.
+    toast.error("저장 중 오류가 발생했습니다. 다시 시도하세요.");
     return null;
   }
-  if (res.status === 422) {
-    toast.error("검증 실패: 값 형식을 확인하세요.");
-    return null;
-  }
-  if (!res.ok) {
-    toast.error("저장에 실패했습니다.");
-    return null;
-  }
-  const body = (await res.json()) as { updatedAt: string };
-  toast.success("저장되었습니다.");
-  return body.updatedAt;
 }
 
 function BooleanSettingEditor({
@@ -168,8 +187,12 @@ function BooleanSettingEditor({
     const prev = checked;
     setChecked(next); // 낙관적 업데이트
     setSaving(true);
-    const newToken = await putSetting(settingKey, next, token);
-    setSaving(false);
+    let newToken: string | null = null;
+    try {
+      newToken = await putSetting(settingKey, next, token);
+    } finally {
+      setSaving(false); // 성공·실패·예외 무관 항상 재활성화
+    }
     if (newToken === null) {
       setChecked(prev); // 실패 → 롤백
       return;
@@ -208,8 +231,12 @@ function JsonSettingEditor({
       return;
     }
     setSaving(true);
-    const newToken = await putSetting(settingKey, parsed, token);
-    setSaving(false);
+    let newToken: string | null = null;
+    try {
+      newToken = await putSetting(settingKey, parsed, token);
+    } finally {
+      setSaving(false);
+    }
     if (newToken !== null) setToken(newToken);
   }
 
@@ -254,7 +281,7 @@ git commit -m "feat(settings): boolean 설정 토글 에디터(Switch)"
 
 ## Acceptance Criteria
 
-- `npx vitest run tests/app/admin/settings-editor.test.tsx` — boolean→Switch·토글 PUT(value/token)·409 롤백·비boolean→textarea 4케이스 통과.
+- `npx vitest run tests/app/admin/settings-editor.test.tsx` — boolean→Switch·토글 PUT(value/token)·409 롤백·**fetch 거부 롤백+재활성화**·비boolean→textarea 5케이스 통과.
 - `npm run typecheck` / `npm run lint` — 통과.
 - `npm test` — 전체 그린.
 
@@ -263,4 +290,5 @@ git commit -m "feat(settings): boolean 설정 토글 에디터(Switch)"
 - **조건부로 hook을 호출하지 마라.** `SettingEditor` 한 컴포넌트 안에서 `if (boolean) useState(...)` 식 분기는 React hook 규칙 위반(lint 에러). 반드시 `BooleanSettingEditor`/`JsonSettingEditor` 두 컴포넌트로 분리해 각자 hook을 호출한다.
 - **기존 textarea 동작을 바꾸지 마라.** `JsonSettingEditor`는 기존 `SettingEditor` 로직과 동일(저장 버튼·JSON 파싱·토큰 흐름). PUT 호출만 공통 `putSetting`으로 추출 — 동작 동일.
 - 토글은 **별도 저장 버튼 없음**(변경 즉시 PUT). 저장 중(`saving`) Switch 비활성화로 더블클릭 방지.
+- **`putSetting`은 절대 throw하면 안 된다.** fetch 거부(네트워크 끊김·abort)·`res.json()` 파싱 실패를 catch하지 않으면 호출부의 `setSaving(false)`·롤백이 건너뛰어져 토글이 "비활성·잘못된 값"으로 고착된다. 호출부는 `try/finally`로 `saving`을 항상 해제한다(이중 방어).
 - `putSetting`은 `@/components/ui` 프리미티브를 새로 만들지 않는다(`Switch` 재사용 — 신설은 비목표).
