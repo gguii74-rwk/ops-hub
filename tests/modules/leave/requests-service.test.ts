@@ -22,6 +22,7 @@ vi.mock("@/modules/leave/services/mail", () => ({
   triggerLeaveMailDrain: vi.fn(),
 }));
 vi.mock("@/modules/leave/authz", () => ({ assertTargetUser: vi.fn(async () => {}) }));
+vi.mock("@/kernel/settings/reader", () => ({ getSetting: vi.fn(async () => true) }));
 
 // kernel/access 모킹: getEffectiveScope, requirePermissionForTarget, ForbiddenError
 const { getEffectiveScope, requirePermissionForTarget } = vi.hoisted(() => ({
