@@ -37,17 +37,18 @@ REQUIRED SUB-SKILL: `superpowers:subagent-driven-development`. This plan is spli
 ### SC-2. 게이트 의미론 (서비스)
 
 - 게이트 facade: `import { getSetting } from "@/kernel/settings/reader"` (모듈 경계 허용 — eslint element-types `module→kernel` + restricted-imports에 `reader` 미포함).
-- `getSetting(key): Promise<unknown>`. 반환 타입이 `unknown`이므로 **명시적 비교**: "명시적 `false`일 때만 끈다"(기본 ON 보존, D4).
-- 조회 실패(인프라 장애)도 **발송 유지**(D4 `fallbackSafe`). → try/catch로 true 폴백.
+- `getSetting(key): Promise<unknown>`. 미설정·무효 저장값이면 catalog `default: true`(ON) 반환(예외 아님).
+- **명시적 true일 때만 발송**(`=== true`). 조회가 **예외로 실패**하면 **fail-closed(미발송)**(D4 개정 — 2026-06-25 사용자 결정).
 - 헬퍼(서비스 모듈 내부, task-03이 정의):
   ```ts
-  // 알림 토글 — 명시적 false일 때만 끈다(기본 ON). 조회 실패도 발송 유지(D4).
+  // 알림 토글 — 명시적 true일 때만 발송(기본 ON: 미설정/무효저장값은 getSetting이 default true 반환).
+  // 조회 예외(인프라 장애·UnknownSettingError 등)는 fail-closed로 미발송(D4 개정).
   async function notificationsEnabled(key: string): Promise<boolean> {
     try {
-      return (await getSetting(key)) !== false;
+      return (await getSetting(key)) === true;
     } catch (e) {
-      console.warn(`[leave] 알림 설정 조회 실패(${key}) — 발송 유지:`, e);
-      return true;
+      console.warn(`[leave] 알림 설정 조회 실패(${key}) — fail-closed로 미발송:`, e);
+      return false;
     }
   }
   ```
@@ -96,8 +97,9 @@ plan 단계 codex 적대검증 결과 — 모든 blocking finding 판정 완료:
 
 | finding | severity | disposition | 근거 |
 | --- | --- | --- | --- |
-| 설정 조회 실패 시 fail-open(발송 유지) — task-03 | high | **ACCEPTED** | spec 결정 **D4**(브레인스토밍 확정): 대상은 내부 연차 알림 메일(보안/규정 메일 아님). "알림 누락 > 발송"이라 의도적 fail-open. 보완: 헬퍼가 `console.warn`로 운영 가시성 확보 + task-03에 fail-open 잠금 테스트 추가(향후 fail-closed "수정" 회귀 방지). 키는 코드 카탈로그 정의라 단일 배포 내 `UnknownSettingError` 불가. |
-| fetch 거부 시 토글 상태 고착 — task-02 | high | **FIXED** | 실제 결함(spec §3 롤백 의도 미충족). `putSetting`을 try/catch로 절대 throw 안 하게 + 호출부 try/finally로 `saving` 항상 해제 + fetch 거부 롤백 테스트 추가. |
+| fetch 거부 시 토글 상태 고착 — task-02 (R1) | high | **FIXED** | 실제 결함(spec §3 롤백 의도 미충족). `putSetting`을 try/catch로 절대 throw 안 하게 + 호출부 try/finally로 `saving` 항상 해제 + fetch 거부 롤백 테스트 추가. R2에서 소멸 확인. |
+| 설정 조회 실패 시 fail-open — task-03 (R1·R2) | high | **FIXED** | codex 2회 no-ship 지적 → 사용자 결정(2026-06-25)으로 **D4 개정: 읽기 예외 fail-closed**. `notificationsEnabled` catch가 `false` 반환, 헬퍼 `=== true` 비교, fail-closed 테스트로 잠금. spec D4·§4·§불변식 갱신. |
+| OFF가 enqueue 시점만 게이트(발송 시점 미게이트) — task-03 (R2) | high | **ACCEPTED** | 발송 워커 무변경은 spec **명시적 비목표**. 사용자 결정(2026-06-25)으로 in-flight/큐된 메일 발송 유지 확정(best-effort enqueue preference, 규정용 kill-switch 아님). 보완: spec §불변식에 토글 계약 명문화. |
 
 ## 배포 주의
 

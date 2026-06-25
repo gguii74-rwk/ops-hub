@@ -21,7 +21,7 @@
 - **D1. 토글 단위 = 이벤트별 3개.** 전역 마스터/그룹 2개가 아니라 신청·승인·반려 개별. 운영 유연성(예: 결과 메일은 켜고 신청 알림만 끄기).
 - **D2. OFF면 미발송 이력을 남기지 않는다.** OFF 시 `MailDelivery` outbox에 아예 적재하지 않는다(SKIPPED 상태 신설·enum 추가 안 함 → workflow 소비자·마이그레이션 영향 없음).
 - **D3. 관리자 직접등록은 토글 대상에서 제외.** 이미 `sendNotification`으로 건별 제어되므로 중복 게이트를 만들지 않는다.
-- **D4. 기본값 ON, 폴백 ON.** 기존 동작(무조건 발송) 보존을 위해 `default: true`. 설정 조회 실패 시에도 발송(`fallbackSafe: true`) — 알림 누락보다 발송이 운영상 덜 위험.
+- **D4. 기본값 ON(미설정), 읽기 실패는 fail-closed.** 설정이 없으면(미설정 행) 또는 저장값이 무효면 catalog `default: true`로 ON — 기존 동작(무조건 발송) 보존(`fallbackSafe: true` 유지: 무효 저장값 → default ON 폴백). 단 설정 **조회가 예외로 실패(인프라 장애·`UnknownSettingError` 등)** 하면 **미발송(fail-closed)** — 서비스 헬퍼가 예외를 catch해 `false` 반환. (애초 fail-open이었으나 codex 적대검증 2회 no-ship 지적 → 2026-06-25 사용자 결정으로 "읽기 실패만 fail-closed"로 개정. "미설정 행 → ON"과 "조회 예외 → 미발송"은 별개 경로.)
 - **D5. 설정 키 = 개별 boolean 3키.** 객체 1키가 아니라 catalog의 SMTP(host/port/fromAddress) 개별 키 패턴을 따른다 — 설정 화면이 키별 title/description을 노출해 관리자가 각 토글을 이해하기 쉽다.
 
 ## 설계
@@ -64,7 +64,7 @@ repository의 `createPendingRequest`/`approveTx`/`rejectRequest`는 **이미 `ma
 - `reject`: `onReject` false면 `mailJob = null`.
 - `createLeaveRequestByAdmin`: **변경 없음**(D3).
 
-`getSetting`의 타입은 `JsonValue`이므로 boolean 단정/비교는 `=== false` 또는 `!== true` 중 **명시적 비교**로 처리(폴백 기본값이 ON이므로 "명시적 false일 때만 끈다").
+`getSetting`은 boolean을 반환(미설정·무효 저장값 → catalog default `true`). 서비스 헬퍼 `notificationsEnabled(key)`는 `=== true`로 비교해 **"명시적 true일 때만 발송"**하고, **조회 예외는 catch해 `false`(fail-closed) 미발송** 처리한다(D4 개정). 즉 enqueue 게이트 = `notificationsEnabled(key)`가 true일 때만 `mailJob` 생성.
 
 ### 5. 메뉴 노출 — `src/kernel/access/catalog.ts`의 `NAV`
 
@@ -78,6 +78,7 @@ repository의 `createPendingRequest`/`approveTx`/`rejectRequest`는 **이미 `ma
 
 ## 불변식 / 영향
 
+- **토글 계약(명시 — codex 적대검증 반영):** OFF는 **"앞으로 발생할 이벤트의 메일을 큐에 적재하지 않음"**을 의미하는 **enqueue 시점 preference**다. 이미 적재됐거나 재시도 중인 `MailDelivery` 행은 발송되며(발송 워커 `drainLeaveMailOutbox` **무변경** — 비목표), 토글을 끄는 것이 outbox를 비우지 않는다. 즉 best-effort 발송 제어이지 규정용 하드 kill-switch가 아니다(ON일 때 발생한 이벤트는 정당하게 통지됨). 유일한 예외는 **조회 예외 시 fail-closed**(D4). in-flight 메일까지 막는 send-time 게이트는 의도적 비목표(워커 변경 회피).
 - 연차 도메인 불변식과 **무관**: `usedDays` 캐시·status-CAS 트랜잭션·할당 차감은 그대로. 이번 변경은 **메일 enqueue의 조건부 스킵**과 표현계층(에디터·메뉴)뿐.
 - 발송 시점 권한 재확정(REQUESTED를 drain이 `getLeaveAdminRecipients`로 재확정하는 SSOT)은 불변 — 토글은 **enqueue 시점 게이트**이고, 권한 경계는 발송 시점 게이트로 직교한다.
 - REQUESTED "수신자 0명이어도 durable 적재"(phase-5 spec §8)와의 관계: 그 규칙은 "보내려 했으나 수신자가 없다"는 운영 가시성을 위한 것이다. 토글 OFF는 "보내지 않기로 한 명시적 결정"이므로 durable 적재 대상이 아니다(D2와 일관).
