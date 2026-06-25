@@ -39,7 +39,7 @@ Next.js App Router(client component), React 19, Tailwind v4(Aurora 토큰), `@ta
 | `src/app/(app)/leave/_components/leave-calendar.tsx` | 05 | 재작성 — 연차 소비처(자가신청/관리자 진입 분리) |
 | `src/app/(app)/leave/calendar/page.tsx` | 05 | 수정 — `LeaveCalendar`에 `canCreate` prop 전달 |
 
-테스트(신규): `tests/modules/calendar/lanes.test.ts`(01), `tests/modules/calendar/kind-styles.test.ts`(02), `tests/modules/calendar/calendar-month.test.tsx`(03), `tests/app/calendar/feed-adapter.test.ts`(04), `tests/app/leave/leave-adapter.test.ts`(05).
+테스트(신규): `tests/modules/calendar/lanes.test.ts`(01), `tests/modules/calendar/kind-styles.test.ts`(02), `tests/modules/calendar/calendar-month.test.tsx`(03), `tests/app/calendar/feed-adapter.test.ts`(04), `tests/app/leave/leave-adapter.test.ts`·`tests/app/leave/leave-calendar.test.tsx`(05).
 **무변경**: `grid.ts`/`grid.test.ts`, `time.ts`/`time.test.ts`, feed/leave API, `create-leave-modal.tsx`, `labels.ts`.
 
 ### 공통 이벤트 모델 (`event-input.ts` — task 01이 생성)

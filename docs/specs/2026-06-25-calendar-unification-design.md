@@ -122,7 +122,7 @@ interface CalendarMonthProps {
 | `src/modules/calendar/ui/lanes.ts` | **신규** — `packWeekLanes` 순수 함수(D7). |
 | `src/modules/calendar/ui/kind-styles.ts` | **신규** — kind→색(soft/bold) + status→오버레이 매핑 SSOT(D4/D5). 현 `KIND_CLASS` 이전. |
 | `src/app/(app)/calendar/calendar-view.tsx` | `CalEvent`→`CalendarEventInput` 어댑터 + `CalendarMonth`(intensity=`bold`, 읽기전용 팝오버) 사용. 월 네비·feed 패칭·stale/실패 표시는 유지. 인라인 그리드/`KIND_CLASS` 제거. |
-| `src/app/(app)/leave/_components/leave-calendar.tsx` | `Ev`→`CalendarEventInput` 어댑터 + `CalendarMonth`(intensity=`soft`, 종류별 색, 팝오버에 목록+신청, `canManage`면 `onQuickAdd`) 사용. 자체 그리드/`colorFor`/정적 범례/`leadBlanks` 제거. `CreateLeaveModal` 트리거는 팝오버/+에서. |
+| `src/app/(app)/leave/_components/leave-calendar.tsx` | `Ev`→`CalendarEventInput` 어댑터 + `CalendarMonth`(intensity=`soft`, 종류별 색) 사용. 팝오버에 목록 + **능력별 신청 액션**: `canCreate`(=`leave.request:create`)면 빠른추가(`onQuickAdd`)·팝오버 버튼 → `/leave/request?date=`(자가신청), `canManage`(=`approvalScope==='all'`)면 팝오버 버튼 → `CreateLeaveModal`(관리자 직접입력). **두 경로 분리**(병합 금지, plan R1). 자체 그리드/`colorFor`/정적 범례/`leadBlanks` 제거. 패칭은 42칸 그리드 윈도우(R1), cursor는 KST 파생(R3). |
 | `tests/modules/calendar/lanes.test.ts` | **신규** — lane packing 단위 테스트. |
 | `tests/modules/calendar/calendar-month.test.tsx` | **신규** — soft/bold·status 오버레이·팝오버 open/Esc·빠른추가 노출 조건·범례 필터·a11y 렌더 테스트. |
 
@@ -140,8 +140,8 @@ interface CalendarMonthProps {
 1. 통합 캘린더·연차 캘린더가 **동일한 `CalendarMonth`**로 렌더되며 시각(소프트 카드·과거/오늘/미래)이 일치한다.
 2. 기간 이벤트가 **연속 막대**로 보이고(주 경계 ◂/▸), 겹치면 lane으로 분리된다. **막대 길이가 정확하다**: 연차 inclusive 범위(예 6/1~6/3)는 3칸, all-day external(half-open exclusive)도 의도한 마지막 날까지만 — 하루 초과/미달 없음(D14).
 3. 연차 캘린더에서 종류(연차/반차/반반차)가 **색으로**, 상태(대기/반려·취소)가 **오버레이로** 구분된다(D4/D5).
-4. 셀 클릭 시 팝오버가 뜬다 — 통합은 읽기전용 상세, 연차는 목록 + (`canManage`) 신청 진입. Esc·바깥클릭으로 닫힌다.
-5. 연차에서 기존 `+ 연차 입력`·`/leave/request?date=` 동선이 팝오버/빠른추가로 대체되고, 신청 제출 경로(`CreateLeaveModal`·도메인 트랜잭션)는 **동작 변화 없이** 작동한다.
+4. 셀 클릭 시 팝오버가 뜬다 — 통합은 읽기전용 상세, 연차는 목록 + **능력별 신청 진입**(`canCreate`면 자가신청, `canManage`면 관리자 직접입력). Esc·바깥클릭으로 닫힌다.
+5. 연차에서 기존 두 동선(`/leave/request?date=` 자가신청 · `+ 연차 입력` 관리자 직접입력)이 **각각** 팝오버/빠른추가로 대체된다(자가신청=`canCreate`→라우트, 관리자=`canManage`→`CreateLeaveModal`). 두 제출 경로(라우트·`CreateLeaveModal`·도메인 트랜잭션)는 **동작 변화 없이** 작동하고, 일반 사용자(create 가능·approve-all 불가)도 캘린더 자가신청이 유지된다.
 6. 휴대폰 폭에서 그리드·기간 막대가 깨지지 않고, 키보드만으로 셀 이동·팝오버 열기/닫기가 된다.
 7. `lint`/`typecheck`/`test`/`build` 모두 그린. 서버/도메인 코드 diff 없음(표현 계층 한정).
 

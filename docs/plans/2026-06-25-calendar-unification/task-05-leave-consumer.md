@@ -6,6 +6,7 @@
 
 - **Create** `src/app/(app)/leave/_components/leave-adapter.ts` — `Ev` 타입 + `leaveToEvents`(순수).
 - **Create (test)** `tests/app/leave/leave-adapter.test.ts`.
+- **Create (test)** `tests/app/leave/leave-calendar.test.tsx` — 능력별 진입 분리 회귀(R1/R4 가드).
 - **Modify (재작성)** `src/app/(app)/leave/_components/leave-calendar.tsx` — 자체 그리드/`colorFor`/`eventsOn`/`leadBlanks`/정적 색 범례/상단 `+ 연차 입력` 버튼 제거. `useRouter`는 **유지**(자가신청 라우트 보존, 아래 주의 참조).
 - **Modify** `src/app/(app)/leave/calendar/page.tsx` — `LeaveCalendar`에 `canCreate`(자가신청 능력) prop 추가 전달.
 
@@ -273,6 +274,71 @@ export function LeaveCalendar({ canCreate, canManage }: { canCreate: boolean; ca
 
 (나머지 — `leave.request:view` 게이트·`approvalScope` 계산 — 무변경.)
 
+### Step 3c — 능력별 진입 분리 회귀 테스트 (R1/R4 가드)
+
+`tests/app/leave/leave-calendar.test.tsx`:
+
+```tsx
+// @vitest-environment jsdom
+import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// react-query useQuery → 빈 이벤트 고정(패칭 무력화). leave-calendar는 useQuery만 사용.
+vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: [] }) }));
+// next/navigation useRouter → push 캡처(자가신청 라우팅 검증)
+const router = vi.hoisted(() => ({ push: vi.fn() }));
+vi.mock("next/navigation", () => ({ useRouter: () => router }));
+
+import { LeaveCalendar } from "@/app/(app)/leave/_components/leave-calendar";
+
+afterEach(() => {
+  cleanup();
+  router.push.mockClear();
+});
+
+// 현재 KST 달의 15일 셀(항상 inMonth)을 열어 팝오버를 띄운다.
+function open15th() {
+  const cells = screen
+    .getAllByRole("button")
+    .filter((b) => /^\d{4}-\d{2}-\d{2}$/.test(b.getAttribute("aria-label") ?? ""));
+  const target = cells.find((b) => (b.getAttribute("aria-label") ?? "").endsWith("-15"))!;
+  fireEvent.click(target);
+}
+
+describe("LeaveCalendar — 능력별 진입 분리(R1/R4)", () => {
+  it("canCreate=true·canManage=false: 자가신청 유지(+ 노출·팝오버 신청), 관리자 입력 없음", () => {
+    render(<LeaveCalendar canCreate canManage={false} />);
+    expect(screen.getAllByRole("button", { name: /추가/ }).length).toBeGreaterThan(0); // 빠른추가 +
+    open15th();
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("이 날짜로 연차 신청")).toBeTruthy();
+    expect(within(dialog).queryByText("관리자 직접 입력")).toBeNull();
+  });
+
+  it("canCreate=false·canManage=true: + 없음, 팝오버는 관리자 직접입력만", () => {
+    render(<LeaveCalendar canCreate={false} canManage />);
+    expect(screen.queryByRole("button", { name: /추가/ })).toBeNull();
+    open15th();
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).queryByText("이 날짜로 연차 신청")).toBeNull();
+    expect(within(dialog).getByText("관리자 직접 입력")).toBeTruthy();
+  });
+
+  it("자가신청 버튼은 /leave/request?date= 로 라우팅(제출 경로 보존)", () => {
+    render(<LeaveCalendar canCreate canManage={false} />);
+    open15th();
+    fireEvent.click(within(screen.getByRole("dialog")).getByText("이 날짜로 연차 신청"));
+    expect(router.push).toHaveBeenCalledTimes(1);
+    expect(String(router.push.mock.calls[0][0])).toMatch(/^\/leave\/request\?date=\d{4}-\d{2}-\d{2}$/);
+  });
+});
+```
+
+**Run (expect PASS — Step 3 재작성 후):**
+```bash
+npm test -- tests/app/leave/leave-calendar.test.tsx
+```
+
 ## Step 4 — 회귀 확인 + commit
 
 ```bash
@@ -280,19 +346,20 @@ npm run typecheck
 npm run lint
 npm test
 npm run build
-git add src/app/(app)/leave/_components/leave-adapter.ts tests/app/leave/leave-adapter.test.ts src/app/(app)/leave/_components/leave-calendar.tsx src/app/(app)/leave/calendar/page.tsx
+git add src/app/(app)/leave/_components/leave-adapter.ts tests/app/leave/leave-adapter.test.ts tests/app/leave/leave-calendar.test.tsx src/app/(app)/leave/_components/leave-calendar.tsx src/app/(app)/leave/calendar/page.tsx
 git commit -m "feat(calendar): 연차 캘린더를 CalendarMonth로 재작성(soft·종류색·자가신청/관리자 진입 분리·그리드윈도우 패칭)"
 ```
 
 ## Acceptance Criteria
 
 ```bash
-npm test -- tests/app/leave/leave-adapter.test.ts   # PASS
+npm test -- tests/app/leave/leave-adapter.test.ts tests/app/leave/leave-calendar.test.tsx   # PASS
 npm run typecheck   # 에러 0
 npm run lint        # boundaries 통과
-npm test            # 전체 그린(두 캘린더 어댑터·lanes·kind-styles·CalendarMonth)
+npm test            # 전체 그린(두 캘린더 어댑터·lanes·kind-styles·CalendarMonth·진입 분리)
 npm run build       # 성공
 ```
+- **`canCreate=true·canManage=false`(일반 사용자) 자가신청 진입이 유지**되고 `/leave/request?date=`로 라우팅된다(R1/R4 회귀 가드 테스트 통과).
 - `leave-calendar.tsx`에서 `colorFor`·`eventsOn`·`leadBlanks`·`ymd`·정적 색 범례 Card·상단 `+ 연차 입력` 버튼이 사라졌다(단 `useRouter`는 자가신청 라우트용으로 **유지**).
 - 자가신청(`canCreate`)은 `/leave/request?date=`로, 관리자 직접입력(`canManage`)은 `CreateLeaveModal`로 — **두 제출 경로 모두 diff 없음**(D10/D11). 일반 사용자(create 가능·approve-all 불가)도 캘린더에서 자가신청 진입이 유지된다.
 - 연차 패칭이 **42칸 그리드 윈도우**(`normalizeToGridWindow`)로 확대됐다(인접월 가짜 빈칸 제거). `/api/leave/calendar` 라우트·service는 무변경.
