@@ -40,15 +40,19 @@ export function RequestLeaveModal({
   });
 
   const single = state.leaveType !== "ANNUAL";
+  // 제출 중에는 닫기 차단(Esc/배경/취소) — in-flight POST 결과(성공/실패)를 놓치지 않도록.
+  const guardedClose = () => {
+    if (!m.isPending) onClose();
+  };
   return (
-    <Modal title="연차 신청" onClose={onClose}>
+    <Modal title="연차 신청" onClose={guardedClose}>
       <div className="space-y-3">
         <LeaveFields state={state} set={set} />
         {m.isError && (
           <p className="text-sm text-destructive">{(m.error as Error).message}</p>
         )}
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>
+          <Button variant="ghost" disabled={m.isPending} onClick={guardedClose}>
             취소
           </Button>
           <Button

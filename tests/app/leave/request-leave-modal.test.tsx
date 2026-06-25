@@ -3,12 +3,14 @@ import { render, screen, fireEvent, cleanup, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // 이 저장소 규약: react-query는 모듈 통째 모킹. mutate는 mutationFn을 즉시 호출해 fetch 검증.
+// mut.pending은 제출 중(in-flight) 상태를 테스트별로 토글하기 위한 가변 플래그.
 const invalidate = vi.hoisted(() => vi.fn());
+const mut = vi.hoisted(() => ({ pending: false }));
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: invalidate }),
   useMutation: (opts: { mutationFn: () => unknown }) => ({
     mutate: () => opts.mutationFn(),
-    isPending: false,
+    isPending: mut.pending,
     isError: false,
     error: null,
   }),
@@ -20,6 +22,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   invalidate.mockClear();
+  mut.pending = false;
 });
 
 function dateInputs() {
@@ -49,5 +52,16 @@ describe("RequestLeaveModal", () => {
     expect(body.startDate).toBe("2026-06-15");
     expect(body.endDate).toBe("2026-06-15");
     expect(body.leaveType).toBe("ANNUAL");
+  });
+
+  it("제출 중에는 닫기 차단(취소 비활성화·Esc 무시)", () => {
+    mut.pending = true;
+    const onClose = vi.fn();
+    render(<RequestLeaveModal defaultDate="2026-06-15" onClose={onClose} />);
+    const dialog = screen.getByRole("dialog");
+    const cancel = within(dialog).getByRole("button", { name: "취소" }) as HTMLButtonElement;
+    expect(cancel.disabled).toBe(true);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
   });
 });
