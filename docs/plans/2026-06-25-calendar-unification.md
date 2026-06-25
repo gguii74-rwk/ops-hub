@@ -36,7 +36,8 @@ Next.js App Router(client component), React 19, Tailwind v4(Aurora 토큰), `@ta
 | `src/app/(app)/calendar/feed-adapter.ts` | 04 | 신규 — 통합 feed 어댑터(순수) |
 | `src/app/(app)/calendar/calendar-view.tsx` | 04 | 재작성 — 통합 소비처 |
 | `src/app/(app)/leave/_components/leave-adapter.ts` | 05 | 신규 — 연차 어댑터(순수, `Ev` 타입 보유) |
-| `src/app/(app)/leave/_components/leave-calendar.tsx` | 05 | 재작성 — 연차 소비처 |
+| `src/app/(app)/leave/_components/leave-calendar.tsx` | 05 | 재작성 — 연차 소비처(자가신청/관리자 진입 분리) |
+| `src/app/(app)/leave/calendar/page.tsx` | 05 | 수정 — `LeaveCalendar`에 `canCreate` prop 전달 |
 
 테스트(신규): `tests/modules/calendar/lanes.test.ts`(01), `tests/modules/calendar/kind-styles.test.ts`(02), `tests/modules/calendar/calendar-month.test.tsx`(03), `tests/app/calendar/feed-adapter.test.ts`(04), `tests/app/leave/leave-adapter.test.ts`(05).
 **무변경**: `grid.ts`/`grid.test.ts`, `time.ts`/`time.test.ts`, feed/leave API, `create-leave-modal.tsx`, `labels.ts`.
@@ -153,6 +154,6 @@ export interface CalendarMonthProps {
 2. 기간 이벤트 = 연속 막대(주 경계 ◂/▸), 겹치면 lane 분리. **막대 길이 정확**: 연차 inclusive 6/1~6/3 = 3칸, all-day half-open도 의도한 마지막 날까지(하루 초과/미달 없음, D14).
 3. 연차에서 종류=색, 상태=오버레이로 구분(D4/D5).
 4. 셀 클릭 → 팝오버(통합 읽기전용 / 연차 목록+신청), Esc·바깥클릭 닫힘.
-5. 연차 `+ 연차 입력`·`/leave/request?date=` 동선이 팝오버/빠른추가로 대체되고, 제출 경로(`CreateLeaveModal`·트랜잭션)는 동작 변화 없음.
+5. 연차 진입이 팝오버/빠른추가로 대체되되 **두 경로가 모두 보존**된다: 자가신청(`canCreate`)→`/leave/request?date=`(라우트 불변), 관리자 직접입력(`canManage`)→`CreateLeaveModal`(불변). 일반 사용자(create 가능·approve-all 불가)도 캘린더 자가신청이 유지된다. 제출 경로·트랜잭션 동작 변화 없음.
 6. 휴대폰 폭에서 그리드·막대 안 깨짐, 키보드만으로 셀 이동·팝오버 열기/닫기.
 7. `lint`/`typecheck`/`test`/`build` 그린. 서버/도메인 코드 diff 없음.

@@ -6,14 +6,27 @@
 
 - **Create** `src/app/(app)/leave/_components/leave-adapter.ts` — `Ev` 타입 + `leaveToEvents`(순수).
 - **Create (test)** `tests/app/leave/leave-adapter.test.ts`.
-- **Modify (재작성)** `src/app/(app)/leave/_components/leave-calendar.tsx` — 자체 그리드/`colorFor`/`eventsOn`/`leadBlanks`/정적 색 범례/상단 `+ 연차 입력` 버튼/`useRouter` 제거.
+- **Modify (재작성)** `src/app/(app)/leave/_components/leave-calendar.tsx` — 자체 그리드/`colorFor`/`eventsOn`/`leadBlanks`/정적 색 범례/상단 `+ 연차 입력` 버튼 제거. `useRouter`는 **유지**(자가신청 라우트 보존, 아래 주의 참조).
+- **Modify** `src/app/(app)/leave/calendar/page.tsx` — `LeaveCalendar`에 `canCreate`(자가신청 능력) prop 추가 전달.
+
+## 두 진입 경로 분리 (review-loop R1 high — 필독)
+
+연차 캘린더 in-cell 진입은 **서로 다른 두 능력·두 제출 경로**다. 절대 하나로 병합하지 말 것(이전 plan 초안의 결함):
+
+| 경로 | 능력 게이트 | 제출 경로(무변경) | UI |
+| --- | --- | --- | --- |
+| **자가신청**(self-service, 본인 연차) | `canCreate` = `leave.request:create` | `router.push("/leave/request?date=")` (라우트 보존, 페이지가 create 권한 enforce) | 빠른추가 `+` + 팝오버 "이 날짜로 연차 신청" |
+| **관리자 직접입력**(타인 연차) | `canManage` = `approvalScope === "all"` | `CreateLeaveModal` → `/api/admin/leave/requests` (무변경) | 팝오버 "관리자 직접 입력" |
+
+D11("캘린더 내 진입만 바꾼다") = **두 경로를 그대로 팝오버/빠른추가로 옮기되 제출 경로는 불변**. 일반 사용자의 자가신청을 없애면 안 된다(기존 = 모든 캘린더 뷰어가 날짜 클릭→`/leave/request`).
 
 ## Prep
 
 - 읽기: spec §4(어댑터 — 연차), D5(status 오버레이)·D8(팝오버)·D9(빠른추가)·D11(진입점 흡수)·D12(범례)·D14②(inclusive→half-open), entrypoint §Shared Contracts.
 - 현재 파일: `src/app/(app)/leave/_components/leave-calendar.tsx`(react-query 패칭·cursor 월 네비·`canManage`는 유지). `Ev` 인터페이스는 이 파일에서 leave-adapter로 이동.
-- 무변경: `create-leave-modal.tsx`(이미 `defaultDate?: string` 지원 — 트리거만 팝오버/+로), `labels.ts`, `/api/leave/calendar`.
-- §Shared Contracts items 사용: `CalendarEventInput`/`EventStatus`(task 01), `CalendarMonth`(task 03), `eventChipClass`(task 02), `allDayHalfOpen`(`@/modules/calendar/time`, 기존), `getFullLeaveText`/`TYPE_LABEL`(`@/modules/leave/labels`, 기존).
+- 현재 페이지: `src/app/(app)/leave/calendar/page.tsx`(이미 `set`=권한키·`approvalScope` 계산 보유 → `canCreate` 한 줄 추가).
+- 무변경: `create-leave-modal.tsx`(이미 `defaultDate?: string` 지원 — 트리거만 팝오버/+로), `labels.ts`, `/api/leave/calendar`(start/end 범위 제한 없음 — `parseLeaveDate`로 임의 범위 overlap 조회, 윈도우 확대 안전).
+- §Shared Contracts items 사용: `CalendarEventInput`/`EventStatus`(task 01), `CalendarMonth`(task 03), `eventChipClass`(task 02), `allDayHalfOpen`/`normalizeToGridWindow`/`toKstDateKey`(`@/modules/calendar/time`, 기존), `getFullLeaveText`/`TYPE_LABEL`(`@/modules/leave/labels`, 기존).
 
 ## Deps
 
@@ -115,30 +128,34 @@ npm test -- tests/app/leave/leave-adapter.test.ts
 ```tsx
 "use client";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { normalizeToGridWindow, toKstDateKey } from "@/modules/calendar/time";
 import { CalendarMonth } from "@/modules/calendar/ui/calendar-month";
 import { eventChipClass } from "@/modules/calendar/ui/kind-styles";
 import { TYPE_LABEL } from "@/modules/leave/labels";
 import { CreateLeaveModal } from "./create-leave-modal";
 import { leaveToEvents, type Ev } from "./leave-adapter";
 
-const ymd = (d: Date) =>
-  `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
-
-export function LeaveCalendar({ canManage }: { canManage: boolean }) {
+export function LeaveCalendar({ canCreate, canManage }: { canCreate: boolean; canManage: boolean }) {
+  const router = useRouter();
   const today = new Date();
   const [cursor, setCursor] = useState({ y: today.getUTCFullYear(), m: today.getUTCMonth() }); // m: 0-based
-  const [creating, setCreating] = useState<string | null>(null); // 신청 모달 defaultDate(null=닫힘)
+  const [creating, setCreating] = useState<string | null>(null); // 관리자 직접입력 모달 defaultDate(null=닫힘)
 
-  const first = new Date(Date.UTC(cursor.y, cursor.m, 1));
-  const last = new Date(Date.UTC(cursor.y, cursor.m + 1, 0));
+  const anchor = new Date(Date.UTC(cursor.y, cursor.m, 15, 3, 0, 0));
+  // 표시되는 42칸 그리드(인접월 포함) 전체를 패칭 — 보이는 셀에 데이터 누락(가짜 빈칸) 없도록. R1 medium.
+  const { start: winStart, end: winEnd } = normalizeToGridWindow(anchor);
+  const startKey = toKstDateKey(winStart);
+  const endKey = toKstDateKey(new Date(winEnd.getTime() - 1)); // winEnd는 exclusive(+42일) → 마지막 점유 날
+
   const { data } = useQuery({
-    queryKey: ["leave", "calendar", cursor.y, cursor.m],
+    queryKey: ["leave", "calendar", startKey, endKey],
     queryFn: async (): Promise<Ev[]> => {
-      const res = await fetch(`/api/leave/calendar?start=${ymd(first)}&end=${ymd(last)}`, {
+      const res = await fetch(`/api/leave/calendar?start=${startKey}&end=${endKey}`, {
         headers: { Accept: "application/json" },
       });
       if (!res.ok) throw new Error(`calendar ${res.status}`);
@@ -146,13 +163,15 @@ export function LeaveCalendar({ canManage }: { canManage: boolean }) {
     },
   });
   const events = leaveToEvents(data ?? []);
-  const anchor = new Date(Date.UTC(cursor.y, cursor.m, 15, 3, 0, 0));
 
   const move = (delta: number) =>
     setCursor((c) => {
       const d = new Date(Date.UTC(c.y, c.m + delta, 1));
       return { y: d.getUTCFullYear(), m: d.getUTCMonth() };
     });
+
+  // 빠른추가 + = 본인 자가신청(self-service). 라우트 보존(/leave/request 페이지가 create 권한 enforce).
+  const quickAdd = canCreate ? (dateKey: string) => router.push(`/leave/request?date=${dateKey}`) : undefined;
 
   return (
     <div className="space-y-3">
@@ -177,7 +196,7 @@ export function LeaveCalendar({ canManage }: { canManage: boolean }) {
         intensity="soft"
         legend
         legendLabel={(k) => TYPE_LABEL[k] ?? k}
-        onQuickAdd={canManage ? (dateKey) => setCreating(dateKey) : undefined}
+        onQuickAdd={quickAdd}
         renderDayDetail={({ dateKey, events: dayEvents, close }) => (
           <div className="space-y-2">
             <ul className="space-y-1">
@@ -192,17 +211,34 @@ export function LeaveCalendar({ canManage }: { canManage: boolean }) {
                 </li>
               ))}
             </ul>
-            {canManage && (
-              <Button
-                size="sm"
-                className="w-full"
-                onClick={() => {
-                  close();
-                  setCreating(dateKey);
-                }}
-              >
-                + 이 날짜로 연차 입력
-              </Button>
+            {(canCreate || canManage) && (
+              <div className="flex flex-col gap-1">
+                {canCreate && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full"
+                    onClick={() => {
+                      close();
+                      router.push(`/leave/request?date=${dateKey}`);
+                    }}
+                  >
+                    이 날짜로 연차 신청
+                  </Button>
+                )}
+                {canManage && (
+                  <Button
+                    size="sm"
+                    className="w-full"
+                    onClick={() => {
+                      close();
+                      setCreating(dateKey);
+                    }}
+                  >
+                    관리자 직접 입력
+                  </Button>
+                )}
+              </div>
             )}
           </div>
         )}
@@ -226,6 +262,16 @@ export function LeaveCalendar({ canManage }: { canManage: boolean }) {
 }
 ```
 
+### Step 3b — `leave/calendar/page.tsx`에 `canCreate` 전달
+
+`src/app/(app)/leave/calendar/page.tsx`의 마지막 줄만 수정(이미 `set`·`approvalScope` 계산 보유):
+
+```tsx
+  return <LeaveCalendar canCreate={set.has("leave.request:create")} canManage={approvalScope === "all"} />;
+```
+
+(나머지 — `leave.request:view` 게이트·`approvalScope` 계산 — 무변경.)
+
 ## Step 4 — 회귀 확인 + commit
 
 ```bash
@@ -233,8 +279,8 @@ npm run typecheck
 npm run lint
 npm test
 npm run build
-git add src/app/(app)/leave/_components/leave-adapter.ts tests/app/leave/leave-adapter.test.ts src/app/(app)/leave/_components/leave-calendar.tsx
-git commit -m "feat(calendar): 연차 캘린더를 CalendarMonth로 재작성(soft·종류색·팝오버 신청·빠른추가)"
+git add src/app/(app)/leave/_components/leave-adapter.ts tests/app/leave/leave-adapter.test.ts src/app/(app)/leave/_components/leave-calendar.tsx src/app/(app)/leave/calendar/page.tsx
+git commit -m "feat(calendar): 연차 캘린더를 CalendarMonth로 재작성(soft·종류색·자가신청/관리자 진입 분리·그리드윈도우 패칭)"
 ```
 
 ## Acceptance Criteria
@@ -246,14 +292,16 @@ npm run lint        # boundaries 통과
 npm test            # 전체 그린(두 캘린더 어댑터·lanes·kind-styles·CalendarMonth)
 npm run build       # 성공
 ```
-- `leave-calendar.tsx`에서 `colorFor`·`eventsOn`·`leadBlanks`·정적 색 범례 Card·상단 `+ 연차 입력` 버튼·`useRouter` import가 사라졌다.
-- `CreateLeaveModal`·`/api/leave/calendar`·연차 제출 경로는 diff 없음(D10/D11).
-- dev 배포 smoke(spec §10): 인증 후 `/calendar`·`/leave/calendar` 양쪽 렌더 + 팝오버 + 연차 신청 1건.
+- `leave-calendar.tsx`에서 `colorFor`·`eventsOn`·`leadBlanks`·`ymd`·정적 색 범례 Card·상단 `+ 연차 입력` 버튼이 사라졌다(단 `useRouter`는 자가신청 라우트용으로 **유지**).
+- 자가신청(`canCreate`)은 `/leave/request?date=`로, 관리자 직접입력(`canManage`)은 `CreateLeaveModal`로 — **두 제출 경로 모두 diff 없음**(D10/D11). 일반 사용자(create 가능·approve-all 불가)도 캘린더에서 자가신청 진입이 유지된다.
+- 연차 패칭이 **42칸 그리드 윈도우**(`normalizeToGridWindow`)로 확대됐다(인접월 가짜 빈칸 제거). `/api/leave/calendar` 라우트·service는 무변경.
+- dev 배포 smoke(spec §10): 인증 후 `/calendar`·`/leave/calendar` 양쪽 렌더 + 팝오버 + **자가신청 1건**(일반 사용자 경로) + (가능 시) 관리자 직접입력 1건.
 
 ## Cautions
 
+- **자가신청과 관리자 직접입력을 하나로 병합하지 말 것(R1 high).** 이유: 둘은 다른 능력(`canCreate` vs `canManage`)·다른 제출 경로(`/leave/request` 라우트 vs `CreateLeaveModal`→`/api/admin/leave/requests`)다. `canManage` 하나로 묶으면 일반 사용자(create 가능·approve-all 불가)의 캘린더 자가신청이 사라지는 **회귀**(기존엔 모든 뷰어가 날짜 클릭→`/leave/request`). 표 "두 진입 경로 분리" 참조.
 - **`endDate`를 그대로 `end`에 넣지 말 것.** 이유: D14② — 연차 `endDate`는 inclusive 종료일. `allDayHalfOpen`로 변환하지 않으면 막대가 마지막 날 하루 모자란다(예: 6/1~6/3이 6/1~6/2로 표시). 이 task의 핵심 버그 지점.
-- **신청 폼·검증·제출(`CreateLeaveModal` 내부)을 건드리지 말 것.** 이유: D10/D11 — 진입(트리거)만 팝오버/빠른추가로 옮긴다. `CreateLeaveModal`은 이미 `defaultDate`를 받으므로 호출만 바꾼다.
-- **상단 `+ 연차 입력` 버튼을 남기지 말 것.** 이유: D11 — 진입점을 팝오버/빠른추가로 흡수. 신청은 셀 `+`(hover/터치 시 팝오버 버튼) 또는 팝오버 내 버튼으로. (모바일은 hover가 없으니 팝오버 버튼이 주 경로 — `canManage`면 항상 노출.)
+- **신청 폼·검증·제출(`CreateLeaveModal` 내부 / `/leave/request` 페이지)을 건드리지 말 것.** 이유: D10/D11 — 진입(트리거)만 팝오버/빠른추가로 옮긴다. `CreateLeaveModal`은 이미 `defaultDate`를 받고, 자가신청은 기존 `?date=` 쿼리를 그대로 쓴다.
+- **상단 `+ 연차 입력` 버튼을 남기지 말 것.** 이유: D11 — 진입점을 팝오버/빠른추가로 흡수. 자가신청은 셀 `+`(canCreate) 또는 팝오버 "연차 신청", 관리자 직접입력은 팝오버 "관리자 직접 입력"(canManage). (모바일은 hover 없으니 팝오버 버튼이 주 경로.)
 - **상태를 색으로 되돌리지 말 것.** 이유: 기존 `colorFor`의 `PENDING=amber`·`반려=muted`는 D5로 폐기 — 종류는 색(soft), 상태는 오버레이. `colorFor` 부활 금지.
-- **연차 fetch 범위(월 단위 first~last)는 유지.** 이유: surgical — 서버 계약·queryKey 무변경. 그리드의 인접월 칸은 비어 보이며(기존도 인접월 미표시), 회귀 아님.
+- **연차 fetch는 월(first~last)이 아니라 42칸 그리드 윈도우로(R1 medium).** 이유: `CalendarMonth`는 인접월 날짜를 **활성 클릭 가능 셀**로 렌더한다. 월만 패칭하면 그 셀들이 연차가 있어도 빈칸으로 보이는 **가짜 빈칸** 결함이 생긴다(기존은 인접월을 blank로 안 그렸음). `normalizeToGridWindow(anchor)` 범위를 `/api/leave/calendar`에 넘긴다(API 무변경, 범위만 확대).
