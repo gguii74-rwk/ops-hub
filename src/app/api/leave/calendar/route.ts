@@ -12,6 +12,10 @@ import { mapError } from "@/app/api/leave/_shared";
 
 const MS_PER_DAY = 86_400_000;
 const MAX_WINDOW_DAYS = 46; // 월 그리드 한 화면(≤6주) — feed normalizeToGridWindow와 동일 폭(D10)
+// 월 그리드는 인접월로 최대 ~1주 spillover하므로, 허용 anchor(±MAX_ANCHOR_MONTHS) 월의
+// grid 끝이 ±(MAX_ANCHOR_MONTHS+1)월에 닿을 수 있다. 폭은 MAX_WINDOW_DAYS(46일)로 계속
+// 제한되어 enumeration 하드닝은 유지.
+const MAX_EDGE_MONTHS = MAX_ANCHOR_MONTHS + 1;
 const JOB_FILTERS: JobFunction[] = ["DEVELOPER", "CIVIL_RESPONSE", "CONTENT_MANAGER"]; // PM 제외(D2)
 
 // 쿼리 job → JobFunction|null(무필터). 화이트리스트 외 값은 400(LeaveValidationError).
@@ -42,7 +46,7 @@ export async function GET(req: Request) {
       throw new LeaveValidationError("시작일은 종료일보다 이전이어야 합니다.");
     if (end.getTime() - start.getTime() > MAX_WINDOW_DAYS * MS_PER_DAY)
       throw new LeaveValidationError("조회 범위가 너무 넓습니다.");
-    if (!isAnchorWithinWindow(start, now, MAX_ANCHOR_MONTHS) || !isAnchorWithinWindow(end, now, MAX_ANCHOR_MONTHS))
+    if (!isAnchorWithinWindow(start, now, MAX_EDGE_MONTHS) || !isAnchorWithinWindow(end, now, MAX_EDGE_MONTHS))
       throw new LeaveValidationError("조회 범위가 허용 창을 벗어났습니다.");
 
     const job = parseJob(url.searchParams.get("job"));

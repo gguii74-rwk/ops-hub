@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { normalizeToGridWindow, toKstDateKey } from "@/modules/calendar/time";
 
 const h = vi.hoisted(() => {
   class FakeForbidden extends Error { constructor(m?: string) { super(m); this.name = "ForbiddenError"; } }
@@ -139,6 +140,34 @@ describe("GET /api/leave/calendar", () => {
   });
   it("job 화이트리스트 외 값 → 400", async () => {
     const res = await GET(new Request(`http://x/api/leave/calendar?start=${daysFromNow(0)}&end=${daysFromNow(20)}&job=PM`));
+    expect(res.status).toBe(400);
+  });
+
+  // D10 그리드 spillover: ±12개월 경계 월은 grid가 인접월까지 ~1주 넘어가므로 400이 되면 안 된다
+  function monthAnchor(monthOffset: number): Date {
+    const d = new Date();
+    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + monthOffset, 15, 3, 0, 0));
+  }
+  function gridKeys(monthOffset: number): { start: string; end: string } {
+    const { start, end } = normalizeToGridWindow(monthAnchor(monthOffset));
+    return {
+      start: toKstDateKey(start),
+      end: toKstDateKey(new Date(end.getTime() - 1)), // end exclusive → last occupied day
+    };
+  }
+  it("+12개월 경계 월 grid는 200(grid spillover 수용)", async () => {
+    const { start, end } = gridKeys(12);
+    const res = await GET(new Request(`http://x/api/leave/calendar?start=${start}&end=${end}`));
+    expect(res.status).toBe(200);
+  });
+  it("-12개월 경계 월 grid도 200(과거 경계 대칭)", async () => {
+    const { start, end } = gridKeys(-12);
+    const res = await GET(new Request(`http://x/api/leave/calendar?start=${start}&end=${end}`));
+    expect(res.status).toBe(200);
+  });
+  it("+14개월 anchor grid는 여전히 400(+1 여유는 무제한 아님)", async () => {
+    const { start, end } = gridKeys(14);
+    const res = await GET(new Request(`http://x/api/leave/calendar?start=${start}&end=${end}`));
     expect(res.status).toBe(400);
   });
 
