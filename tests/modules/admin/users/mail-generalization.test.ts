@@ -6,6 +6,9 @@ vi.mock("@/modules/leave/repositories/mail", () => ({
   listDueDeliveryIds: vi.fn(), claimDelivery: vi.fn(), finalizeDelivery: vi.fn(), deadLetterStaleSending: vi.fn(),
 }));
 vi.mock("@/lib/integrations/mail", () => ({ sendMail: vi.fn() }));
+vi.mock("@/kernel/settings/reader", () => ({
+  getSmtpConfig: vi.fn(async () => ({ host: "mail.x", port: 587, secure: false, user: "", from: "noreply@x.com" })),
+}));
 
 import { drainLeaveMailOutbox } from "@/modules/leave/services/mail";
 import * as repo from "@/modules/leave/repositories/mail";
@@ -30,7 +33,7 @@ describe("drain 일반화 — 사용자 메일(leaveRequestId=null)", () => {
     expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 1, failed: 0, skipped: 0 });
     // 사용자 메일은 leaveRequest를 조회하지 않는다
     expect(vi.mocked(prisma.leaveRequest.findUnique)).not.toHaveBeenCalled();
-    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: ["self@x.com"] }));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: ["self@x.com"] }), expect.anything());
     expect(r.fin).toHaveBeenCalledWith("m1", "w1", { status: "SENT", providerMessageId: "pm" });
   });
 });
