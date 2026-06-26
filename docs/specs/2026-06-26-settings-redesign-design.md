@@ -47,7 +47,7 @@ PR-A의 `calendarIds`→relational 링크는 PR-B 화면이 아직 없어도 동
 - **D10 — 전송 경로 SMTP 해석은 throw하지 않는다(무회귀 실효 보장).** `getSmtpConfig()`는 DB 값 읽기 실패·무효 파싱·settings 인프라 오류가 나도 **해당 필드를 env로 폴백**하고 경고 로그만 남긴다(절대 throw 안 함). SystemSetting 한 행이 깨져도 유효한 env SMTP로 메일이 계속 나간다 — D1 "무회귀"의 실효 보장. 깨진 행 자체는 설정 화면의 **항목별 INVALID 배지**(`listSettings`가 이미 부여)로 노출돼 신호가 사라지지 않는다. 두 mail 호출자는 `getSmtpConfig()`를 무조건 await하므로, 이 함수가 throw하면 env가 멀쩡해도 발송이 막히기 때문에 tolerant가 필수다.
 - **D4 — 상단 "연동 상태" 요약 카드 제거 → 영역 카드 헤더 배지로 일원화.** 상태 계산을 한 경로로 모아 요약-본문 모순을 구조적으로 제거한다.
 - **D5 — 상태 점검은 실제 동작 출처를 본다(전송과 동일 경로).** SMTP `configured` = `SMTP_PASSWORD`(env) 존재 AND `getSmtpConfig()`가 해석한 host 비어있지 않음 — 전송과 **같은 tolerant 해석기**를 써서 "메일이 실제로 나갈 수 있는가"와 일치(요약-본문 모순 재발 방지). SMTP는 throw하지 않으므로(D10) 그룹 배지에 `unknown`이 나오지 않고, 깨진 행은 항목별 INVALID 배지로 surface. Google `configured` = 서비스 계정 키(env) 존재 AND 활성 `GOOGLE_CALENDAR` 소스 ≥1개 — prisma count가 실패할 수 있어 **Google·문서 경로는 기존 `safe()`/`unknown` 3-state 유지**. 문서/템플릿 = LibreOffice 경로(env) 존재(현행 유지).
-- **D6 — `integrations.google.calendarIds` 폐기 → relational 전환 + seed cutover(F5).** calendarIds를 relational 항목으로 바꾼다(`manageHref = /admin/settings/calendar-sources`, `permission = integrations.google:configure`). **중요(F5)**: `prisma/seed.ts`(117–157)가 `calendarIds`(+`calendarOwners`)를 읽어 `planGoogleSources`로 GOOGLE_CALENDAR 소스를 생성/일시정지(목록에 없는 소스 PAUSED)하므로, 그대로 두면 매 배포 `db:seed`가 CRUD로 관리되는 소스를 PAUSED시키는 데이터 드리프트가 난다("무해" 아님). 따라서 PR-A에서 **seed의 calIds/owners 기반 GOOGLE_CALENDAR 생성·일시정지 로직을 제거**한다(HOLIDAY 소스 seed는 유지). CalendarSource가 Google 소스의 단일 진실원이 되어 재-seed가 CRUD 관리 소스를 건드리지 못한다. orphaned SystemSetting row(calendarIds/calendarOwners)는 더 이상 아무도 읽지 않으므로 무해.
+- **D6 — `integrations.google.calendarIds` 폐기 → relational 전환 + seed를 create-only 백필로(F5·F6).** calendarIds를 relational 항목으로 바꾼다(`manageHref = /admin/settings/calendar-sources`, `permission = integrations.google:configure`). **문제(F5)**: `prisma/seed.ts`(117–157)가 `calendarIds`(+`calendarOwners`)를 읽어 `planGoogleSources`로 GOOGLE_CALENDAR 소스를 생성/일시정지(목록에 없는 소스 PAUSED)하므로, 그대로면 매 배포 `db:seed`가 CRUD/수동 관리 소스를 PAUSED시키는 드리프트가 난다. **문제(F6)**: 그렇다고 seed 블록을 통째로 제거하면 CRUD(PR-B) 도입 전까지 소스 생성·복구 경로가 사라진다(미변환·신규 env에서 Google sync 비거나 stale). **해결**: PR-A에서 seed를 **create-only 백필**로 바꾼다 — calIds 중 **CalendarSource(externalId 기준)에 아직 없는 것만 생성**(ACTIVE)하고, **기존 GOOGLE_CALENDAR 행은 syncStatus 포함 일절 갱신·일시정지하지 않는다**(`planGoogleSources`의 update/PAUSED 경로 제거, create 경로만 유지). 이로써 ① 재-seed가 CRUD/수동 소스를 건드리지 않고(F5), ② 부트스트랩·복구는 유지되며(F6), ③ CRUD(PR-B)와 공존한다. HOLIDAY 소스 upsert는 유지. calId 완전 폐기(백필 제거)는 PR-B 머지 후 follow-up.
 - **D7 — 표시 그룹은 `group` 필드로 세분화.** `category`(coarse)는 보존하되, 화면 렌더링은 신규 `group` + `groupOrder`로 한다. 그룹: 보안 → 메일(SMTP) → Google → 문서/템플릿 → 연차 알림 → 업무.
 - **D8 — 편집기는 값 타입으로 선택.** `string`→텍스트 입력, `number`→숫자 입력, `boolean`→스위치(기존), `string[]`→리스트 편집기, 그 외(객체)→기존 JSON textarea 폴백. 서버 zod가 여전히 권위 검증.
 - **D9 — Prisma 마이그레이션 없음.** PR-A는 카탈로그/서비스/UI 변경 + 신규 SystemSetting 키(row는 쓰기 시 생성). PR-B는 기존 `CalendarSource` 테이블 사용. 둘 다 표준 restart 배포(스키마 무변경).
@@ -83,7 +83,7 @@ groupOrder: number;      // 그룹 내 표시 순서
 
 **전환**: `integrations.google.calendarIds`를 `kind: "relational"`로 변경(model 명시 불필요/생략, `manageHref: "/admin/settings/calendar-sources"`).
 
-**seed cutover(D6, F5)** — `prisma/seed.ts`: HOLIDAY 소스 upsert는 유지하고, `calendarIds`/`calendarOwners`를 읽어 GOOGLE_CALENDAR 소스를 생성/일시정지하는 블록(`planGoogleSources` 호출 + create/update/PAUSED)을 **제거**한다. CalendarSource가 Google 소스 단일 진실원이 되어, 재-seed가 기존(수동/CRUD) GOOGLE_CALENDAR 소스를 건드리지 않는다. PR-B(CRUD) 전이라도 기존 소스 행은 그대로 보존된다(seed가 더 이상 손대지 않을 뿐).
+**seed create-only 백필(D6, F5·F6)** — `prisma/seed.ts`: HOLIDAY 소스 upsert는 유지. `calendarIds`/`calendarOwners` 기반 GOOGLE_CALENDAR 처리를 **create-only**로 축소한다 — calId가 기존 CalendarSource(externalId 매칭)에 **없으면 생성(ACTIVE)**, **있으면 아무 것도 하지 않는다**(`planGoogleSources`의 update·deactivate/PAUSED 경로 삭제, create만 유지). 따라서 재-seed가 기존(수동/CRUD) 소스의 `syncStatus`나 필드를 절대 바꾸지 않으면서, 신규/미변환 env의 부트스트랩과 복구는 유지된다. PR-B(CRUD) 도입 후 calId 완전 폐기(백필 제거)는 follow-up.
 
 ### 5.2 SMTP DB 배선 (D1·D2·D3)
 
@@ -112,8 +112,9 @@ export async function getSmtpConfig(): Promise<MailTransportConfig>;
 //   from:   DB fromAddress || env SMTP_FROM || env SMTP_USER || "noreply@uracle.co.kr"  ← DB 편집(env fallback)
 ```
 - **민감 필드(host/user/secure)는 env에서만 읽는다**(D2). DB는 읽지 않으므로 유출 벡터·throw 없음.
-- **폴백 규칙(D1)**: DB-편집 필드(port·from)는 DB 값이 비어있지 않으면 DB, 아니면 env.
-- **tolerant(D10)**: DB-읽기 필드(port·from)만 개별 try/catch로 감싸 무효 파싱·읽기 실패 시 env로 폴백하고 `console.warn`만 남긴다. **`getSmtpConfig` 전체가 throw하지 않는다.** (port가 무효 row여도 env/default로 떨어지고 발송 진행.)
+- **DB-편집 필드(port·from)는 `readRaw`(원시 행)로 읽는다, `getSetting` 금지(F7).** `getSetting`은 행이 없으면 **카탈로그 default를 반환**한다 — `integrations.smtp.port` default가 587이라, DB 행이 없는데 `getSetting`을 쓰면 env `SMTP_PORT`(예: 465/2525)를 무시하고 587로 덮어 비-587 env가 조용히 망가진다. 따라서 **행 부재(`readRaw`=null)** → env(`SMTP_PORT`)→587, **행 존재** → 파싱(유효=DB, 무효=env로 폴백). (`from`은 default가 `""`라 동일 위험은 없지만 일관성·빈값 구분 위해 같은 readRaw 처리.)
+- **폴백 규칙(D1)**: DB 행이 있고 유효하면 DB, 행이 없거나 비었거나 무효면 env.
+- **tolerant(D10)**: DB-읽기 필드(port·from)만 개별 try/catch로 감싸 무효 파싱·읽기 실패 시 env로 폴백하고 `console.warn`만 남긴다. **`getSmtpConfig` 전체가 throw하지 않는다.**
 
 **lib 변경** — `src/lib/integrations/mail/index.ts`:
 - `sendMail(msg: MailMessage, config?: MailTransportConfig)`로 시그니처 확장.
@@ -159,10 +160,11 @@ PR-A 머지 후 새 세션에서 상세 plan. 합의된 결정:
 
 - **kernel**: `getSmtpConfig` — host/user/secure는 **env에서만** 해석(DB row가 있어도 무시), port·from은 DB 우선·env 폴백·빈 값 처리.
 - **lib**: `sendMail(msg, config)` — config 주입 시 transport 인자(host/port/secure/user from config, pass=env), config 미주입 시 현행 env 동작 보존(`setMailTransportForTests` fake로 인자 검증).
-- **kernel(getSmtpConfig tolerant, D10)**: ① **무효 DB port row + 유효 env SMTP → throw 없이 env/default로 해석, 발송 가능**(무회귀 회귀 테스트), ② settings 읽기 실패(인프라 오류) + env present → env config 반환·throw 없음, ③ DB(port/from) 채움 시 DB 우선·빈 값 시 env 폴백 필드별 검증.
+- **kernel(getSmtpConfig tolerant, D10)**: ① **무효 DB port row + 유효 env SMTP → throw 없이 env/default로 해석, 발송 가능**(무회귀), ② settings 읽기 실패(인프라 오류) + env present → env config 반환·throw 없음, ③ DB(port/from) 채움 시 DB 우선·빈 값 시 env 폴백 필드별 검증.
+- **kernel(F7 port 회귀)**: **DB port 행 없음 + `SMTP_PORT=465`(≠587) → 465로 해석**(587 default가 env를 가리지 않음). `readRaw` 경로 검증.
 - **integrations 상태**: `smtpConfigured` — env host+secret 있음→정상, env host 없음→설정 필요, **secret(password) 없음→설정 필요**, **무효 DB port여도 env host+secret 있으면 정상**. `googleConfigured`(소스 카운트·secret 조합), Google·문서 `unknown` 환원 회귀.
 - **catalog/service**: `integrations.smtp.host` 제거·`secure`/`user` 미추가, group/groupOrder 전파, `calendarIds` relational 전환.
-- **seed cutover(F5)**: `db:seed` 재실행이 기존 GOOGLE_CALENDAR 소스(수동/CRUD 추가, calendarIds 목록에 없음)를 PAUSED로 바꾸지 **않음**을 검증(드리프트 회귀). HOLIDAY 소스 upsert는 유지됨.
+- **seed create-only 백필(F5·F6)**: ① `db:seed` 재실행이 기존 GOOGLE_CALENDAR 소스(수동/CRUD 추가·PAUSED 포함)의 `syncStatus`/필드를 **바꾸지 않음**(드리프트 회귀), ② calIds에 있고 CalendarSource에 **없는** calId는 **생성됨**(부트스트랩/복구), ③ HOLIDAY 소스 upsert 유지.
 - **UI(편집기)**: list 추가/삭제/형식검증, string/number 편집기 저장·롤백(rejected)·refetch 경로, boolean 회귀.
 - 기존 스위트 그린 유지(현재 1380 통과 기준).
 
@@ -179,7 +181,7 @@ PR-A 머지 후 새 세션에서 상세 plan. 합의된 결정:
 - 상태 점검에 prisma count 추가(google) — feed 성능엔 영향 없음(설정 화면 1회 조회).
 - 표현계층(IA·편집기) 변경은 도메인 불변식·동시성 패턴 무영향(설정 쓰기 토큰 패턴·audit 유지).
 - **보안**: SMTP 연결/인증 민감 필드(host·user·secure·password)를 env에 유지(D2, F4) — DB-편집 가능한 SMTP 표면은 비민감 port·fromAddress로 한정. 비밀번호 유출 벡터 없음.
-- **seed 변경**(F5 cutover): Google 소스 관리 책임이 seed→CalendarSource(CRUD)로 이동. PR-A 배포 시 seed 1회 실행 필요(§8).
+- **seed 변경**(F5·F6 create-only 백필): seed는 없는 calId만 생성하고 기존 소스를 안 건드린다. Google 소스 관리 책임은 점진적으로 CalendarSource(CRUD, PR-B)로 이동. PR-A 배포 시 변경된 seed 1회 실행 필요(§8).
 
 ## 10. 적대검증 판정(ledger)
 
@@ -191,6 +193,8 @@ spec 단계 적대검증 결과와 판정. blocking은 모두 닫음(미판정 0
 | F2 | 전송 경로 `getSmtpConfig` throw가 env 유효해도 발송 차단(D1 무회귀 모순) | high | **FIXED** | D10·§5.2 — tolerant 해석기(필드별 env 폴백·throw 금지) + §7 무회귀 테스트. |
 | F3 | SMTP 상태가 port/from/auth 일치 등 전송 전제를 무시 → "정상"인데 발송 실패 가능 | medium | **ACCEPTED** | port·from은 tolerant 해석기가 유효값 보장. host·user·password가 모두 env(D2)라 DB-편집發 자격증명 불일치는 불가능(F4 조치로 핵심 우려 완화). 서버 도달성·인증 성공은 **라이브 핸드셰이크 없이 정적 검증 불가** — 배지 계약을 "필수 설정 존재"로 명시(§5.3). **보완 단계(후속)**: SMTP "연결 테스트" 액션. |
 | F4 | DB-편집 host에 전역 env password 주입 → 임의 host로 비밀번호 유출 | high | **FIXED(설계 변경)** | 사용자 결정(option 1): host·user·secure·password를 **env 전용**으로 유지(D1·D2 개정). DB 편집은 비민감 port·fromAddress뿐. host가 UI 통제 밖이라 유출 벡터 제거. §5.1 catalog에서 `integrations.smtp.host` 제거, `secure`/`user` 미추가. |
-| F5 | 폐기 예정 `calendarIds`를 seed가 계속 읽어 CRUD 관리 소스를 PAUSED(데이터 드리프트) | high | **FIXED** | D6·§5.1 — PR-A에서 seed의 calIds/owners 기반 GOOGLE_CALENDAR 생성·일시정지 제거(HOLIDAY 유지). CalendarSource 단일 진실원. §7 재-seed 드리프트 회귀 테스트. |
+| F5 | 폐기 예정 `calendarIds`를 seed가 계속 읽어 CRUD 관리 소스를 PAUSED(데이터 드리프트) | high | **FIXED** | D6·§5.1 — seed를 create-only 백필로(update/PAUSED 경로 제거). 재-seed가 기존 소스를 안 건드림. §7 드리프트 회귀 테스트. |
+| F6 | seed 블록 완전 제거 시 CRUD(PR-B) 도입 전 소스 생성·복구 경로 소실 | high | **FIXED** | D6·§5.1 — 제거 대신 create-only 백필(없는 calId만 생성)로 부트스트랩·복구 유지, CRUD와 공존. §7 백필 생성 테스트. |
+| F7 | `getSmtpConfig` port가 `getSetting`(행 부재 시 default 587)을 쓰면 비-587 env(465 등) 무시·발송 실패 | high | **FIXED** | §5.2 — port·from은 `readRaw`로 행 부재/빈값/무효를 default와 구분, 부재면 env. §7 `SMTP_PORT=465`+행없음→465 회귀 테스트. |
 
-**후속(follow-up)**: SMTP/Google 연결 테스트(라이브 검증) 액션은 본 변경 범위 밖. PR-B(또는 별도 과제)에서 도입 검토.
+**후속(follow-up)**: ① SMTP/Google 연결 테스트(라이브 검증) 액션, ② PR-B 머지 후 seed calId 백필 완전 제거 — 모두 본 변경 범위 밖. PR-B(또는 별도 과제)에서 검토.
