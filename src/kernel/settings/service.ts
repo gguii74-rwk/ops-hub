@@ -16,6 +16,7 @@ import type {
   EnvSecretEntry,
   SettingCategory,
   SettingEntry,
+  SettingGroup,
   SettingStatus,
 } from "./registry";
 
@@ -23,6 +24,8 @@ export interface SettingsCatalogItem {
   key: string;
   kind: SettingEntry["kind"];
   category: SettingCategory;
+  group: SettingGroup;
+  groupOrder: number;
   order: number;
   title: string;
   description: string;
@@ -92,6 +95,8 @@ export async function listSettings(userId: string): Promise<SettingsCatalogItem[
       key: e.key,
       kind: e.kind,
       category: e.category,
+      group: e.group,
+      groupOrder: e.groupOrder,
       order: e.order,
       title: e.title,
       description: e.description,

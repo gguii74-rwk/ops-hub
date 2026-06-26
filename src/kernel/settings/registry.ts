@@ -4,12 +4,15 @@ import type { Prisma } from "@prisma/client";
 
 export type JsonValue = Prisma.InputJsonValue;
 export type SettingCategory = "security" | "integrations" | "workflows" | "leave" | "general";
+export type SettingGroup = "security" | "mail" | "google" | "documents" | "leave" | "workflows";
 export type AuditMode = "full" | "redacted" | "summary";
-export type SettingStatus = "OK" | "INVALID" | "configured" | "attention_required" | "LINK";
+export type SettingStatus = "OK" | "INVALID" | "configured" | "attention_required" | "LINK" | "not_required";
 
 interface SettingEntryBase {
   key: string;
   category: SettingCategory;
+  group: SettingGroup;
+  groupOrder: number;
   order: number;
   title: string;
   description: string;

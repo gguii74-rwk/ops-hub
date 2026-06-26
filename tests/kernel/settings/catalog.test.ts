@@ -55,16 +55,50 @@ describe("settings catalog 정합성", () => {
   });
 
   it("getEntry는 등록 key를 찾고 미등록은 undefined", () => {
-    expect(getEntry("integrations.smtp.host")?.kind).toBe("systemSetting");
+    expect(getEntry("integrations.smtp.fromAddress")?.kind).toBe("systemSetting");
     expect(getEntry("nope.nope.nope")).toBeUndefined();
   });
 
-  it("카탈로그 항목 수 고정 (8 systemSetting, 5 envSecret, 1 relational)", () => {
+  it("카탈로그 항목 수 고정 (6 systemSetting, 5 envSecret, 1 relational)", () => {
     const byKind = (k: string) => CATALOG.filter((e) => e.kind === k).length;
-    expect(byKind("systemSetting")).toBe(8);
+    expect(byKind("systemSetting")).toBe(6); // host·port 제거 후(fromAddress·calendarIds·defaultRecipients·onRequest·onApprove·onReject)
     expect(byKind("envSecret")).toBe(5);
     expect(byKind("relational")).toBe(1);
-    expect(CATALOG.length).toBe(14);
+    expect(CATALOG.length).toBe(12);
+  });
+
+  it("SMTP host·port systemSetting은 제거됨(env 전용 — host=F4, port=P3/A2), secure/user 미추가", () => {
+    expect(getEntry("integrations.smtp.host")).toBeUndefined();
+    expect(getEntry("integrations.smtp.port")).toBeUndefined();
+    expect(getEntry("integrations.smtp.secure")).toBeUndefined();
+    expect(getEntry("integrations.smtp.user")).toBeUndefined();
+    // DB 편집 가능한 SMTP 필드는 fromAddress 하나뿐
+    expect(getEntry("integrations.smtp.fromAddress")?.kind).toBe("systemSetting");
+  });
+
+  it("calendarIds는 systemSetting 유지(PR-A relational 전환 안 함)", () => {
+    const e = getEntry("integrations.google.calendarIds");
+    expect(e?.kind).toBe("systemSetting");
+  });
+
+  it("모든 엔트리에 group(6종)·groupOrder(number) 존재", () => {
+    const groups = ["security", "mail", "google", "documents", "leave", "workflows"];
+    for (const e of CATALOG) {
+      expect(groups, `${e.key} group`).toContain(e.group);
+      expect(typeof e.groupOrder, `${e.key} groupOrder`).toBe("number");
+    }
+  });
+
+  it("그룹별 groupOrder는 유일(같은 group 내 중복 없음)", () => {
+    const byGroup = new Map<string, number[]>();
+    for (const e of CATALOG) {
+      const arr = byGroup.get(e.group) ?? [];
+      arr.push(e.groupOrder);
+      byGroup.set(e.group, arr);
+    }
+    for (const [g, orders] of byGroup) {
+      expect(new Set(orders).size, `${g} groupOrder unique`).toBe(orders.length);
+    }
   });
 
   it("leave 알림 3키 — category=leave·default true·z.boolean·leave.admin:configure·audit full", () => {
