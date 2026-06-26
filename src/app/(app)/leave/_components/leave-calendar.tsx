@@ -4,7 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { JobFunction } from "@/lib/auth/types";
-import { normalizeToGridWindow, toKstDateKey } from "@/modules/calendar/time";
+import { normalizeToGridWindow, toKstDateKey, isAnchorWithinWindow } from "@/modules/calendar/time";
+import { MAX_ANCHOR_MONTHS } from "@/modules/calendar/constants";
 import { CalendarMonth } from "@/modules/calendar/ui/calendar-month";
 import { eventChipClass, kindClass } from "@/modules/calendar/ui/kind-styles";
 import { CreateLeaveModal } from "./create-leave-modal";
@@ -64,6 +65,13 @@ export function LeaveCalendar({ canCreate, canManage }: { canCreate: boolean; ca
       return { y: d.getUTCFullYear(), m: d.getUTCMonth() };
     });
 
+  // 운영 창(now±MAX_ANCHOR_MONTHS) 밖으로 이동 못 하게 nav 비활성 — 범위 밖 요청·빈화면 위장 차단.
+  const now = new Date();
+  const prevAnchor = new Date(Date.UTC(cursor.y, cursor.m - 1, 15, 3, 0, 0));
+  const nextAnchor = new Date(Date.UTC(cursor.y, cursor.m + 1, 15, 3, 0, 0));
+  const canGoPrev = isAnchorWithinWindow(prevAnchor, now, MAX_ANCHOR_MONTHS);
+  const canGoNext = isAnchorWithinWindow(nextAnchor, now, MAX_ANCHOR_MONTHS);
+
   // 빠른추가 + = 본인 자가신청(self-service) 모달 오픈. /api/leave/requests가 create 권한 enforce.
   const quickAdd = canCreate ? (dateKey: string) => setRequesting(dateKey) : undefined;
 
@@ -88,9 +96,9 @@ export function LeaveCalendar({ canCreate, canManage }: { canCreate: boolean; ca
           {cursor.y}년 {cursor.m + 1}월
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => move(-1)}>이전</Button>
+          <Button size="sm" variant="outline" onClick={() => move(-1)} disabled={!canGoPrev}>이전</Button>
           <Button size="sm" variant="outline" onClick={() => setCursor(kstNow())}>오늘</Button>
-          <Button size="sm" variant="outline" onClick={() => move(1)}>다음</Button>
+          <Button size="sm" variant="outline" onClick={() => move(1)} disabled={!canGoNext}>다음</Button>
         </div>
       </div>
 

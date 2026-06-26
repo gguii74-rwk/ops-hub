@@ -106,3 +106,31 @@ describe("LeaveCalendar — 직무 필터·범례·공휴일 안내(D2/D3/D4/D9)
     expect(screen.queryByText(/공휴일 정보를 불러오지 못했습니다/)).toBeNull();
   });
 });
+
+describe("LeaveCalendar — nav 운영 창 경계 비활성(D10)", () => {
+  it("초기(현재월)엔 이전·다음 모두 활성", () => {
+    render(<LeaveCalendar canCreate canManage={false} />);
+    const prev = screen.getByRole("button", { name: "이전" }) as HTMLButtonElement;
+    const next = screen.getByRole("button", { name: "다음" }) as HTMLButtonElement;
+    expect(prev.disabled).toBe(false);
+    expect(next.disabled).toBe(false);
+  });
+
+  it("다음을 12번 누르면 +12개월 경계에서 다음 비활성(운영 창 끝)", () => {
+    render(<LeaveCalendar canCreate canManage={false} />);
+    for (let i = 0; i < 12; i++) {
+      fireEvent.click(screen.getByRole("button", { name: "다음" }));
+    }
+    const next = screen.getByRole("button", { name: "다음" }) as HTMLButtonElement;
+    expect(next.disabled).toBe(true);
+  });
+
+  it("이전을 12번 누르면 -12개월 경계에서 이전 비활성", () => {
+    render(<LeaveCalendar canCreate canManage={false} />);
+    for (let i = 0; i < 12; i++) {
+      fireEvent.click(screen.getByRole("button", { name: "이전" }));
+    }
+    const prev = screen.getByRole("button", { name: "이전" }) as HTMLButtonElement;
+    expect(prev.disabled).toBe(true);
+  });
+});
