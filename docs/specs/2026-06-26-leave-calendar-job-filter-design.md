@@ -24,9 +24,9 @@
 - **D5. 공휴일은 직무와 무관하게 항상 표시.** 직무 필터를 어떤 값으로 두어도 공휴일은 남는다(`kind === "HOLIDAY"`는 필터 예외).
 - **D6. 공휴일은 별도 응답 필드로 전달.** API 응답을 `{ events, holidays }`로 확장한다(D9에서 `unsyncedYears`가 추가돼 최종 `{ events, holidays, unsyncedYears }`). 휴가 전용 필드(`leaveType`/`status`/`isSelf` 등)를 공휴일에 억지로 채우지 않기 위함. 클라이언트가 각각 공통 이벤트 모델로 변환.
 - **D7. 권한·마스킹은 기존 정책 유지.** 이름·유형은 이미 공개, 사유·세부는 admin 외 마스킹(`getLeaveCalendar` line 104). `jobFunction`은 이름과 동급의 공개 정보로 보고 **마스킹하지 않는다**(마스킹돼도 직무 필터가 동작해야 하므로). 직무 필터는 뷰어가 **이미 볼 수 있는 데이터 범위 안에서만** 거른다(일반 사용자=본인+같은 팀, admin=전체).
-- **D8. 공휴일 sync-on-demand 백스톱.** `Holiday` 테이블은 부팅 시 current+익년만(fire-and-forget, `instrumentation.ts`) 채워지고 나머지는 신청 백스톱·admin 수동 동기화에만 의존한다. 캘린더는 prev/next로 자유 네비게이션되므로 미동기화 연도로 이동하면 공휴일이 비어 **'공휴일 없음'처럼 오인**될 수 있다. 따라서 라우트는 공휴일 읽기 **전에** 조회 윈도우(`[start, end]`)가 걸친 연도를 계산해 `ensureYearsSynced(years)`를 호출한다(미적재 연도만 네트워크 동기화, 이미 적재면 count 체크만). 신청 경로의 fail-closed 백스톱·통합 캘린더의 sync-on-demand와 **동일 패턴**. **단, 캘린더는 신청과 달리 fail-closed가 아니다** — 키 부재(`DATA_GO_KR_SERVICE_KEY`)·외부 API 실패로 동기화가 안 돼도 `ensureYearsSynced`가 에러를 삼키므로 화면을 막지 않고 best-effort로 진행한다.
-- **D9. 미동기화는 조용히 비우지 않고 신호한다.** 동기화 시도 후 `getUnsyncedYears(years)`로 여전히 미적재인 연도를 계산해 응답을 `{ events, holidays, unsyncedYears }`로 확장한다(통합 캘린더 피드의 `failedSources` 선례와 동일한 부분실패 메타데이터). `unsyncedYears`는 **'공휴일을 신뢰할 수 없는 연도'**를 뜻한다 — 미적재 연도뿐 아니라 **공휴일 조회/probe가 throw한 경우도 보수적으로 윈도우 전체 연도를 여기 담는다**(§3.3, F3). 비어있지 않으면 클라이언트는 "공휴일 정보를 일부 불러오지 못했습니다" 수준의 **간단한 인라인 안내**(차단 모달 아님)를 표시해, 빈 공휴일이 '공휴일 없음'으로 오인되지 않게 한다. 따라서 `{ holidays: [], unsyncedYears: [] }`는 **'전 연도 동기화 완료 + 진짜 공휴일 없음'일 때만** 발생하고, 실패가 깨끗한 빈 상태로 둔갑하지 않는다. (조회 윈도우 연도 수는 보통 1개, 월 경계로 인접 2개까지 — D10으로 ≤2 보장.)
-- **D10. 조회 윈도우 바운딩(무제한 sync 차단).** sync-on-demand(D8)가 read GET에서 임의 연도 write(외부 fetch + `Holiday` upsert/delete)를 유발하지 않도록, 라우트는 ① `start <= end` 검증, ② 윈도우 양 끝을 운영 창(`now ± MAX_ANCHOR_MONTHS`, 통합 캘린더 feed와 동일 상수·`isAnchorWithinWindow` 재사용)으로 제한, ③ 연도 폭 `endYear - startYear <= 1`로 제한한다. 위반 시 400. ②는 멀리 떨어진 연도를 요청해 외부 쿼터를 소진하는 것을, ③은 한 요청이 다수 연도를 동기화하는 것을 막는다 → `ensureYearsSynced`에 넘기는 연도는 최대 2개. 통합 캘린더 feed가 이미 쓰는 반(反)남용 패턴(`feed/route.ts:20-21`)을 단일 앵커 대신 start/end 쌍에 맞게 적용. `ensureYearsSynced`는 미적재(count===0) 연도만 fetch하므로 성공한 연도는 재호출돼도 재fetch하지 않는다(자연 throttle); 지속 실패(키 부재 등) 연도는 로드마다 재시도하나 바운딩(≤2/요청)·fail-fast이며 D9 신호로 노출된다(연도별 실패 throttle은 후속).
+- **D8. 조회 경로는 동기화하지 않는다(read-only).** 캘린더 read GET은 외부 공휴일 동기화를 트리거하지 않는다. `Holiday` 테이블에 **이미 있는 공휴일만** 읽어 표시하고, 채우기는 기존 통로 — 부팅 시 current+익년(fire-and-forget, `instrumentation.ts`) · 연차 신청 백스톱(`createLeaveRequest` fail-closed) · admin 수동 동기화(`api/admin/leave/holidays/sync`) — 에 맡긴다. **이유(적대검증 F4):** read GET에서 `ensureYearsSynced`를 await하면 키 부재(`DATA_GO_KR_SERVICE_KEY`)·외부 API 장애 시 평범한 조회가 외부 호출에 블로킹되고, leave `Holiday` 테이블엔 통합 캘린더의 `CalendarSource`(TTL·`lastFetchedAt`) 같은 per-year fetch 상태가 없어 미적재(count===0) 연도는 **매 로드마다 재시도**된다. 미동기화 연도는 자동으로 채우지 않고 **D9 신호로 노출**한다. (정상 사용 = current/인접 월은 부팅 적재돼 공휴일이 정상 표시; 자동 채움이 필요해지면 durable sync-state를 후속으로 — §6.)
+- **D9. 미동기화는 조용히 비우지 않고 신호한다(주 메커니즘).** 라우트는 조회 윈도우가 걸친 연도에 대해 `getUnsyncedYears(years)`로 미적재 연도를 계산해 응답을 `{ events, holidays, unsyncedYears }`로 확장한다(통합 캘린더 피드의 `failedSources` 선례와 동일한 부분실패 메타데이터). `unsyncedYears`는 **'공휴일을 신뢰할 수 없는 연도'**를 뜻한다 — 미적재 연도뿐 아니라 **공휴일 조회/probe가 throw한 경우도 보수적으로 윈도우 전체 연도를 여기 담는다**(§3.3, F3). 비어있지 않으면 클라이언트는 "{연도} 공휴일 정보를 불러오지 못했습니다" 수준의 **간단한 인라인 안내**(차단 모달 아님)를 표시해, 빈 공휴일이 '공휴일 없음'으로 오인되지 않게 한다. 따라서 `{ holidays: [], unsyncedYears: [] }`는 **'윈도우 연도가 모두 적재됨 + 진짜 공휴일 없음'일 때만** 발생하고, 미적재·실패가 깨끗한 빈 상태로 둔갑하지 않는다. (안내는 미적재 연도로 네비게이트했을 때만 뜨고, 정상 월에는 나타나지 않는다.)
+- **D10. 조회 윈도우 입력 검증(하드닝).** 동기화를 제거(D8)했으므로 무제한 외부 호출 위험은 사라졌고, 라우트는 `getUnsyncedYears`/`getHolidayEventsInRange`의 연도별 쿼리 폭주·잘못된 입력만 막으면 된다: ① `start <= end` 검증, ② 연도 폭 `endYear - startYear <= 1`(월 그리드 윈도우는 최대 2개 연도). 위반 시 400. 넘기는 연도는 최대 2개로 묶인다.
 
 ## 3. 변경 상세 (계층별)
 
@@ -42,12 +42,12 @@
 - 마스킹 분기와 무관하게 `jobFunction`은 항상 채운다(D7).
 
 ### 3.3 API 라우트 — `src/app/api/leave/calendar/route.ts`
-- **윈도우 검증(D10)**: `start <= end` 확인 + 양 끝을 운영 창(`now ± MAX_ANCHOR_MONTHS`)으로 제한(`isAnchorWithinWindow` 재사용) + 연도 폭 `endYear - startYear <= 1`. 위반 시 400.
+- **윈도우 입력 검증(D10)**: `start <= end` + 연도 폭 `endYear - startYear <= 1`. 위반 시 400.
 - 조회 윈도우가 걸친 연도 집합을 계산한다(`start.getUTCFullYear()`..`end.getUTCFullYear()` 포함; D10으로 ≤2).
-- 공휴일 읽기 **전에** `ensureYearsSynced(years)`를 호출(D8, best-effort — 캘린더는 fail-closed 아님; 함수가 동기화 실패를 삼킴).
+- **동기화는 호출하지 않는다(D8, read-only)** — `Holiday` 테이블을 있는 그대로 읽는다.
 - `getLeaveCalendar(...)` 호출 후 `getHolidayEventsInRange(start, end)`와 `getUnsyncedYears(years)`를 호출.
 - 응답을 `{ events, holidays, unsyncedYears }`로 확장(D9, 기존 `{ events }`에서 확장).
-- **실패를 깨끗한 빈 상태로 둔갑시키지 않는다(D9 불변식, F3)**: `getHolidayEventsInRange` 또는 `getUnsyncedYears`가 throw하면 로그 후 `holidays: []` + `unsyncedYears`에 **윈도우 전체 연도**를 담아(보수적 degraded 신호) 클라이언트가 경고를 띄우게 한다. 즉 `{ holidays: [], unsyncedYears: [] }`는 '전 연도 동기화 완료 + 진짜 공휴일 없음'일 때만 가능. 동기화 자체 실패는 D8대로 `ensureYearsSynced` 내부에서 흡수돼 해당 연도가 자연히 `unsyncedYears`에 남는다. (휴가 조회 실패는 기존대로 에러.)
+- **미적재·실패를 깨끗한 빈 상태로 둔갑시키지 않는다(D9 불변식, F3)**: 미적재 연도는 `getUnsyncedYears`가 `unsyncedYears`에 담는다. 추가로 `getHolidayEventsInRange` 또는 `getUnsyncedYears`가 throw하면 로그 후 `holidays: []` + `unsyncedYears`에 **윈도우 전체 연도**를 담아(보수적 degraded 신호) 클라이언트가 경고를 띄우게 한다. 즉 `{ holidays: [], unsyncedYears: [] }`는 '윈도우 연도가 모두 적재됨 + 진짜 공휴일 없음'일 때만 가능. (휴가 조회 실패는 기존대로 에러.)
 
 ### 3.4 어댑터 — `src/app/(app)/leave/_components/leave-adapter.ts`
 - `Ev` 인터페이스에 `jobFunction: string` 추가(API 응답 매칭).
@@ -89,8 +89,8 @@
 
 - `kernel/holidays`: `getHolidayEventsInRange`가 범위·이름·날짜키(YYYY-MM-DD)·정렬을 정확히 반환(빈 결과 포함).
 - `services/calendar`: 반환 이벤트에 `jobFunction` 포함, 마스킹 분기와 무관하게 채워짐.
-- API 라우트: 응답이 `{ events, holidays, unsyncedYears }` 형태; 공휴일 읽기 전 윈도우 연도에 대해 `ensureYearsSynced`가 호출됨; 동기화가 성공하면 `unsyncedYears: []`, 미동기화 연도가 남으면 그 연도가 `unsyncedYears`에 포함. 월 경계 윈도우(인접 2개 연도)에서 두 연도 모두 동기화 시도.
-- API 라우트(바운딩, D10): `end < start` → 400; 운영 창(`now ± MAX_ANCHOR_MONTHS`) 밖 윈도우 → 400; 연도 폭 > 1(`endYear - startYear > 1`) → 400. 허용 윈도우는 `ensureYearsSynced`에 ≤2 연도만 전달.
+- API 라우트: 응답이 `{ events, holidays, unsyncedYears }` 형태; **동기화를 호출하지 않음**(D8, read-only — `ensureYearsSynced` 미호출); 적재된 연도는 `unsyncedYears: []`, 미적재 연도는 그 연도가 `unsyncedYears`에 포함.
+- API 라우트(입력 검증, D10): `end < start` → 400; 연도 폭 > 1(`endYear - startYear > 1`) → 400. 허용 윈도우는 ≤2 연도만 조회.
 - API 라우트(실패 신호, F3): `getHolidayEventsInRange` 또는 `getUnsyncedYears`가 throw해도 `{ holidays: [], unsyncedYears: [] }`(깨끗한 빈 상태)를 **절대 만들지 않음** — 실패 시 `unsyncedYears`에 윈도우 전체 연도가 채워짐. (휴가 조회 실패는 기존대로 에러.)
 - 어댑터: `holidaysToEvents`가 `kind=HOLIDAY`·half-open·status 없음으로 변환.
 - 컴포넌트(`LeaveCalendar`): 직무 버튼 선택 시 해당 직무 휴가만 + 공휴일 유지, `전체`는 모두 표시. nav 우측·범례 정적. `unsyncedYears`가 비어있지 않으면 인라인 안내 표시, 빈/없음이면 미표시(D9).
@@ -101,3 +101,4 @@
 - 통합 캘린더(`/calendar`)의 구글+연차 휴가 합산: 별도 설계.
 - 직무 버튼 동적 생성(데이터 기반)·PM 버튼: 이번엔 고정 4버튼(D2)로 고정, 필요 시 후속.
 - 외주/정규(employmentType) 필터: 연차 데이터는 사실상 외주만 존재하므로 추가하지 않음.
+- **공휴일 자동 채움(durable sync-state)**: 미동기화 연도를 캘린더 조회 시 자동으로 채우려면, `Holiday`에 연도별 fetch 상태(lastAttempt/lastError/backoff)를 두고 read 경로에서 backoff 가드 하에 동기화하는 방식이 필요(통합 캘린더 `CalendarSource` TTL 패턴에 대응). 이번 범위는 read-only(D8)+신호(D9)로 한정하고, 자동 채움이 필요해지면 후속 설계로 분리(마이그레이션 동반).
