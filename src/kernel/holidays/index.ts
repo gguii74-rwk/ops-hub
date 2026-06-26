@@ -7,6 +7,16 @@ export async function getHolidaysInRange(start: Date, end: Date): Promise<Set<st
   return new Set(rows.map((r) => r.date.toISOString().slice(0, 10)));
 }
 
+/** [start, end] 범위의 공휴일을 표시용 {date,name}[]로. date는 "YYYY-MM-DD"(UTC). 빈 결과 정상. */
+export async function getHolidayEventsInRange(start: Date, end: Date): Promise<{ date: string; name: string }[]> {
+  const rows = await prisma.holiday.findMany({
+    where: { date: { gte: start, lte: end } },
+    select: { date: true, name: true },
+    orderBy: { date: "asc" },
+  });
+  return rows.map((r) => ({ date: r.date.toISOString().slice(0, 10), name: r.name }));
+}
+
 /** 공공데이터 특일정보에서 해당 연도 공휴일을 가져와 단일 트랜잭션으로 전체-연도 reconcile(upsert + 사라진 행 삭제). 반환값은 출처 공휴일 건수(트랜잭션 커밋 완료 의미, 실패 시 throw). */
 export async function syncHolidaysForYear(year: number): Promise<number> {
   const holidays = await fetchHolidays(year); // 네트워크는 트랜잭션 밖에서 먼저

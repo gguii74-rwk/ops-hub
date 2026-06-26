@@ -96,3 +96,60 @@ describe("getLeaveCalendar — admin:view(전체·전상태·마스킹 해제)",
     expect(where.OR).toBeUndefined();
   });
 });
+
+import type { JobFunction } from "@prisma/client";
+
+describe("getLeaveCalendar — 직무 필터(job, 서버 교집합·jobFunction 미노출)", () => {
+  it("admin + job: jobFunction ACTIVE userId 집합을 AND로 교집합(rangeAnd에 추가)", async () => {
+    vi.mocked(prisma.user.findMany).mockResolvedValueOnce([{ id: "dev1" }, { id: "dev2" }] as never); // 직무 userId
+    vi.mocked(prisma.leaveRequest.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.user.findMany).mockResolvedValueOnce([] as never); // names
+    await getLeaveCalendar({ viewerId: "u1", canViewAllStatuses: true, canCrossTeam: true, job: "DEVELOPER" as JobFunction, ...range });
+    expect(vi.mocked(prisma.user.findMany)).toHaveBeenNthCalledWith(1, {
+      where: { jobFunction: "DEVELOPER", status: "ACTIVE" },
+      select: { id: true },
+    });
+    const where = getFirstCallWhere();
+    expect(where.AND).toEqual(expect.arrayContaining([{ userId: { in: ["dev1", "dev2"] } }]));
+  });
+
+  it("빈 직무 집합이면 AND에 {userId:{in:[]}} — 빈 결과", async () => {
+    vi.mocked(prisma.user.findMany).mockResolvedValueOnce([] as never); // 직무 userId 없음
+    vi.mocked(prisma.leaveRequest.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.user.findMany).mockResolvedValueOnce([] as never); // names
+    await getLeaveCalendar({ viewerId: "u1", canViewAllStatuses: true, canCrossTeam: true, job: "CONTENT_MANAGER" as JobFunction, ...range });
+    const where = getFirstCallWhere();
+    expect(where.AND).toEqual(expect.arrayContaining([{ userId: { in: [] } }]));
+  });
+
+  it("job 없음(미지정)이면 직무 user 조회 안 함 + AND에 직무 제약 없음", async () => {
+    vi.mocked(prisma.leaveRequest.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.user.findMany).mockResolvedValue([] as never); // names only
+    await getLeaveCalendar({ viewerId: "u1", canViewAllStatuses: true, canCrossTeam: true, ...range });
+    const where = getFirstCallWhere();
+    // AND엔 rangeAnd(2건)만 — 직무 제약 미포함
+    expect((where.AND as unknown[]).some((c) => JSON.stringify(c).includes("userId"))).toBe(false);
+  });
+
+  it("일반(self) + job: 직무 user 조회가 먼저, 그 다음 팀 조회(findUnique)·이름", async () => {
+    vi.mocked(prisma.user.findMany).mockResolvedValueOnce([{ id: "dev1" }] as never); // ① 직무 userId
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({ teamId: "team1" } as never);
+    vi.mocked(prisma.user.findMany).mockResolvedValueOnce([{ id: "u2" }] as never); // ② 팀 others
+    vi.mocked(prisma.leaveRequest.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.user.findMany).mockResolvedValueOnce([] as never); // ③ names
+    await getLeaveCalendar({ viewerId: "u1", canViewAllStatuses: false, canCrossTeam: false, job: "DEVELOPER" as JobFunction, ...range });
+    const where = getFirstCallWhere();
+    expect(where.AND).toEqual(expect.arrayContaining([{ userId: { in: ["dev1"] } }]));
+    expect(where.OR).toEqual(expect.arrayContaining([{ userId: "u1" }])); // self OR 유지
+  });
+
+  it("반환 이벤트에 jobFunction 필드가 없다(D7)", async () => {
+    vi.mocked(prisma.user.findMany).mockResolvedValueOnce([{ id: "dev1" }] as never); // 직무 userId
+    vi.mocked(prisma.leaveRequest.findMany).mockResolvedValue([
+      { id: "r1", userId: "dev1", leaveType: "ANNUAL", leaveSubType: null, quarterStartTime: null, startDate: range.start, endDate: range.start, status: "APPROVED", reason: null },
+    ] as never);
+    vi.mocked(prisma.user.findMany).mockResolvedValueOnce([{ id: "dev1", name: "김" }] as never); // names
+    const ev = await getLeaveCalendar({ viewerId: "u1", canViewAllStatuses: true, canCrossTeam: true, job: "DEVELOPER" as JobFunction, ...range });
+    expect(ev[0]).not.toHaveProperty("jobFunction");
+  });
+});

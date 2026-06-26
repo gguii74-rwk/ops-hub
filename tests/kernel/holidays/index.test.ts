@@ -13,7 +13,7 @@ const { findMany, count, upsert, deleteMany, $transaction, fetchHolidays } = vi.
 vi.mock("@/lib/prisma", () => ({ prisma: { holiday: { findMany, count }, $transaction } }));
 vi.mock("@/lib/integrations/holidays", () => ({ fetchHolidays }));
 
-import { getHolidaysInRange, ensureYearsSynced, syncHolidaysForYear, getUnsyncedYears } from "@/kernel/holidays";
+import { getHolidaysInRange, getHolidayEventsInRange, ensureYearsSynced, syncHolidaysForYear, getUnsyncedYears } from "@/kernel/holidays";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -73,5 +73,31 @@ describe("getUnsyncedYears", () => {
   it("미적재(count=0) 연도만 반환", async () => {
     count.mockResolvedValueOnce(0).mockResolvedValueOnce(20);
     expect(await getUnsyncedYears([2030, 2026])).toEqual([2030]);
+  });
+});
+
+describe("getHolidayEventsInRange", () => {
+  it("범위 공휴일을 {date,name}[]로(YYYY-MM-DD·정렬·gte/lte where)", async () => {
+    findMany.mockResolvedValue([
+      { date: new Date("2026-01-01T00:00:00.000Z"), name: "신정" },
+      { date: new Date("2026-03-01T00:00:00.000Z"), name: "삼일절" },
+    ]);
+    const start = new Date("2026-01-01T00:00:00.000Z");
+    const end = new Date("2026-03-31T00:00:00.000Z");
+    const out = await getHolidayEventsInRange(start, end);
+    expect(out).toEqual([
+      { date: "2026-01-01", name: "신정" },
+      { date: "2026-03-01", name: "삼일절" },
+    ]);
+    expect(findMany).toHaveBeenCalledWith({
+      where: { date: { gte: start, lte: end } },
+      select: { date: true, name: true },
+      orderBy: { date: "asc" },
+    });
+  });
+
+  it("빈 결과 정상(빈 배열)", async () => {
+    findMany.mockResolvedValue([]);
+    expect(await getHolidayEventsInRange(new Date("2026-01-01T00:00:00.000Z"), new Date("2026-01-31T00:00:00.000Z"))).toEqual([]);
   });
 });

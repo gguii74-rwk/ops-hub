@@ -1,4 +1,5 @@
 import "server-only";
+import type { JobFunction } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 export interface LeaveCalendarEvent {
@@ -22,9 +23,21 @@ export async function getLeaveCalendar(params: {
   start: Date;
   end: Date;
   filterTeamId?: string | null;
+  job?: JobFunction | null; // 직무 필터(D1/D7) — null/미지정 = 무필터
 }): Promise<LeaveCalendarEvent[]> {
   const { viewerId, canViewAllStatuses, canCrossTeam, start, end } = params;
   const rangeAnd = [{ startDate: { lte: end } }, { endDate: { gte: start } }];
+
+  // 직무 필터(D1/D7): job 지정 시 그 jobFunction의 ACTIVE userId 집합과 AND 교집합.
+  // LeaveRequest엔 user 관계가 없어 userId 집합으로 거른다(빈 집합 → {in:[]} → 빈 결과). jobFunction은 응답에 싣지 않음.
+  const andClauses: Array<Record<string, unknown>> = [...rangeAnd];
+  if (params.job) {
+    const jobUsers = await prisma.user.findMany({
+      where: { jobFunction: params.job, status: "ACTIVE" },
+      select: { id: true },
+    });
+    andClauses.push({ userId: { in: jobUsers.map((u) => u.id) } });
+  }
 
   // 팀 필터 → ACTIVE userId 목록. 팀 경계 권한자(status/admin)만 사용.
   let teamIds: string[] | null = null;
@@ -41,7 +54,7 @@ export async function getLeaveCalendar(params: {
     // admin: 전체 사용자·모든 상태·마스킹 없음. 팀 필터(선택).
     where = {
       deletedAt: null,
-      AND: rangeAnd,
+      AND: andClauses,
       ...(teamIds ? { userId: { in: teamIds } } : {}),
     };
   } else if (canCrossTeam) {
@@ -52,7 +65,7 @@ export async function getLeaveCalendar(params: {
       : { userId: { not: viewerId }, status: "APPROVED" as const };
     where = {
       deletedAt: null,
-      AND: rangeAnd,
+      AND: andClauses,
       OR: [{ userId: viewerId }, others],
     };
   } else {
@@ -69,7 +82,7 @@ export async function getLeaveCalendar(params: {
     }
     where = {
       deletedAt: null,
-      AND: rangeAnd,
+      AND: andClauses,
       OR: [
         { userId: viewerId },
         ...(teamOthers.length ? [{ userId: { in: teamOthers }, status: "APPROVED" as const }] : []),

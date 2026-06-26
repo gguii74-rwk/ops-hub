@@ -16,6 +16,19 @@ describe("kindClass", () => {
     expect(kindClass("QUARTER", "soft")).toContain("violet");
   });
 
+  it("변형 A: soft 라이트모드 글자색 700(ANNUAL/HALF/QUARTER/HOLIDAY)", () => {
+    expect(kindClass("ANNUAL", "soft")).toContain("text-blue-700");
+    expect(kindClass("HALF", "soft")).toContain("text-emerald-700");
+    expect(kindClass("QUARTER", "soft")).toContain("text-violet-700");
+    expect(kindClass("HOLIDAY", "soft")).toContain("text-rose-700");
+    // 배경·ring은 유지
+    expect(kindClass("ANNUAL", "soft")).toContain("bg-blue-100");
+    expect(kindClass("HOLIDAY", "soft")).toContain("bg-rose-100");
+    // 950(이전 톤)은 더 이상 없음
+    expect(kindClass("ANNUAL", "soft")).not.toContain("text-blue-950");
+    expect(kindClass("HOLIDAY", "soft")).not.toContain("text-rose-950");
+  });
+
   it("미등록 kind는 중립 폴백(빈 문자열 아님)", () => {
     const cls = kindClass("UNKNOWN_KIND", "soft");
     expect(cls.length).toBeGreaterThan(0);

@@ -22,7 +22,7 @@ const KIND_STYLES: Record<string, KindStyle> = {
     bold: "bg-orange-500 text-white ring-1 ring-orange-600/40 dark:bg-orange-500/80 dark:text-orange-50 dark:ring-orange-400/40",
   },
   HOLIDAY: {
-    soft: "bg-rose-100 text-rose-950 ring-1 ring-rose-300/70 dark:bg-rose-500/20 dark:text-rose-100 dark:ring-rose-300/30",
+    soft: "bg-rose-100 text-rose-700 ring-1 ring-rose-300/70 dark:bg-rose-500/20 dark:text-rose-100 dark:ring-rose-300/30",
     bold: "bg-rose-500 text-white ring-1 ring-rose-600/40 dark:bg-rose-500/80 dark:text-rose-50 dark:ring-rose-400/40",
   },
   EXTERNAL_EVENT: {
@@ -40,15 +40,15 @@ const KIND_STYLES: Record<string, KindStyle> = {
   // 연차 전용(leaveType을 kind로) — soft만 사용(intensity="soft"), bold는 형 통일용.
   // 연차=파랑 / 반차=초록 / 반반차=보라.
   ANNUAL: {
-    soft: "bg-blue-100 text-blue-950 ring-1 ring-blue-300/70 dark:bg-blue-500/20 dark:text-blue-100 dark:ring-blue-400/30",
+    soft: "bg-blue-100 text-blue-700 ring-1 ring-blue-300/70 dark:bg-blue-500/20 dark:text-blue-100 dark:ring-blue-400/30",
     bold: "bg-blue-500 text-white ring-1 ring-blue-600/40 dark:bg-blue-500/80 dark:text-blue-50",
   },
   HALF: {
-    soft: "bg-emerald-100 text-emerald-950 ring-1 ring-emerald-300/70 dark:bg-emerald-500/20 dark:text-emerald-100 dark:ring-emerald-400/30",
+    soft: "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-300/70 dark:bg-emerald-500/20 dark:text-emerald-100 dark:ring-emerald-400/30",
     bold: "bg-emerald-500 text-white ring-1 ring-emerald-600/40 dark:bg-emerald-500/80 dark:text-emerald-50",
   },
   QUARTER: {
-    soft: "bg-violet-100 text-violet-950 ring-1 ring-violet-300/70 dark:bg-violet-500/20 dark:text-violet-100 dark:ring-violet-400/30",
+    soft: "bg-violet-100 text-violet-700 ring-1 ring-violet-300/70 dark:bg-violet-500/20 dark:text-violet-100 dark:ring-violet-400/30",
     bold: "bg-violet-500 text-white ring-1 ring-violet-600/40 dark:bg-violet-500/80 dark:text-violet-50",
   },
 };
