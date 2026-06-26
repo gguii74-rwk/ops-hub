@@ -11,6 +11,7 @@
 
 - spec §5.4. `Button`(`@/components/ui/button`)은 `default|outline|secondary|ghost|destructive|link` variant 보유, native button props(aria-label 등) 지원. `Input`(`@/components/ui/input`)은 native input props.
 - Deps: 없음(순수 UI). 단 `integrations.smtp.host`를 string으로 렌더하던 기존 테스트는 이 task가 갱신(host는 task-01에서 카탈로그 제거됨).
+- **NumberSettingEditor 비고(P3/A2):** port가 env 전용이 되어 현재 numeric systemSetting은 없다. `NumberSettingEditor`와 `typeof === "number"` 분기는 **D8의 타입-완전 dispatch**(boolean/number/string/array/object 전체를 다룸)의 일부로 **유지**한다 — 한 arm만 빼면 향후 numeric 설정이 JSON textarea로 새므로. 테스트는 합성 키(`demo.number.value`)로 컴포넌트 분기만 검증한다(`SettingEditor`는 값 타입으로 분기, 카탈로그 미참조).
 
 ## TDD steps
 
@@ -34,7 +35,7 @@ describe("SettingEditor — 타입 분기(D8)", () => {
   });
 
   it("number initialValue → number input(spinbutton, 초기값 표시)", () => {
-    render(<SettingEditor settingKey="integrations.smtp.port" initialValue={587} updatedAt={null} />);
+    render(<SettingEditor settingKey="demo.number.value" initialValue={587} updatedAt={null} />);
     const spin = screen.getByRole("spinbutton") as HTMLInputElement;
     expect(spin.value).toBe("587");
   });
@@ -61,7 +62,7 @@ describe("SettingEditor — 타입 분기(D8)", () => {
   it("number 편집기 저장 → PUT(value:number, 문자열 아님)", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ updatedAt: "2026-06-26T00:00:00.000Z" }) });
     vi.stubGlobal("fetch", fetchMock);
-    render(<SettingEditor settingKey="integrations.smtp.port" initialValue={587} updatedAt={null} />);
+    render(<SettingEditor settingKey="demo.number.value" initialValue={587} updatedAt={null} />);
     fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "465" } });
     fireEvent.click(screen.getByRole("button", { name: "저장" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));

@@ -31,7 +31,7 @@ export interface MailTransportConfig {
 ```
 - **비밀번호는 이 타입에 없다** — `sendMail`이 `process.env.SMTP_PASSWORD`에서 직접 읽는다(D2: secret은 config로 흐르지 않음).
 
-### SC-2. `getSmtpConfig()` (kernel 해석기 — D1·D2·D10, F2·F7)
+### SC-2. `getSmtpConfig()` (kernel 해석기 — D1·D2·D10, F2·P1; port env 전용=P3/A2)
 
 ```ts
 // src/kernel/settings/service.ts (정의) → src/kernel/settings/reader.ts (re-export)
@@ -42,8 +42,8 @@ export async function getSmtpConfig(): Promise<MailTransportConfig>;
 - `host`:   `env SMTP_HOST` (없으면 `""`) — **env 전용**(D2·F4)
 - `user`:   `env SMTP_USER` (없으면 `""`) — **env 전용**(D2·F4)
 - `secure`: `env SMTP_SECURE === "true"` — **env 전용**(D2·F4)
-- `port`:   **`readRaw` 행 존재+유효 → DB**, 행 부재/빈값/무효 → `Number(env SMTP_PORT)` → `587` (F7: `getSetting` 금지 — 행 부재 시 default 587이 비-587 env를 가린다)
-- `from`:   **`readRaw` 행 존재+비어있지 않은 유효 → DB**, 아니면 `env SMTP_FROM` → `env SMTP_USER` → `"noreply@uracle.co.kr"`
+- `port`:   `Number(env SMTP_PORT)` → `587` — **env 전용**(P3 결정 A2: port/TLS 모드는 결합돼 있어 `secure`와 함께 env 한 곳에서 관리. DB 미편집 → port/TLS 드리프트·port cutover 위험 없음). DB row가 있어도 무시(orphan).
+- `from`:   **`readRaw` 행 존재+비어있지 않은 유효(카탈로그 email schema) → DB**, 아니면 `env SMTP_FROM` → `env SMTP_USER` → `"noreply@uracle.co.kr"` (P1: 무효 비-이메일은 env 폴백). **DB 편집 가능한 유일한 SMTP 필드.**
 
 모듈은 `@/kernel/settings/reader`로만 settings를 import한다(no-restricted-imports). 따라서 `getSmtpConfig`는 reader에서 re-export 필수.
 
@@ -73,8 +73,7 @@ groupOrder: number; // 그룹 내 표시 순서
 | `secret.database` | security | 1 |
 | `secret.auth` | security | 2 |
 | `secret.smtp` | mail | 1 |
-| `integrations.smtp.port` | mail | 2 |
-| `integrations.smtp.fromAddress` | mail | 3 |
+| `integrations.smtp.fromAddress` | mail | 2 |
 | `secret.google` | google | 1 |
 | `integrations.google.calendarIds` | google | 2 |
 | `secret.libreoffice` | documents | 1 |
@@ -84,8 +83,8 @@ groupOrder: number; // 그룹 내 표시 순서
 | `workflows.weeklyReport.defaultRecipients` | workflows | 1 |
 | `workflows.billing.config` | workflows | 2 |
 
-- **`integrations.smtp.host` 카탈로그 엔트리 제거**(env 전용, F4). orphaned DB row는 무해(getEntry undefined → 미표시·미쓰기).
-- `secure`/`user`는 **DB에 추가하지 않는다**(env 전용).
+- **`integrations.smtp.host`·`integrations.smtp.port` 카탈로그 엔트리 제거**(env 전용 — host=F4, port=P3/A2). orphaned DB row는 무해(getEntry undefined → 미표시·미쓰기·미읽기).
+- `secure`/`user`/`port`는 **DB에 추가하지 않는다**(env 전용). **DB 편집 가능한 SMTP 필드 = `fromAddress` 하나뿐.**
 - 그룹 헤더 배지 매핑: `mail→smtp`, `google→google`, `documents→templates` 연동 상태. `security`/`leave`/`workflows`는 그룹 헤더 배지 없음(항목별 배지/편집기).
 
 ### SC-5. `SettingStatus`에 `"not_required"` 추가 (F12)
@@ -130,21 +129,21 @@ configured = cfg.host.length > 0 AND (cfg.user.length === 0 || SMTP_PASSWORD 존
 
 - `npm run lint` / `npm run typecheck` / `npm test` / `npm run build` 모두 green.
 - 기존 스위트 회귀 없음(현재 1380 통과 기준 — host 제거·편집기 분기로 수정되는 기존 테스트는 각 task가 갱신).
-- §7 회귀 테스트(F2 무회귀·F7 비-587 env·F9 auth 분기·F12 행/헤더 일관성) 포함.
-- smoke(배포 후): 인증 → `/admin/settings` 영역 카드·상태 배지 렌더, SMTP port/from 저장 → 메일 1건 발송, advisory 라우트 회귀(stale-build P2010 주의).
+- §7 회귀 테스트(F2 무회귀·port env 전용[DB row 무시, P3/A2]·from 무효행 env 폴백[P1]·F9 auth 분기·F12 행/헤더 일관성) 포함.
+- smoke(배포 후): 인증 → `/admin/settings` 영역 카드·상태 배지 렌더, SMTP **fromAddress** 저장 → 메일 1건 발송(발신주소 반영), advisory 라우트 회귀(stale-build P2010 주의).
 
 ### 배포 cutover preflight (P2 — 필수, 코드/마이그레이션 변경 아님)
 
-PR-A는 그동안 **死설정**이던 `integrations.smtp.port`·`integrations.smtp.fromAddress` DB 행을 **전송 입력으로 살린다**(task-03/04). spec §1 전제상 현재 운영 DB의 이 행들은 비어있다(빈 행 → `getSmtpConfig`가 env로 폴백 → 무해). 그러나 과거 死 UI로 **비어있지 않은 stale 값**이 저장됐을 수 있고, 그러면 배포 즉시 known-good env 전송 설정을 덮어 **메일 장애/잘못된 발신자**가 날 수 있다.
+PR-A는 그동안 **死설정**이던 `integrations.smtp.fromAddress` DB 행을 **전송 입력으로 살린다**(task-03/04). (port는 P3/A2로 env 전용이 되어 DB row를 읽지 않으므로 cutover 위험에서 제외 — orphan.) spec §1 전제상 현재 운영 DB의 fromAddress 행은 비어있다(빈 행 → `getSmtpConfig`가 env로 폴백 → 무해). 그러나 과거 死 UI로 **비어있지 않은 stale 값**이 저장됐을 수 있고, 그러면 배포 즉시 known-good env 발신주소를 덮을 수 있다.
 
 → **배포 전(restart 전)에 preflight로 기존 행을 확인**한다(`psql "$DATABASE_URL"`은 `?schema=public` 제거 후):
 ```sql
 SELECT key, value FROM "SystemSetting"
-WHERE key IN ('integrations.smtp.port', 'integrations.smtp.fromAddress');
+WHERE key = 'integrations.smtp.fromAddress';
 ```
 - 행이 없거나 빈 값(`""`)이면 → 안전(env 폴백). 그대로 배포.
-- **비어있지 않은 행이 있으면** → 그 값이 의도한 전송 설정(현 env `SMTP_PORT`/`SMTP_FROM`과 일치)인지 확인하거나, 아니면 비우고 배포한다. stale 값이 env를 덮지 않도록.
-- 이는 **마이그레이션/seed 변경이 아니라 운영 점검 단계**다(D9 — 무마이그레이션 유지). PR-A 자체는 표준 restart.
+- **비어있지 않은 행이 있으면** → 그 값이 의도한 발신주소(현 env `SMTP_FROM`과 일치)인지 확인하거나, 아니면 비우고 배포한다. stale 값이 env를 덮지 않도록.
+- 이는 **마이그레이션/seed 변경이 아니라 운영 점검 단계**다(D9 — 무마이그레이션 유지). PR-A 자체는 표준 restart. (P2 결정 B1: 저장소 배포가 전부 수동이라 수동 preflight로 일관.)
 
 ## 적대검증 판정(plan 단계) — ledger
 
@@ -153,7 +152,7 @@ plan review-loop 결과. blocking 미판정 0.
 | # | finding | sev | disposition | 근거 |
 | --- | --- | --- | --- | --- |
 | P1 | `getSmtpConfig`가 무효 DB `fromAddress`(비어있지 않은 비-이메일)를 검증 없이 전송 from에 사용 → 유효 env SMTP_FROM을 덮어 발송 깨질 수 있음 | high | **FIXED** | task-03 — 카탈로그 schema(email-or-empty)로 from 행 재검증, 무효면 env 폴백 + warn. §SC-2 "유효" 계약과 일치. 회귀 테스트 추가(무효행+유효 env→env). R2에서 소멸 확인. |
-| P2 | 死설정이던 port/fromAddress DB 행이 cutover 가드 없이 배포 시 권위화 → stale 값이 env 전송설정을 덮어 메일 장애 가능 | high | **FIXED** | 위 "배포 cutover preflight" — restart 전 기존 행 확인/정리(비어있지 않은 stale 차단). D9(무마이그레이션) 유지. migrate/backfill·pre-cutover flag는 D9 위반이라 기각. |
-| P3 | 편집 가능 port(DB)와 TLS모드 `secure`(env)가 분리 → port/TLS 불일치(예 465+secure=false) 시 상태는 "정상"이나 미연결 | medium | **ACCEPTED** | secure를 env 전용으로, DB편집면을 port·fromAddress로 한정한 것은 **F4·D2의 의도적 보안 결정**(민감 연결필드 env 유지). port/TLS 불일치는 admin 오설정이며 **F3이 이미 수용한 "배지≠발송보장, 정적 검증으로 도달성 확인 불가"의 부분집합** — 보완 = 후속 "연결 테스트" 액션(spec §10). port editor에 TLS=env 관리 안내(task-03 caution)로 신호 보강. |
+| P2 | 死설정이던 SMTP DB 행이 cutover 가드 없이 배포 시 권위화 → stale 값이 env 전송설정을 덮어 메일 장애 가능 | high | **FIXED** | **사용자 결정 B1**: 수동 preflight(restart 전 `fromAddress` 행 확인/정리). 저장소 배포가 전부 수동이라 일관. D9(무마이그레이션) 유지. migrate/backfill·런타임 flag는 기각(D9 위반/복잡도). P3/A2로 port가 env 전용이 되어 cutover 대상이 fromAddress 하나로 축소. R3 재출현은 이 사용자 결정으로 종결(2회 반복 → 판정). |
+| P3 | 편집 가능 port(DB)와 TLS모드 `secure`(env)가 분리 → port/TLS 불일치(465+secure=false 등) 시 상태는 "정상"이나 미연결(정적 탐지 가능한 로컬 불변식) | medium | **FIXED** | **사용자 결정 A2**: **port도 env 전용**으로 전환 — port/secure를 env 한 곳에서 관리해 드리프트 원천 제거. DB 편집 SMTP면 = `fromAddress`만. task-01(port 카탈로그 제거)·task-03(port=env). F3 ACCEPTED 논리(정적 검증 불가)가 이 케이스엔 부분적으로만 맞다는 R3 지적을 수용해 회피 대신 제거. R3 재출현은 이 결정으로 종결. |
 
-**추세(미판정 blocking score, high=3·medium=1)**: R1=3(P1) → R2=4(P2 3 + P3 1) → 판정 후 0. P1 FIXED 확정, P2 FIXED(plan 보강), P3 ACCEPTED.
+**추세(미판정 blocking score, high=3·medium=1)**: R1=3(P1) → R2=4(P2 3 + P3 1) → R3 P2·P3 재출현(2회 반복) → **사용자 batch 판정**으로 0. P1·P2·P3 모두 FIXED(P2=수동 preflight/B1, P3=port env전용/A2).
