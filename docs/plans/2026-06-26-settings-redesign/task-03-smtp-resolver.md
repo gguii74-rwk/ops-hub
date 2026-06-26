@@ -102,6 +102,13 @@ describe("getSmtpConfig — from(readRaw, DB 우선·env 폴백)", () => {
     store.set("integrations.smtp.fromAddress", { value: "", updatedAt: new Date() });
     expect((await getSmtpConfig()).from).toBe("envfrom@x.com");
   });
+  it("행 무효(비어있지 않은 비-이메일) + 유효 env SMTP_FROM → env 폴백, throw 없음(P1·D10)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.SMTP_FROM = "envfrom@x.com";
+    store.set("integrations.smtp.fromAddress", { value: "not-an-email", updatedAt: new Date() });
+    expect((await getSmtpConfig()).from).toBe("envfrom@x.com"); // 무효 행이 env를 덮지 않음
+    warn.mockRestore();
+  });
   it("env 전부 없음 → 기본 noreply", async () => {
     expect((await getSmtpConfig()).from).toBe("noreply@uracle.co.kr");
   });
@@ -129,6 +136,7 @@ describe("getSmtpConfig — tolerant(D10·F2, 절대 throw 안 함)", () => {
 ```ts
 import type { MailTransportConfig } from "@/lib/integrations/mail";
 ```
+(`getEntry`·`readRaw`는 service.ts가 이미 import 중 — `import { CATALOG, getEntry } from "./catalog";`, `import { readRaw, writeWithAudit } from "./repository";`. 추가 import 불필요.)
 
 `getSetting` 함수 정의 **아래**에 추가:
 ```ts
@@ -159,7 +167,13 @@ export async function getSmtpConfig(): Promise<MailTransportConfig> {
   try {
     const row = await readRaw("integrations.smtp.fromAddress");
     if (row && typeof row.value === "string" && row.value.length > 0) {
-      from = row.value;
+      // 카탈로그 schema(email-or-empty)와 동일 규칙으로 검증(F7과 같은 정신, P1): 비어있지 않은 무효값
+      // (예: "not-an-email")은 env로 폴백한다 — 무효 행이 유효 env SMTP_FROM을 덮어 발송을 깨면 안 됨(D10).
+      // 깨진 행 자체는 listSettings의 항목별 INVALID 배지로 별도 노출(신호 보존).
+      const entry = getEntry("integrations.smtp.fromAddress");
+      const valid = entry?.kind === "systemSetting" && entry.schema.safeParse(row.value).success;
+      if (valid) from = row.value;
+      else console.warn("[settings] invalid integrations.smtp.fromAddress row; using env");
     }
   } catch (e) {
     console.warn("[settings] failed reading integrations.smtp.fromAddress; using env", e);
