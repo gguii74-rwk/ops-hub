@@ -22,8 +22,10 @@
 - **D3. 종류별 토글 필터 제거.** 기존 `CalendarMonth` 내부 kind 토글(연차/반차/반반차 클릭 숨김)을 끄고(`legend={false}`), 범례를 **정적 색 안내**로 전환한다. 필터 역할은 직무 필터가 담당.
 - **D4. 범례 변형 A 스타일** = 채운 pill + 얇은 테두리 + **글자색 700**(각 색의 진한 톤). `대기중`=주황 배경·진한 노랑 점선, `반려/취소`=취소선. 공휴일=붉은색(rose).
 - **D5. 공휴일은 직무와 무관하게 항상 표시.** 직무 필터를 어떤 값으로 두어도 공휴일은 남는다(`kind === "HOLIDAY"`는 필터 예외).
-- **D6. 공휴일은 별도 응답 필드로 전달.** API 응답을 `{ events, holidays }`로 확장한다. 휴가 전용 필드(`leaveType`/`status`/`isSelf` 등)를 공휴일에 억지로 채우지 않기 위함. 클라이언트가 각각 공통 이벤트 모델로 변환.
+- **D6. 공휴일은 별도 응답 필드로 전달.** API 응답을 `{ events, holidays }`로 확장한다(D9에서 `unsyncedYears`가 추가돼 최종 `{ events, holidays, unsyncedYears }`). 휴가 전용 필드(`leaveType`/`status`/`isSelf` 등)를 공휴일에 억지로 채우지 않기 위함. 클라이언트가 각각 공통 이벤트 모델로 변환.
 - **D7. 권한·마스킹은 기존 정책 유지.** 이름·유형은 이미 공개, 사유·세부는 admin 외 마스킹(`getLeaveCalendar` line 104). `jobFunction`은 이름과 동급의 공개 정보로 보고 **마스킹하지 않는다**(마스킹돼도 직무 필터가 동작해야 하므로). 직무 필터는 뷰어가 **이미 볼 수 있는 데이터 범위 안에서만** 거른다(일반 사용자=본인+같은 팀, admin=전체).
+- **D8. 공휴일 sync-on-demand 백스톱.** `Holiday` 테이블은 부팅 시 current+익년만(fire-and-forget, `instrumentation.ts`) 채워지고 나머지는 신청 백스톱·admin 수동 동기화에만 의존한다. 캘린더는 prev/next로 자유 네비게이션되므로 미동기화 연도로 이동하면 공휴일이 비어 **'공휴일 없음'처럼 오인**될 수 있다. 따라서 라우트는 공휴일 읽기 **전에** 조회 윈도우(`[start, end]`)가 걸친 연도를 계산해 `ensureYearsSynced(years)`를 호출한다(미적재 연도만 네트워크 동기화, 이미 적재면 count 체크만). 신청 경로의 fail-closed 백스톱·통합 캘린더의 sync-on-demand와 **동일 패턴**. **단, 캘린더는 신청과 달리 fail-closed가 아니다** — 키 부재(`DATA_GO_KR_SERVICE_KEY`)·외부 API 실패로 동기화가 안 돼도 `ensureYearsSynced`가 에러를 삼키므로 화면을 막지 않고 best-effort로 진행한다.
+- **D9. 미동기화는 조용히 비우지 않고 신호한다.** 동기화 시도 후 `getUnsyncedYears(years)`로 여전히 미적재인 연도를 계산해 응답을 `{ events, holidays, unsyncedYears }`로 확장한다(통합 캘린더 피드의 `failedSources` 선례와 동일한 부분실패 메타데이터). `unsyncedYears`가 비어있지 않으면 클라이언트는 "공휴일 정보를 일부 불러오지 못했습니다" 수준의 **간단한 인라인 안내**(차단 모달 아님)를 표시해, 빈 공휴일이 '공휴일 없음'으로 오인되지 않게 한다. 동기화가 모두 성공하면 항상 빈 배열이라 안내는 나타나지 않는다. (조회 윈도우 연도 수는 보통 1개, 월 경계로 인접 2개까지.)
 
 ## 3. 변경 상세 (계층별)
 
@@ -39,9 +41,11 @@
 - 마스킹 분기와 무관하게 `jobFunction`은 항상 채운다(D7).
 
 ### 3.3 API 라우트 — `src/app/api/leave/calendar/route.ts`
-- `getLeaveCalendar(...)` 호출 후 `getHolidayEventsInRange(start, end)`를 호출.
-- 응답을 `{ events, holidays }`로 변경(기존 `{ events }`에서 확장).
-- 공휴일 조회 실패가 화면 전체를 막지 않도록, 공휴일은 best-effort(실패 시 빈 배열)로 감싼다. (휴가 조회 실패는 기존대로 에러.)
+- 조회 윈도우(`[start, end]`)가 걸친 연도 집합을 계산한다(`start.getUTCFullYear()`..`end.getUTCFullYear()` 포함).
+- 공휴일 읽기 **전에** `ensureYearsSynced(years)`를 호출(D8, best-effort — 캘린더는 fail-closed 아님; 함수가 실패를 삼킴).
+- `getLeaveCalendar(...)` 호출 후 `getHolidayEventsInRange(start, end)`와 `getUnsyncedYears(years)`를 호출.
+- 응답을 `{ events, holidays, unsyncedYears }`로 확장(D9, 기존 `{ events }`에서 확장).
+- 공휴일 조회/동기화가 화면 전체를 막지 않도록 best-effort로 감싼다: `getHolidayEventsInRange`가 throw하면 `holidays: []`, `getUnsyncedYears`가 throw하면 `unsyncedYears: []`(신호 못 띄움은 graceful 열화로 허용). 동기화 실패는 D8대로 `ensureYearsSynced` 내부에서 흡수돼 해당 연도가 `unsyncedYears`에 남는다. (휴가 조회 실패는 기존대로 에러.)
 
 ### 3.4 어댑터 — `src/app/(app)/leave/_components/leave-adapter.ts`
 - `Ev` 인터페이스에 `jobFunction: string` 추가(API 응답 매칭).
@@ -63,6 +67,7 @@
 - **툴바 레이아웃**: 좌측 직무 버튼(전체/개발/민원/콘텐츠) + 년월, 우측에 이전/오늘/다음(`ml-auto`). 새로고침 버튼 없음.
 - **범례**: `CalendarMonth`의 `legend`를 끄고(D3), 변형 A 정적 범례를 직접 렌더(공휴일·연차·반차·반반차·대기중·반려/취소). 직무 버튼은 4개 고정이므로 라벨/값(`{ value: "ALL"|JobFunction, label }`)을 컴포넌트 내 상수로 인라인 정의(`admin/users/_components/labels.ts`의 `JOB_LABEL`은 admin 전용 private 영역이라 직접 import하지 않음).
 - 기존 상단 상태 키 줄(이전 작업에서 추가한 대기중/반려)은 변형 A 범례에 흡수되어 제거.
+- **미동기화 안내**(D9): `data?.unsyncedYears`가 비어있지 않으면 캘린더 상단에 간단한 인라인 안내(예: "{연도} 공휴일 정보를 불러오지 못했습니다")를 표시한다. 차단 모달이 아니라 범례/그리드와 공존하는 한 줄. `unsyncedYears`가 없거나 빈 배열이면 표시하지 않는다.
 
 ### 3.6 칩 색 — `src/modules/calendar/ui/kind-styles.ts`
 - 연차 캘린더가 쓰는 kind(`ANNUAL/HALF/QUARTER/HOLIDAY`)의 **soft 글자색을 950 → 700**으로 조정(변형 A). 배경 100·테두리(ring 또는 border) 유지.
@@ -82,9 +87,9 @@
 
 - `kernel/holidays`: `getHolidayEventsInRange`가 범위·이름·날짜키(YYYY-MM-DD)·정렬을 정확히 반환(빈 결과 포함).
 - `services/calendar`: 반환 이벤트에 `jobFunction` 포함, 마스킹 분기와 무관하게 채워짐.
-- API 라우트: 응답이 `{ events, holidays }` 형태, 공휴일 조회 실패 시 `holidays: []`로 graceful.
+- API 라우트: 응답이 `{ events, holidays, unsyncedYears }` 형태; 공휴일 읽기 전 윈도우 연도에 대해 `ensureYearsSynced`가 호출됨; 동기화가 성공하면 `unsyncedYears: []`, 미동기화 연도가 남으면 그 연도가 `unsyncedYears`에 포함; 공휴일 조회 throw 시 `holidays: []`로 graceful(휴가 조회 실패는 에러). 월 경계 윈도우(인접 2개 연도)에서 두 연도 모두 동기화 시도.
 - 어댑터: `holidaysToEvents`가 `kind=HOLIDAY`·half-open·status 없음으로 변환.
-- 컴포넌트(`LeaveCalendar`): 직무 버튼 선택 시 해당 직무 휴가만 + 공휴일 유지, `전체`는 모두 표시. nav 우측·범례 정적.
+- 컴포넌트(`LeaveCalendar`): 직무 버튼 선택 시 해당 직무 휴가만 + 공휴일 유지, `전체`는 모두 표시. nav 우측·범례 정적. `unsyncedYears`가 비어있지 않으면 인라인 안내 표시, 빈/없음이면 미표시(D9).
 - `kind-styles`: ANNUAL/HALF/QUARTER/HOLIDAY soft가 `text-*-700` 포함(변형 A) — 기존 색 단언 갱신.
 
 ## 6. 비범위·후속
