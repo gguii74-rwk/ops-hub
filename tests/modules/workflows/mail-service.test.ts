@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 vi.mock("@/kernel/access", () => ({ ForbiddenError: class ForbiddenError extends Error { constructor(m?: string) { super(m); this.name = "ForbiddenError"; } } }));
 vi.mock("@/lib/integrations/mail", () => ({ sendMail: vi.fn() }));
+vi.mock("@/kernel/settings/reader", () => ({
+  getSmtpConfig: vi.fn(async () => ({ host: "mail.x", port: 587, secure: false, user: "", from: "noreply@x.com" })),
+}));
 vi.mock("node:fs", () => ({ existsSync: vi.fn(() => true) }));
 vi.mock("@/modules/workflows/repositories/mail", () => ({
   createSendingDelivery: vi.fn(),
@@ -37,7 +40,10 @@ describe("deliver", () => {
   it("SENDING 선기록 → SMTP 성공 → SENT 갱신", async () => {
     const out = await deliver({ taskId: "t1", step: "send", msg: { to: ["a@x"], subject: "s", html: "<p>h</p>" }, sentById: "u1" });
     expect(repo.createSendingDelivery).toHaveBeenCalledWith(expect.objectContaining({ taskId: "t1", step: "send", bodyHtml: "<p>h</p>" }));
-    expect(send).toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: "s" }),
+      expect.objectContaining({ host: "mail.x" }),
+    );
     expect(repo.finalizeDelivery).toHaveBeenCalledWith("d1", expect.objectContaining({ status: "SENT", providerMessageId: "pm1" }));
     expect((out as any).status).toBe("SENT");
   });
@@ -76,7 +82,7 @@ describe("retryDelivery", () => {
   it("FAILED를 저장된 bodyHtml로 재발송(워크플로 재생성 없음) → SENT", async () => {
     repo.findDeliveryForAction.mockResolvedValue(failed);
     await retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.weekly:send"] }));
-    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: ["a@x"], subject: "s", html: "<p>저장본문</p>" }));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: ["a@x"], subject: "s", html: "<p>저장본문</p>" }), expect.anything());
     expect(repo.finalizeDelivery).toHaveBeenCalledWith("d1", expect.objectContaining({ status: "SENT" }));
   });
 
