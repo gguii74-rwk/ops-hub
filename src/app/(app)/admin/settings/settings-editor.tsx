@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 
@@ -15,15 +16,20 @@ type EditorProps = {
 };
 
 export function SettingEditor(props: EditorProps) {
-  // boolean 설정은 토글 UI, 그 외는 기존 raw JSON textarea(회귀 없음).
-  if (typeof props.initialValue === "boolean") {
-    return (
-      <BooleanSettingEditor
-        settingKey={props.settingKey}
-        initialValue={props.initialValue}
-        updatedAt={props.updatedAt}
-      />
-    );
+  const v = props.initialValue;
+  // 값 타입으로 편집기 선택(D8). 서버 zod가 여전히 권위 검증.
+  // Array.isArray는 typeof object보다 먼저(배열도 object이므로) — JSON 폴백은 객체 전용.
+  if (typeof v === "boolean") {
+    return <BooleanSettingEditor settingKey={props.settingKey} initialValue={v} updatedAt={props.updatedAt} />;
+  }
+  if (typeof v === "number") {
+    return <NumberSettingEditor settingKey={props.settingKey} initialValue={v} updatedAt={props.updatedAt} />;
+  }
+  if (Array.isArray(v)) {
+    return <ListSettingEditor settingKey={props.settingKey} initialValue={v as string[]} updatedAt={props.updatedAt} />;
+  }
+  if (typeof v === "string") {
+    return <StringSettingEditor settingKey={props.settingKey} initialValue={v} updatedAt={props.updatedAt} />;
   }
   return <JsonSettingEditor {...props} />;
 }
@@ -50,18 +56,16 @@ async function putSetting(
       body: JSON.stringify({ value, expectedUpdatedAt: token }),
     });
   } catch {
-    // 요청 전송/응답 수신 실패 — 반영 여부 불명.
     toast.error("저장 결과를 확인할 수 없습니다. 최신 상태를 확인하세요.");
     return { kind: "refetch" };
   }
   if (res.status === 409) {
-    // 행이 이미 변경됨 → prev도 stale. 롤백 금지, 권위 재조회.
     toast.error("다른 사용자가 먼저 변경했습니다. 최신 상태를 확인하세요.");
     return { kind: "refetch" };
   }
   if (res.status === 422) {
     toast.error("검증 실패: 값 형식을 확인하세요.");
-    return { kind: "rejected" }; // 값 거부, 행 불변 → prev 권위 유지
+    return { kind: "rejected" };
   }
   if (!res.ok) {
     toast.error("저장에 실패했습니다.");
@@ -76,7 +80,6 @@ async function putSetting(
     toast.success("저장되었습니다.");
     return { kind: "ok", token: body.updatedAt };
   } catch {
-    // 2xx인데 본문 파싱 실패 — 반영됐을 가능성.
     toast.error("저장 결과를 확인할 수 없습니다. 최신 상태를 확인하세요.");
     return { kind: "refetch" };
   }
@@ -96,8 +99,6 @@ function BooleanSettingEditor({
   const [token, setToken] = useState<string | null>(updatedAt);
   const [saving, setSaving] = useState(false);
 
-  // 서버 권위 상태 재동기화: router.refresh() 후 server component가 새 initialValue/updatedAt을 내려보내면 반영.
-  // (useState 초기화는 1회뿐이므로, refresh로 갱신된 props를 토글 상태에 흘려보내려면 이 sync가 필요.)
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- 토글 상태를 props 변경과 동기화하기 위한 의도된 패턴
     setChecked(initialValue);
@@ -106,24 +107,22 @@ function BooleanSettingEditor({
 
   async function toggle(next: boolean) {
     const prev = checked;
-    setChecked(next); // 낙관적 업데이트
+    setChecked(next);
     setSaving(true);
     let result: PutResult;
     try {
       result = await putSetting(settingKey, next, token);
     } finally {
-      setSaving(false); // 성공·실패·예외 무관 항상 재활성화
+      setSaving(false);
     }
     if (result.kind === "ok") {
       setToken(result.token);
       return;
     }
     if (result.kind === "rejected") {
-      setChecked(prev); // 값 거부·행 불변 → prev가 권위값 → 롤백
+      setChecked(prev);
       return;
     }
-    // refetch: prev/next 모두 stale일 수 있음(409 충돌 또는 결과 불명) → 단정 금지, 권위 상태 재조회.
-    // (toast는 putSetting이 이미 띄움. useEffect가 새 props를 토글 상태에 반영.)
     router.refresh();
   }
 
@@ -131,6 +130,170 @@ function BooleanSettingEditor({
     <div className="flex items-center gap-2">
       <Switch checked={checked} onCheckedChange={toggle} disabled={saving} label={settingKey} />
       <span className="text-sm text-muted-foreground">{checked ? "켜짐" : "꺼짐"}</span>
+    </div>
+  );
+}
+
+function StringSettingEditor({
+  settingKey,
+  initialValue,
+  updatedAt,
+}: {
+  settingKey: string;
+  initialValue: string;
+  updatedAt: string | null;
+}) {
+  const [text, setText] = useState(initialValue);
+  const [token, setToken] = useState<string | null>(updatedAt);
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    setSaving(true);
+    let result: PutResult;
+    try {
+      result = await putSetting(settingKey, text, token);
+    } finally {
+      setSaving(false);
+    }
+    // ok면 토큰 갱신. rejected/refetch는 putSetting이 토스트를 띄우고, 입력 보존 위해 refresh 안 함.
+    if (result.kind === "ok") setToken(result.token);
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <Input value={text} onChange={(e) => setText(e.target.value)} className="max-w-md" />
+      <Button type="button" size="sm" onClick={save} disabled={saving}>
+        {saving ? "저장 중…" : "저장"}
+      </Button>
+    </div>
+  );
+}
+
+function NumberSettingEditor({
+  settingKey,
+  initialValue,
+  updatedAt,
+}: {
+  settingKey: string;
+  initialValue: number;
+  updatedAt: string | null;
+}) {
+  const [text, setText] = useState(String(initialValue));
+  const [token, setToken] = useState<string | null>(updatedAt);
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    const n = Number(text);
+    if (text.trim() === "" || !Number.isFinite(n)) {
+      toast.error("형식 오류: 숫자를 입력하세요.");
+      return;
+    }
+    setSaving(true);
+    let result: PutResult;
+    try {
+      result = await putSetting(settingKey, n, token);
+    } finally {
+      setSaving(false);
+    }
+    if (result.kind === "ok") setToken(result.token);
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <Input type="number" value={text} onChange={(e) => setText(e.target.value)} className="max-w-[12rem]" />
+      <Button type="button" size="sm" onClick={save} disabled={saving}>
+        {saving ? "저장 중…" : "저장"}
+      </Button>
+    </div>
+  );
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function ListSettingEditor({
+  settingKey,
+  initialValue,
+  updatedAt,
+}: {
+  settingKey: string;
+  initialValue: string[];
+  updatedAt: string | null;
+}) {
+  // 이메일 리스트만 클라 형식 검증(나머지는 비어있지 않음+중복만). 서버 zod가 권위.
+  const requireEmail = settingKey === "workflows.weeklyReport.defaultRecipients";
+  const [items, setItems] = useState<string[]>(initialValue);
+  const [draft, setDraft] = useState("");
+  const [token, setToken] = useState<string | null>(updatedAt);
+  const [saving, setSaving] = useState(false);
+
+  function addItem() {
+    const v = draft.trim();
+    if (!v) return;
+    if (requireEmail && !EMAIL_RE.test(v)) {
+      toast.error("이메일 형식이 아닙니다.");
+      return;
+    }
+    if (items.includes(v)) {
+      toast.error("이미 추가된 항목입니다.");
+      return;
+    }
+    setItems([...items, v]);
+    setDraft("");
+  }
+
+  function removeItem(idx: number) {
+    setItems(items.filter((_, i) => i !== idx));
+  }
+
+  async function save() {
+    setSaving(true);
+    let result: PutResult;
+    try {
+      result = await putSetting(settingKey, items, token);
+    } finally {
+      setSaving(false);
+    }
+    if (result.kind === "ok") setToken(result.token);
+  }
+
+  return (
+    <div className="grid gap-2">
+      {items.length > 0 ? (
+        <ul className="grid gap-1">
+          {items.map((it, idx) => (
+            <li key={`${it}-${idx}`} className="flex items-center gap-2 text-sm">
+              <span className="font-mono">{it}</span>
+              <Button type="button" size="sm" variant="ghost" aria-label={`${it} 삭제`} onClick={() => removeItem(idx)}>
+                ✕
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="text-sm text-muted-foreground">항목 없음</div>
+      )}
+      <div className="flex items-center gap-2">
+        <Input
+          value={draft}
+          placeholder="추가할 항목 입력"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addItem();
+            }
+          }}
+          className="max-w-md"
+        />
+        <Button type="button" size="sm" variant="secondary" onClick={addItem}>
+          추가
+        </Button>
+      </div>
+      <div>
+        <Button type="button" size="sm" onClick={save} disabled={saving}>
+          {saving ? "저장 중…" : "저장"}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -149,7 +312,6 @@ function JsonSettingEditor({
   const [saving, setSaving] = useState(false);
 
   async function save() {
-    // 클라이언트는 최소 UX 검증(JSON 파싱)만. 진짜 검증은 서버 Zod.
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
@@ -165,18 +327,11 @@ function JsonSettingEditor({
       setSaving(false);
     }
     if (result.kind === "ok") setToken(result.token);
-    // rejected/refetch: putSetting이 이미 사유 토스트를 띄움. JSON 경로는 사용자가 입력한 textarea 내용을
-    // 보존해야 하므로 router.refresh(=props 재초기화)하지 않는다(토큰 미갱신 → 다음 저장 시 409로 재확인 유도).
   }
 
   return (
     <div className="grid gap-1.5">
-      <Textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        rows={3}
-        className="font-mono"
-      />
+      <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} className="font-mono" />
       <div>
         <Button type="button" size="sm" onClick={save} disabled={saving}>
           {saving ? "저장 중…" : "저장"}
