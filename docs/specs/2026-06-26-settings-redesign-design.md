@@ -39,7 +39,7 @@
 
 **PR 경계 결정(F10)**: calendarIds의 relational 전환·seed cutover를 PR-A에 두면 CRUD(PR-B) 도입 전까지 Google 소스 관리 UI가 사라지는 공백이 생긴다(F6·F8·F10 동일 뿌리). 따라서 **Google 관련 변경 일체를 PR-B로 이동**한다. PR-A는 calendarIds를 systemSetting(string[])로 그대로 두고 리스트 편집기 UI만 입힌다(동작·seed 무변경) — 공백·드리프트(F5)가 PR-A에서 발생하지 않는다.
 
-PR-A의 `calendarIds`→relational 링크는 PR-B 화면이 아직 없어도 동작한다 — 기존 `workflows.billing.config`가 미구현 `/admin/settings/billing`을 링크하는 것과 동일 패턴.
+**PR-A는 `calendarIds`에 relational 링크/`manageHref`를 두지 않는다**(F13) — calendarIds는 `systemSetting`(string[]) + 리스트 편집기로만 유지하고, relational 전환·`manageHref=/admin/settings/calendar-sources`·`googleConfigured` 카운트 변경은 CRUD가 함께 도입되는 **PR-B에서만** 한다. (relational이 미구현 화면을 가리켜도 되는 `workflows.billing.config` 패턴은 PR-B의 CRUD가 동시 도입되므로 PR-A에서 차용하지 않는다.)
 
 ## 4. 결정 (Decisions)
 
@@ -201,7 +201,8 @@ spec 단계 적대검증 결과와 판정. blocking은 모두 닫음(미판정 0
 | F10 | PR-A의 calendarIds relational 전환이 CRUD(PR-B) 전 Google 관리 공백 유발(F6·F8 동일 뿌리, 3회 재발) | high | **FIXED(PR 재조정)** | 사용자 결정: Google 전환(relational+seed cutover+카운트)을 **전부 PR-B로 이동**(§3·D6·§6). PR-A는 calendarIds를 systemSetting 리스트 편집기로 유지(동작·seed 무변경) → 공백·드리프트(F5/F6/F8) PR-A에서 소멸. |
 | F11 | PR-B CRUD가 `externalId`(개인 이메일=PII)를 view 권한자에 노출 | high | **FIXED(PR-B 설계)** | §6 — view는 name·상태·opaque key·카운트만, externalId 표시·편집은 `configure` 권한 한정. view-only 응답에 externalId 미포함 테스트. |
 | F12 | 무인증 릴레이 시 `secret.smtp`(비밀번호) 항목 행이 "설정 필요"로 떠 그룹 헤더(정상)와 모순 | medium | **FIXED** | §5.3 — 비밀번호 행 상태도 auth 분기 따름(`SMTP_USER` 있을 때만 요구). §7 행/헤더 일관성 테스트. |
+| F13 | §3에 rescope 후 남은 옛 문장(PR-A calendarIds→relational 링크가 PR-B 전 동작)이 "PR-A는 systemSetting 유지"와 모순 | high | **FIXED** | §3 — 모순 문장 삭제·재작성("PR-A는 relational/manageHref 두지 않음"). calendarIds/relational/manageHref/googleConfigured 전체 재스캔으로 다른 모순 없음 확인(line 42 유일). |
 
 **후속(follow-up)**: ① SMTP/Google 연결 테스트(라이브 검증) 액션, ② PR-B의 seed calId 백필 완전 폐기 — 본 변경 범위 밖. PR-B(또는 별도 과제)에서 검토.
 
-**적대검증 라운드 추세(미판정 blocking score, weight critical=4·high=3·medium=1)**: R1=6 → R2=1 → R3=6 → R4=6 → R5=4 → R6=7. 매 라운드가 새 실재 엣지를 드러냄(churn 아님). R6에서 **F6/F8/F10이 동일 뿌리(PR 분할로 인한 Google 관리 공백)로 3회 재발** → 패치 대신 **방향 결정(PR 재조정)**으로 닫음(F10): Google 전환 전체를 PR-B로 이동해 공백을 제거하고 PR-A를 안정화. 종료 시점 **PR-A 잔여 미판정 blocking 0** — FIXED: F1·F2·F4·F7·F9·F12, ACCEPTED: F3, → PR-B 이관: F5·F6·F8(seed)·F11(PII). FIXED 항목은 impl 단계에서 §7 회귀 테스트로 재검증한다.
+**적대검증 라운드 추세(미판정 blocking score, weight critical=4·high=3·medium=1)**: R1=6 → R2=1 → R3=6 → R4=6 → R5=4 → R6=7 → R7=3. 매 라운드가 새 실재 엣지를 드러냄(churn 아님). R6에서 **F6/F8/F10이 동일 뿌리(PR 분할로 인한 Google 관리 공백)로 3회 재발** → 패치 대신 **방향 결정(PR 재조정)**으로 닫음(F10): Google 전환 전체를 PR-B로 이동해 공백 제거·PR-A 안정화. R7은 rescope 후 남은 §3 leftover 모순(F13) 하나만 — 수정 후 calendarIds/relational/manageHref 전체 재스캔으로 일관성 확인(추가 모순 없음). 종료 시점 **PR-A 잔여 미판정 blocking 0** — FIXED: F1·F2·F4·F7·F9·F12·F13, ACCEPTED: F3, → PR-B 이관(별도 spec): F5·F6·F8(seed)·F11(PII). FIXED 항목은 impl 단계에서 §7 회귀 테스트로 재검증한다.
