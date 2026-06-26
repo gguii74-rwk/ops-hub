@@ -82,6 +82,22 @@ describe("getSmtpConfig — port(env 전용, P3/A2)", () => {
     process.env.SMTP_PORT = "not-a-number";
     expect((await getSmtpConfig()).port).toBe(587);
   });
+  it("SMTP_PORT='' (빈 문자열) → 587 (Number('')===0 함정, P5)", async () => {
+    process.env.SMTP_PORT = "";
+    expect((await getSmtpConfig()).port).toBe(587);
+  });
+  it("SMTP_PORT='   ' (공백) → 587 (P5)", async () => {
+    process.env.SMTP_PORT = "   ";
+    expect((await getSmtpConfig()).port).toBe(587);
+  });
+  it("SMTP_PORT='0' (범위 밖) → 587 (P5)", async () => {
+    process.env.SMTP_PORT = "0";
+    expect((await getSmtpConfig()).port).toBe(587);
+  });
+  it("SMTP_PORT='70000' (>65535) → 587 (P5)", async () => {
+    process.env.SMTP_PORT = "70000";
+    expect((await getSmtpConfig()).port).toBe(587);
+  });
 });
 
 describe("getSmtpConfig — from(readRaw, DB 우선·env 폴백)", () => {
@@ -148,8 +164,10 @@ export async function getSmtpConfig(): Promise<MailTransportConfig> {
   const secure = process.env.SMTP_SECURE === "true";
 
   // port는 env 전용(P3/A2) — DB row 미읽음(있어도 orphan으로 무시).
-  let port = Number(process.env.SMTP_PORT ?? 587);
-  if (!Number.isFinite(port)) port = 587; // env SMTP_PORT 무효(NaN) 방어
+  // 빈 문자열/0/범위 밖/비정수는 587(P5: Number("")===0·Number(" ")===0이 finite라 NaN 가드를 통과해 port 0이 되는 함정 회피).
+  const portRaw = (process.env.SMTP_PORT ?? "").trim();
+  const portNum = Number(portRaw);
+  const port = portRaw !== "" && Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535 ? portNum : 587;
 
   let from = process.env.SMTP_FROM || process.env.SMTP_USER || "noreply@uracle.co.kr";
   try {
@@ -184,7 +202,7 @@ export { getSetting, getSmtpConfig } from "./service";
 ## Acceptance Criteria
 
 ```bash
-npm test -- tests/kernel/settings/smtp-config.test.ts   # PASS (12 케이스)
+npm test -- tests/kernel/settings/smtp-config.test.ts   # PASS (16 케이스: env전용 2·port 8·from 5·tolerant 1)
 npm test -- tests/kernel/settings                        # 기존 catalog/service/repository 회귀 없음
 npm run typecheck                                        # 0 errors
 npm run lint                                             # 0 errors — kernel→lib import type 허용
