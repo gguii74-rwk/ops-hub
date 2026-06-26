@@ -10,6 +10,9 @@ vi.mock("@/modules/leave/repositories/mail", () => ({
   listDueDeliveryIds: vi.fn(), claimDelivery: vi.fn(), finalizeDelivery: vi.fn(), deadLetterStaleSending: vi.fn(),
 }));
 vi.mock("@/lib/integrations/mail", () => ({ sendMail: vi.fn() }));
+vi.mock("@/kernel/settings/reader", () => ({
+  getSmtpConfig: vi.fn(async () => ({ host: "mail.x", port: 587, secure: false, user: "", from: "noreply@x.com" })),
+}));
 
 import { drainLeaveMailOutbox, getLeaveAdminRecipients } from "@/modules/leave/services/mail";
 import * as repo from "@/modules/leave/repositories/mail";
@@ -34,6 +37,10 @@ describe("drainLeaveMailOutbox", () => {
     r.fin.mockResolvedValue(true);
     expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 1, failed: 0, skipped: 0 });
     expect(r.fin).toHaveBeenCalledWith("m1", "w1", { status: "SENT", providerMessageId: "pm" });
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ to: ["a@x.com"] }),
+      expect.objectContaining({ host: "mail.x", from: "noreply@x.com" }),
+    );
   });
   it("claim 실패(선점)면 skipped++", async () => {
     r.list.mockResolvedValue(["m1"]);
@@ -99,7 +106,7 @@ describe("drainLeaveMailOutbox", () => {
     send.mockResolvedValue({ providerMessageId: "pm" });
     r.fin.mockResolvedValue(true);
     expect(await drainLeaveMailOutbox("w1")).toEqual({ sent: 1, failed: 0, skipped: 0 });
-    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: ["now@x.com"] })); // 스냅샷 stale@x.com 아님 — 현재 권한자
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: ["now@x.com"] }), expect.anything()); // 스냅샷 stale@x.com 아님 — 현재 권한자
   });
   it("REQUESTED인데 발송 시점 승인권한자 0명(전원 회수)이면 미발송 + FAILED", async () => {
     r.list.mockResolvedValue(["m1"]);

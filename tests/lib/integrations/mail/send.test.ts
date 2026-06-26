@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { sendMail, setMailTransportForTests, type MailTransport } from "@/lib/integrations/mail";
+import { sendMail, setMailTransportForTests, type MailTransport, type MailTransportConfig } from "@/lib/integrations/mail";
 
 let sent: any[] = [];
 const fake: MailTransport = {
@@ -52,6 +52,34 @@ describe("sendMail", () => {
       await expect(sendMail({ to: ["a@x.com"], subject: "s", html: "<p>h</p>" })).rejects.toThrow(/SMTP_HOST/);
     } finally {
       if (prev !== undefined) process.env.SMTP_HOST = prev;
+    }
+  });
+});
+
+describe("sendMail — config 주입(MailTransportConfig)", () => {
+  // 주입 config의 host/port/secure/user/from을 검증하려면 transport 빌드 인자를 봐야 하므로
+  // nodemailer.createTransport를 가로채는 대신, fake transport에 from만 검증하고
+  // transport 빌드는 별도 it에서 env 미주입 경로로 확인한다.
+  it("config.from을 발신 주소로 사용(env SMTP_FROM 무시)", async () => {
+    const prevFrom = process.env.SMTP_FROM;
+    process.env.SMTP_FROM = "envfrom@x.com";
+    try {
+      const cfg: MailTransportConfig = { host: "mail.x", port: 2525, secure: false, user: "u", from: "dbfrom@x.com" };
+      await sendMail({ to: ["a@x.com"], subject: "s", html: "<p>h</p>" }, cfg);
+      expect(sent[0].from).toBe("dbfrom@x.com");
+    } finally {
+      if (prevFrom === undefined) delete process.env.SMTP_FROM; else process.env.SMTP_FROM = prevFrom;
+    }
+  });
+
+  it("config 미주입 시 from은 기존 env 폴백 체인 보존(SMTP_FROM)", async () => {
+    const prevFrom = process.env.SMTP_FROM;
+    process.env.SMTP_FROM = "envfrom@x.com";
+    try {
+      await sendMail({ to: ["a@x.com"], subject: "s", html: "<p>h</p>" });
+      expect(sent[0].from).toBe("envfrom@x.com");
+    } finally {
+      if (prevFrom === undefined) delete process.env.SMTP_FROM; else process.env.SMTP_FROM = prevFrom;
     }
   });
 });

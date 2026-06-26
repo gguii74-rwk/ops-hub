@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import type { MailDelivery, WorkflowKind } from "@prisma/client";
 import { ForbiddenError } from "@/kernel/access";
 import { sendMail, type MailMessage } from "@/lib/integrations/mail";
+import { getSmtpConfig } from "@/kernel/settings/reader";
 import { ConflictError, type MailActionCtx } from "../types";
 import { KIND_RESOURCE } from "../policy";
 import { claimFailedForRetry, createSendingDelivery, finalizeDelivery, findDeliveryForAction } from "../repositories/mail";
@@ -34,9 +35,10 @@ export async function deliver(args: {
   // SMTP 실패만 FAILED로 확정한다. sendMail 성공 후 SENT 확정(finalizeDelivery)이 실패하면
   // 메일은 이미 나갔으므로 FAILED로 둔갑시키지 않는다(재시도 시 중복 발송). 에러를 전파해
   // 행을 SENDING으로 남기고, admin resolve로 수동 확정하게 한다(§6.2).
+  const smtpConfig = await getSmtpConfig(); // 멱등 가드 통과 후 해석(ConflictError 시 미발생)
   let providerMessageId: string | null;
   try {
-    ({ providerMessageId } = await sendMail(args.msg));
+    ({ providerMessageId } = await sendMail(args.msg, smtpConfig));
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return finalizeDelivery(record.id, { status: "FAILED", sentAt: null, errorMessage: message });
@@ -69,6 +71,7 @@ export async function retryDelivery(
 
   // deliver와 동일: SMTP 실패만 FAILED로 되돌린다. 재발송 SMTP 수락 후 SENT 확정이 실패하면
   // 에러를 전파해 SENDING으로 남긴다(admin resolve 대상) — FAILED로 변환하면 또 재시도되어 중복 발송된다.
+  const smtpConfig = await getSmtpConfig();
   let providerMessageId: string | null;
   try {
     ({ providerMessageId } = await sendMail({
@@ -76,7 +79,7 @@ export async function retryDelivery(
       subject: d.subject,
       html: d.bodyHtml ?? "",
       attachments: d.attachmentPaths.map((p) => ({ filename: basename(p), path: p })),
-    }));
+    }, smtpConfig));
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return finalizeDelivery(d.id, { status: "FAILED", sentAt: null, errorMessage: message });

@@ -4,6 +4,7 @@ import type { LeaveRequestStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getEffectiveScope } from "@/kernel/access";
 import { sendMail } from "@/lib/integrations/mail";
+import { getSmtpConfig } from "@/kernel/settings/reader";
 import { listDueDeliveryIds, claimDelivery, finalizeDelivery, deadLetterStaleSending } from "../repositories/mail";
 
 const DRAIN_BATCH = 50;
@@ -47,6 +48,7 @@ export async function getLeaveAdminRecipients(applicantTeamId: string | null): P
 export async function drainLeaveMailOutbox(workerId: string = randomUUID()): Promise<{ sent: number; failed: number; skipped: number }> {
   await deadLetterStaleSending(new Date()); // 크래시로 표류한 stale SENDING(attempts>=N)을 FAILED로 종결(finding)
   const ids = await listDueDeliveryIds(new Date(), DRAIN_BATCH);
+  const smtpConfig = await getSmtpConfig(); // 배치당 1회 해석(throw 없음, D10) — DB fromAddress 반영(host·port 등은 env)
   let sent = 0, failed = 0, skipped = 0;
   for (const id of ids) {
     const claimed = await claimDelivery(id, workerId, new Date());
@@ -86,7 +88,7 @@ export async function drainLeaveMailOutbox(workerId: string = randomUUID()): Pro
     let providerMessageId: string | null = null;
     try {
       // sendMail엔 idempotency 키 인자가 없다 — stale reclaim/크래시 후 드문 중복 발송 허용(at-least-once). providerMessageId는 감사용.
-      ({ providerMessageId } = await sendMail({ to: recipients, subject: claimed.subject, html: claimed.bodyHtml }));
+      ({ providerMessageId } = await sendMail({ to: recipients, subject: claimed.subject, html: claimed.bodyHtml }, smtpConfig));
     } catch (e) {
       await finalizeDelivery(id, workerId, { status: "FAILED", errorMessage: e instanceof Error ? e.message : String(e) });
       failed++; continue;

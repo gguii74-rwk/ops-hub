@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -77,9 +78,78 @@ describe("SettingEditor — boolean 분기", () => {
     expect(sw.disabled).toBe(false); // saving 해제(재활성화)
   });
 
-  it("비boolean initialValue → 기존 textarea 경로 유지(Switch 없음)", () => {
-    render(<SettingEditor settingKey="integrations.smtp.host" initialValue={"smtp.example.com"} updatedAt={null} />);
-    expect(document.querySelector("textarea")).toBeTruthy();
+});
+
+describe("SettingEditor — 타입 분기(D8)", () => {
+  it("string initialValue → text input(textarea/switch 아님)", () => {
+    render(<SettingEditor settingKey="integrations.smtp.fromAddress" initialValue={"ops@x.com"} updatedAt={null} />);
+    expect(document.querySelector("input")).toBeTruthy();
+    expect(document.querySelector("textarea")).toBeNull();
     expect(screen.queryByRole("switch")).toBeNull();
+  });
+
+  it("number initialValue → number input(spinbutton, 초기값 표시)", () => {
+    render(<SettingEditor settingKey="demo.number.value" initialValue={587} updatedAt={null} />);
+    const spin = screen.getByRole("spinbutton") as HTMLInputElement;
+    expect(spin.value).toBe("587");
+  });
+
+  it("object initialValue → 기존 JSON textarea 폴백", () => {
+    render(<SettingEditor settingKey="workflows.billing.config" initialValue={{ year: 2026 }} updatedAt={null} />);
+    expect(document.querySelector("textarea")).toBeTruthy();
+  });
+
+  it("string 편집기 저장 → PUT(value:string·token), ok 시 토큰 갱신", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ updatedAt: "2026-06-26T00:00:00.000Z" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SettingEditor settingKey="integrations.smtp.fromAddress" initialValue={"ops@x.com"} updatedAt="2026-06-25T00:00:00.000Z" />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "new@x.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/admin/settings/integrations.smtp.fromAddress");
+    const body = JSON.parse(init.body as string);
+    expect(body.value).toBe("new@x.com");
+    expect(body.expectedUpdatedAt).toBe("2026-06-25T00:00:00.000Z");
+  });
+
+  it("number 편집기 저장 → PUT(value:number, 문자열 아님)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ updatedAt: "2026-06-26T00:00:00.000Z" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SettingEditor settingKey="demo.number.value" initialValue={587} updatedAt={null} />);
+    fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "465" } });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).value).toBe(465);
+  });
+
+  it("list 편집기: 행 추가 후 저장 → PUT(value: 전체 배열)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ updatedAt: "x" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SettingEditor settingKey="integrations.google.calendarIds" initialValue={["cal-1"]} updatedAt={null} />);
+    fireEvent.change(screen.getByPlaceholderText("추가할 항목 입력"), { target: { value: "cal-2" } });
+    fireEvent.click(screen.getByRole("button", { name: "추가" }));
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).value).toEqual(["cal-1", "cal-2"]);
+  });
+
+  it("list 편집기: 삭제(✕) 후 저장 → 해당 항목 빠진 배열", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ updatedAt: "x" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SettingEditor settingKey="integrations.google.calendarIds" initialValue={["cal-1", "cal-2"]} updatedAt={null} />);
+    fireEvent.click(screen.getByRole("button", { name: "cal-1 삭제" }));
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).value).toEqual(["cal-2"]);
+  });
+
+  it("list 편집기(이메일 키): 잘못된 형식 추가 거부(toast.error, 미추가)", () => {
+    vi.mocked(toast.error).mockClear();
+    render(<SettingEditor settingKey="workflows.weeklyReport.defaultRecipients" initialValue={[]} updatedAt={null} />);
+    fireEvent.change(screen.getByPlaceholderText("추가할 항목 입력"), { target: { value: "not-an-email" } });
+    fireEvent.click(screen.getByRole("button", { name: "추가" }));
+    expect(toast.error).toHaveBeenCalled();
+    expect(screen.queryByText("not-an-email")).toBeNull();
   });
 });

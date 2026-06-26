@@ -74,25 +74,25 @@ describe("getSetting", () => {
     await expect(getSetting("nope.nope.nope")).rejects.toBeInstanceOf(UnknownSettingError);
   });
   it("row 없음 → default", async () => {
-    expect(await getSetting("integrations.smtp.port")).toBe(587);
+    expect(await getSetting("integrations.smtp.fromAddress")).toBe("");
   });
   it("유효 row → 값", async () => {
-    store.set("integrations.smtp.host", { value: "mail.x", updatedAt: new Date() });
-    expect(await getSetting("integrations.smtp.host")).toBe("mail.x");
+    store.set("integrations.smtp.fromAddress", { value: "ops@x.com", updatedAt: new Date() });
+    expect(await getSetting("integrations.smtp.fromAddress")).toBe("ops@x.com");
   });
   it("invalid row + fallbackSafe=true → default(no throw)", async () => {
     store.set("workflows.weeklyReport.defaultRecipients", { value: "not-array", updatedAt: new Date() });
     expect(await getSetting("workflows.weeklyReport.defaultRecipients")).toEqual([]);
   });
   it("invalid row + fallbackSafe=false → SettingInvalidError", async () => {
-    store.set("integrations.smtp.host", { value: 123, updatedAt: new Date() });
-    await expect(getSetting("integrations.smtp.host")).rejects.toBeInstanceOf(SettingInvalidError);
+    store.set("integrations.smtp.fromAddress", { value: 123, updatedAt: new Date() });
+    await expect(getSetting("integrations.smtp.fromAddress")).rejects.toBeInstanceOf(SettingInvalidError);
   });
 });
 
 describe("setSetting", () => {
   it("actorId 누락 → SettingActorRequiredError", async () => {
-    await expect(setSetting("integrations.smtp.host", "x", { actorId: "", expectedUpdatedAt: null })).rejects.toBeInstanceOf(SettingActorRequiredError);
+    await expect(setSetting("integrations.smtp.fromAddress", "x", { actorId: "", expectedUpdatedAt: null })).rejects.toBeInstanceOf(SettingActorRequiredError);
   });
   it("미등록 key → UnknownSettingError", async () => {
     await expect(setSetting("nope.nope.nope", "x", { actorId: "u1", expectedUpdatedAt: null })).rejects.toBeInstanceOf(UnknownSettingError);
@@ -108,9 +108,9 @@ describe("setSetting", () => {
   });
   it("성공 → writeWithAudit 호출(검증된 값·actorId·expectedUpdatedAt·redact 전달)", async () => {
     const at = new Date(2026, 0, 1);
-    await setSetting("integrations.smtp.port", "590", { actorId: "u1", expectedUpdatedAt: at });
+    await setSetting("integrations.smtp.fromAddress", "ops@x.com", { actorId: "u1", expectedUpdatedAt: at });
     expect(writeCalls).toHaveLength(1);
-    expect(writeCalls[0]).toMatchObject({ key: "integrations.smtp.port", value: 590, actorId: "u1", expectedUpdatedAt: at });
+    expect(writeCalls[0]).toMatchObject({ key: "integrations.smtp.fromAddress", value: "ops@x.com", actorId: "u1", expectedUpdatedAt: at });
     expect(typeof writeCalls[0].redact).toBe("function");
   });
 });
@@ -144,23 +144,35 @@ describe("listSettings", () => {
     setAllowed(new Set(["integrations.smtp:configure"]));
     const items = await listSettings("u1");
     const keys = items.map((i) => i.key);
-    expect(keys).toContain("integrations.smtp.host");
+    expect(keys).toContain("integrations.smtp.fromAddress");
     expect(keys).not.toContain("workflows.weeklyReport.defaultRecipients");
   });
   it("systemSetting status: 유효→OK(value), invalid→INVALID(default)", async () => {
     setAllowed(new Set(["integrations.smtp:configure"]));
-    store.set("integrations.smtp.host", { value: 123, updatedAt: new Date() }); // invalid
+    store.set("integrations.smtp.fromAddress", { value: 123, updatedAt: new Date() }); // invalid
     const items = await listSettings("u1");
-    const host = items.find((i) => i.key === "integrations.smtp.host")!;
-    expect(host.status).toBe("INVALID");
-    expect(host.value).toBe(""); // default
+    const from = items.find((i) => i.key === "integrations.smtp.fromAddress")!;
+    expect(from.status).toBe("INVALID");
+    expect(from.value).toBe(""); // default
   });
-  it("envSecret status=coarse, value 없음", async () => {
+  it("envSecret status=coarse, value 없음 (secret.smtp, SMTP_USER 설정 시 secretHealth 따름)", async () => {
     setAllowed(new Set(["integrations.smtp:view"]));
-    const items = await listSettings("u1");
-    const smtp = items.find((i) => i.key === "secret.smtp")!;
-    expect(smtp.status).toBe("configured");
-    expect("value" in smtp).toBe(false);
+    const prev = process.env.SMTP_USER; process.env.SMTP_USER = "bob";
+    try {
+      const items = await listSettings("u1");
+      const smtp = items.find((i) => i.key === "secret.smtp")!;
+      expect(smtp.status).toBe("configured");
+      expect("value" in smtp).toBe(false);
+    } finally { if (prev === undefined) delete process.env.SMTP_USER; else process.env.SMTP_USER = prev; }
+  });
+
+  it("secret.smtp 행 상태(F12): SMTP_USER 미설정 → not_required(무인증 릴레이, 그룹 헤더와 일관)", async () => {
+    setAllowed(new Set(["integrations.smtp:view"]));
+    const prev = process.env.SMTP_USER; delete process.env.SMTP_USER;
+    try {
+      const items = await listSettings("u1");
+      expect(items.find((i) => i.key === "secret.smtp")!.status).toBe("not_required");
+    } finally { if (prev !== undefined) process.env.SMTP_USER = prev; }
   });
   it("relational status=LINK + manageHref", async () => {
     setAllowed(new Set(["workflows.billing:configure"]));

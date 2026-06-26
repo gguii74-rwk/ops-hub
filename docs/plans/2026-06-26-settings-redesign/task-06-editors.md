@@ -1,3 +1,113 @@
+# Task 06 — 설정 편집기: String / Number / List 분기(D8)
+
+**Purpose**: `SettingEditor`가 `initialValue` 타입으로 편집기를 선택하도록 한다 — `number`→숫자 입력, `string`→텍스트 입력, `string[]`→리스트 편집기(행 추가/삭제·Enter·이메일 검증), `boolean`→기존 스위치, 객체→기존 JSON textarea 폴백. 모두 기존 `putSetting` 판별 유니온·토큰 동시성 패턴을 재사용한다.
+
+## Files
+
+- Modify `src/app/(app)/admin/settings/settings-editor.tsx`
+- Modify `tests/app/admin/settings-editor.test.tsx`
+
+## Prep
+
+- spec §5.4. `Button`(`@/components/ui/button`)은 `default|outline|secondary|ghost|destructive|link` variant 보유, native button props(aria-label 등) 지원. `Input`(`@/components/ui/input`)은 native input props.
+- Deps: 없음(순수 UI). 단 `integrations.smtp.host`를 string으로 렌더하던 기존 테스트는 이 task가 갱신(host는 task-01에서 카탈로그 제거됨).
+- **NumberSettingEditor 비고(P3/A2):** port가 env 전용이 되어 현재 numeric systemSetting은 없다. `NumberSettingEditor`와 `typeof === "number"` 분기는 **D8의 타입-완전 dispatch**(boolean/number/string/array/object 전체를 다룸)의 일부로 **유지**한다 — 한 arm만 빼면 향후 numeric 설정이 JSON textarea로 새므로. 테스트는 합성 키(`demo.number.value`)로 컴포넌트 분기만 검증한다(`SettingEditor`는 값 타입으로 분기, 카탈로그 미참조).
+
+## TDD steps
+
+### Step 1 — 타입 분기 테스트 갱신/추가(FAIL 유도)
+
+`tests/app/admin/settings-editor.test.tsx`:
+
+(a) 상단 import에 `toast` 추가(이메일 거부 검증용):
+```ts
+import { toast } from "sonner";
+```
+
+(b) 기존 "비boolean initialValue → textarea 경로 유지" 테스트(파일 마지막 it)를 **삭제**하고, 아래 describe 블록을 파일 끝에 추가:
+```tsx
+describe("SettingEditor — 타입 분기(D8)", () => {
+  it("string initialValue → text input(textarea/switch 아님)", () => {
+    render(<SettingEditor settingKey="integrations.smtp.fromAddress" initialValue={"ops@x.com"} updatedAt={null} />);
+    expect(document.querySelector("input")).toBeTruthy();
+    expect(document.querySelector("textarea")).toBeNull();
+    expect(screen.queryByRole("switch")).toBeNull();
+  });
+
+  it("number initialValue → number input(spinbutton, 초기값 표시)", () => {
+    render(<SettingEditor settingKey="demo.number.value" initialValue={587} updatedAt={null} />);
+    const spin = screen.getByRole("spinbutton") as HTMLInputElement;
+    expect(spin.value).toBe("587");
+  });
+
+  it("object initialValue → 기존 JSON textarea 폴백", () => {
+    render(<SettingEditor settingKey="workflows.billing.config" initialValue={{ year: 2026 }} updatedAt={null} />);
+    expect(document.querySelector("textarea")).toBeTruthy();
+  });
+
+  it("string 편집기 저장 → PUT(value:string·token), ok 시 토큰 갱신", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ updatedAt: "2026-06-26T00:00:00.000Z" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SettingEditor settingKey="integrations.smtp.fromAddress" initialValue={"ops@x.com"} updatedAt="2026-06-25T00:00:00.000Z" />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "new@x.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/admin/settings/integrations.smtp.fromAddress");
+    const body = JSON.parse(init.body as string);
+    expect(body.value).toBe("new@x.com");
+    expect(body.expectedUpdatedAt).toBe("2026-06-25T00:00:00.000Z");
+  });
+
+  it("number 편집기 저장 → PUT(value:number, 문자열 아님)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ updatedAt: "2026-06-26T00:00:00.000Z" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SettingEditor settingKey="demo.number.value" initialValue={587} updatedAt={null} />);
+    fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "465" } });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).value).toBe(465);
+  });
+
+  it("list 편집기: 행 추가 후 저장 → PUT(value: 전체 배열)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ updatedAt: "x" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SettingEditor settingKey="integrations.google.calendarIds" initialValue={["cal-1"]} updatedAt={null} />);
+    fireEvent.change(screen.getByPlaceholderText("추가할 항목 입력"), { target: { value: "cal-2" } });
+    fireEvent.click(screen.getByRole("button", { name: "추가" }));
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).value).toEqual(["cal-1", "cal-2"]);
+  });
+
+  it("list 편집기: 삭제(✕) 후 저장 → 해당 항목 빠진 배열", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ updatedAt: "x" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SettingEditor settingKey="integrations.google.calendarIds" initialValue={["cal-1", "cal-2"]} updatedAt={null} />);
+    fireEvent.click(screen.getByRole("button", { name: "cal-1 삭제" }));
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).value).toEqual(["cal-2"]);
+  });
+
+  it("list 편집기(이메일 키): 잘못된 형식 추가 거부(toast.error, 미추가)", () => {
+    vi.mocked(toast.error).mockClear();
+    render(<SettingEditor settingKey="workflows.weeklyReport.defaultRecipients" initialValue={[]} updatedAt={null} />);
+    fireEvent.change(screen.getByPlaceholderText("추가할 항목 입력"), { target: { value: "not-an-email" } });
+    fireEvent.click(screen.getByRole("button", { name: "추가" }));
+    expect(toast.error).toHaveBeenCalled();
+    expect(screen.queryByText("not-an-email")).toBeNull();
+  });
+});
+```
+
+실행: `npm test -- tests/app/admin/settings-editor.test.tsx` → **FAIL**(신규 편집기 미구현; string이 아직 textarea로 감).
+
+### Step 2 — settings-editor.tsx 전체 교체
+
+`src/app/(app)/admin/settings/settings-editor.tsx`를 아래 전체 내용으로 교체한다. **`putSetting`·`BooleanSettingEditor`·`JsonSettingEditor`는 기존 그대로**(회귀 없음), `SettingEditor` 분기 확장 + `StringSettingEditor`/`NumberSettingEditor`/`ListSettingEditor` 신설:
+
+```tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -340,3 +450,21 @@ function JsonSettingEditor({
     </div>
   );
 }
+```
+
+실행: `npm test -- tests/app/admin/settings-editor.test.tsx` → **PASS**(boolean 기존 5 + 타입 분기 8).
+
+## Acceptance Criteria
+
+```bash
+npm test -- tests/app/admin/settings-editor.test.tsx   # PASS (boolean 회귀 + 신규 분기)
+npm run typecheck                                       # 0 errors
+npm run lint                                            # 0 errors
+```
+
+## Cautions
+
+- **Don't `Array.isArray` 분기를 `typeof === "object"` 뒤에 두지 마라.** Reason: 배열도 `typeof === "object"`라 순서가 틀리면 list가 JSON textarea로 샌다. boolean→number→Array→string→object(JSON) 순.
+- **Don't number 편집기에서 value를 문자열로 PUT하지 마라.** Reason: 서버 zod는 `z.coerce.number()`라 통과하긴 하나, 클라가 의미상 number를 보내야 일관. `Number(text)` 변환 후 전송.
+- **Don't list/string/number 편집기에서 rejected/refetch 시 `router.refresh()`를 호출하지 마라.** Reason: 사용자가 입력 중인 값을 날린다. boolean만 낙관적 토글이라 refresh로 권위 재동기화. 입력형 편집기는 JSON 경로와 동일하게 입력 보존.
+- **Don't `env` secret 항목에 편집기를 붙이지 마라.** Reason: secret은 상태 배지 + "env" 태그만(편집 불가). 페이지(task-07)가 envSecret/relational은 편집기 없이 렌더한다 — SettingEditor는 systemSetting에만 호출된다.
