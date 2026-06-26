@@ -2,7 +2,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { normalizeToGridWindow, toKstDateKey } from "@/modules/calendar/time";
 import { CalendarMonth } from "@/modules/calendar/ui/calendar-month";
@@ -63,6 +62,16 @@ export function LeaveCalendar({ canCreate, canManage }: { canCreate: boolean; ca
         </span>
       </div>
 
+      {/* 상태 키(정적 — 종류는 아래 범례 토글, 상태는 오버레이로 표현; D5/D12) */}
+      <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1">
+          <span className="inline-block h-3 w-5 rounded border border-dashed border-yellow-500 bg-amber-100" /> 대기중
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="line-through">반려/취소</span> (취소선)
+        </span>
+      </div>
+
       <CalendarMonth
         anchor={anchor}
         events={events}
@@ -116,16 +125,6 @@ export function LeaveCalendar({ canCreate, canManage }: { canCreate: boolean; ca
           </div>
         )}
       />
-
-      {/* 상태 오버레이 키(정적 — 종류는 위 범례 토글, 상태는 오버레이로 표현; D5/D12) */}
-      <Card className="flex flex-wrap items-center gap-4 p-3 text-xs text-muted-foreground">
-        <span className="inline-flex items-center gap-1">
-          <span className="inline-block h-3 w-5 rounded border border-dashed border-current" /> 대기(점선)
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="line-through">반려/취소</span> (취소선)
-        </span>
-      </Card>
 
       {creating !== null && (
         <CreateLeaveModal defaultDate={creating || undefined} onClose={() => setCreating(null)} />

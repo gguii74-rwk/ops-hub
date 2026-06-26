@@ -10,10 +10,10 @@ describe("kindClass", () => {
     expect(soft).not.toBe(bold);
   });
 
-  it("연차 전용 leaveType도 색 매핑(HALF=teal, QUARTER=cyan, ANNUAL=emerald)", () => {
-    expect(kindClass("HALF", "soft")).toContain("teal");
-    expect(kindClass("QUARTER", "soft")).toContain("cyan");
-    expect(kindClass("ANNUAL", "soft")).toContain("emerald");
+  it("연차 전용 leaveType도 색 매핑(ANNUAL=blue, HALF=emerald, QUARTER=violet)", () => {
+    expect(kindClass("ANNUAL", "soft")).toContain("blue");
+    expect(kindClass("HALF", "soft")).toContain("emerald");
+    expect(kindClass("QUARTER", "soft")).toContain("violet");
   });
 
   it("미등록 kind는 중립 폴백(빈 문자열 아님)", () => {
@@ -24,8 +24,11 @@ describe("kindClass", () => {
 });
 
 describe("statusOverlay (색과 직교, 형태만)", () => {
-  it("PENDING = 점선 테두리", () => {
-    expect(statusOverlay("PENDING")).toContain("border-dashed");
+  it("PENDING = 점선 테두리 + 대기색(주황 배경·진한 노랑 점선)", () => {
+    const cls = statusOverlay("PENDING");
+    expect(cls).toContain("border-dashed");
+    expect(cls).toContain("bg-amber-100"); // 주황 배경
+    expect(cls).toContain("border-yellow-500"); // 진한 노랑 점선
   });
   it("REJECTED/CANCELLED = 취소선 + 흐림", () => {
     expect(statusOverlay("REJECTED")).toContain("line-through");

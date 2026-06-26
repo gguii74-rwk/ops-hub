@@ -38,17 +38,18 @@ const KIND_STYLES: Record<string, KindStyle> = {
     bold: "bg-cyan-500 text-white ring-1 ring-cyan-600/40 dark:bg-cyan-500/80 dark:text-cyan-50 dark:ring-cyan-400/40",
   },
   // 연차 전용(leaveType을 kind로) — soft만 사용(intensity="soft"), bold는 형 통일용.
+  // 연차=파랑 / 반차=초록 / 반반차=보라.
   ANNUAL: {
+    soft: "bg-blue-100 text-blue-950 ring-1 ring-blue-300/70 dark:bg-blue-500/20 dark:text-blue-100 dark:ring-blue-400/30",
+    bold: "bg-blue-500 text-white ring-1 ring-blue-600/40 dark:bg-blue-500/80 dark:text-blue-50",
+  },
+  HALF: {
     soft: "bg-emerald-100 text-emerald-950 ring-1 ring-emerald-300/70 dark:bg-emerald-500/20 dark:text-emerald-100 dark:ring-emerald-400/30",
     bold: "bg-emerald-500 text-white ring-1 ring-emerald-600/40 dark:bg-emerald-500/80 dark:text-emerald-50",
   },
-  HALF: {
-    soft: "bg-teal-100 text-teal-950 ring-1 ring-teal-300/70 dark:bg-teal-500/20 dark:text-teal-100 dark:ring-teal-400/30",
-    bold: "bg-teal-500 text-white ring-1 ring-teal-600/40 dark:bg-teal-500/80 dark:text-teal-50",
-  },
   QUARTER: {
-    soft: "bg-cyan-100 text-cyan-950 ring-1 ring-cyan-300/70 dark:bg-cyan-500/20 dark:text-cyan-100 dark:ring-cyan-400/30",
-    bold: "bg-cyan-500 text-white ring-1 ring-cyan-600/40 dark:bg-cyan-500/80 dark:text-cyan-50",
+    soft: "bg-violet-100 text-violet-950 ring-1 ring-violet-300/70 dark:bg-violet-500/20 dark:text-violet-100 dark:ring-violet-400/30",
+    bold: "bg-violet-500 text-white ring-1 ring-violet-600/40 dark:bg-violet-500/80 dark:text-violet-50",
   },
 };
 
@@ -61,9 +62,11 @@ export function kindClass(kind: string, intensity: Intensity): string {
   return (KIND_STYLES[kind] ?? NEUTRAL)[intensity];
 }
 
-// status → 오버레이(형태). 색과 직교(D5). PENDING=점선, REJECTED/CANCELLED=취소선+흐림.
+// status → 오버레이. REJECTED/CANCELLED는 형태만(취소선+흐림),
+// PENDING은 점선(형태) + 대기색(주황 배경·진한 노랑 점선)으로 종류색을 덮는다.
 export function statusOverlay(status?: EventStatus | null): string {
-  if (status === "PENDING") return "border border-dashed border-current";
+  if (status === "PENDING")
+    return "border border-dashed border-yellow-500 ring-0 bg-amber-100 text-amber-950 dark:border-yellow-400 dark:bg-amber-500/25 dark:text-amber-100";
   if (status === "REJECTED" || status === "CANCELLED") return "line-through opacity-60";
   return "";
 }
