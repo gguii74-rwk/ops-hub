@@ -1,5 +1,6 @@
 # Memory Index
 
+- [Backend minimal-data principle](backend-minimal-data-principle.md) — ops-hub 전 화면 원칙: 백엔드는 최소 정보만 내려보내고 필터링은 서버에서; 표시 불필요 속성(타인 jobFunction 등) 클라 노출 금지(연차 직무필터에서 확정)
 - [Palette direction](ops-hub-palette-direction.md) — ops-hub 팔레트는 프로페셔널 블루·슬레이트(brand #2563EB)로 확정(PR #11), 이전 비비드 파스텔 지향 폐기; Playfair Display 헤딩 유지
 - [Session-per-merge workflow](session-per-merge-workflow.md) — 한 단계 머지 후 새 세션에서 다음 단계 시작; 핸드오프/원장이 유일한 인계 수단
 - [ops-hub cutover target](ops-hub-cutover-target.md) — 완성 시 annual-leave가 쓰는 172.21.10.27:3000(방화벽 개방·외주 재택 유일 경로)으로 이전 예정
