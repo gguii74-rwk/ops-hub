@@ -132,3 +132,28 @@ configured = cfg.host.length > 0 AND (cfg.user.length === 0 || SMTP_PASSWORD 존
 - 기존 스위트 회귀 없음(현재 1380 통과 기준 — host 제거·편집기 분기로 수정되는 기존 테스트는 각 task가 갱신).
 - §7 회귀 테스트(F2 무회귀·F7 비-587 env·F9 auth 분기·F12 행/헤더 일관성) 포함.
 - smoke(배포 후): 인증 → `/admin/settings` 영역 카드·상태 배지 렌더, SMTP port/from 저장 → 메일 1건 발송, advisory 라우트 회귀(stale-build P2010 주의).
+
+### 배포 cutover preflight (P2 — 필수, 코드/마이그레이션 변경 아님)
+
+PR-A는 그동안 **死설정**이던 `integrations.smtp.port`·`integrations.smtp.fromAddress` DB 행을 **전송 입력으로 살린다**(task-03/04). spec §1 전제상 현재 운영 DB의 이 행들은 비어있다(빈 행 → `getSmtpConfig`가 env로 폴백 → 무해). 그러나 과거 死 UI로 **비어있지 않은 stale 값**이 저장됐을 수 있고, 그러면 배포 즉시 known-good env 전송 설정을 덮어 **메일 장애/잘못된 발신자**가 날 수 있다.
+
+→ **배포 전(restart 전)에 preflight로 기존 행을 확인**한다(`psql "$DATABASE_URL"`은 `?schema=public` 제거 후):
+```sql
+SELECT key, value FROM "SystemSetting"
+WHERE key IN ('integrations.smtp.port', 'integrations.smtp.fromAddress');
+```
+- 행이 없거나 빈 값(`""`)이면 → 안전(env 폴백). 그대로 배포.
+- **비어있지 않은 행이 있으면** → 그 값이 의도한 전송 설정(현 env `SMTP_PORT`/`SMTP_FROM`과 일치)인지 확인하거나, 아니면 비우고 배포한다. stale 값이 env를 덮지 않도록.
+- 이는 **마이그레이션/seed 변경이 아니라 운영 점검 단계**다(D9 — 무마이그레이션 유지). PR-A 자체는 표준 restart.
+
+## 적대검증 판정(plan 단계) — ledger
+
+plan review-loop 결과. blocking 미판정 0.
+
+| # | finding | sev | disposition | 근거 |
+| --- | --- | --- | --- | --- |
+| P1 | `getSmtpConfig`가 무효 DB `fromAddress`(비어있지 않은 비-이메일)를 검증 없이 전송 from에 사용 → 유효 env SMTP_FROM을 덮어 발송 깨질 수 있음 | high | **FIXED** | task-03 — 카탈로그 schema(email-or-empty)로 from 행 재검증, 무효면 env 폴백 + warn. §SC-2 "유효" 계약과 일치. 회귀 테스트 추가(무효행+유효 env→env). R2에서 소멸 확인. |
+| P2 | 死설정이던 port/fromAddress DB 행이 cutover 가드 없이 배포 시 권위화 → stale 값이 env 전송설정을 덮어 메일 장애 가능 | high | **FIXED** | 위 "배포 cutover preflight" — restart 전 기존 행 확인/정리(비어있지 않은 stale 차단). D9(무마이그레이션) 유지. migrate/backfill·pre-cutover flag는 D9 위반이라 기각. |
+| P3 | 편집 가능 port(DB)와 TLS모드 `secure`(env)가 분리 → port/TLS 불일치(예 465+secure=false) 시 상태는 "정상"이나 미연결 | medium | **ACCEPTED** | secure를 env 전용으로, DB편집면을 port·fromAddress로 한정한 것은 **F4·D2의 의도적 보안 결정**(민감 연결필드 env 유지). port/TLS 불일치는 admin 오설정이며 **F3이 이미 수용한 "배지≠발송보장, 정적 검증으로 도달성 확인 불가"의 부분집합** — 보완 = 후속 "연결 테스트" 액션(spec §10). port editor에 TLS=env 관리 안내(task-03 caution)로 신호 보강. |
+
+**추세(미판정 blocking score, high=3·medium=1)**: R1=3(P1) → R2=4(P2 3 + P3 1) → 판정 후 0. P1 FIXED 확정, P2 FIXED(plan 보강), P3 ACCEPTED.
