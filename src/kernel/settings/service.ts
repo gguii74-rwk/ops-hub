@@ -1,5 +1,6 @@
 import "server-only";
 import type { Prisma } from "@prisma/client";
+import type { MailTransportConfig } from "@/lib/integrations/mail";
 import { hasPermission, requirePermission } from "@/kernel/access";
 import { getSecretStatus } from "@/lib/env";
 import { CATALOG, getEntry } from "./catalog";
@@ -56,6 +57,41 @@ export async function getSetting(key: string): Promise<unknown> {
     return e.default;
   }
   throw new SettingInvalidError(key);
+}
+
+// --- SMTP 전송 config 해석기(D1·D2·D10, F2·P1) ---
+// host/user/secure/port는 env 전용(D2·F4·P3/A2 — host: 전역 env 비밀번호 유출 벡터 차단; port: TLS 모드 secure와
+// 결합돼 있어 함께 env 한 곳에서 관리, DB 편집 시 드리프트). from만 DB 편집(readRaw).
+// 절대 throw하지 않는다(D10·F2): DB 읽기/파싱 실패도 env 폴백 + console.warn만. 두 mail 호출자가 무조건 await하므로
+// 여기서 throw하면 env가 멀쩡해도 발송이 막힌다. 깨진 from 행은 listSettings 항목별 INVALID 배지로 별도 노출(신호 보존).
+export async function getSmtpConfig(): Promise<MailTransportConfig> {
+  const host = process.env.SMTP_HOST ?? "";
+  const user = process.env.SMTP_USER ?? "";
+  const secure = process.env.SMTP_SECURE === "true";
+
+  // port는 env 전용(P3/A2) — DB row 미읽음(있어도 orphan으로 무시).
+  // 빈 문자열/0/범위 밖/비정수는 587(P5: Number("")===0·Number(" ")===0이 finite라 NaN 가드를 통과해 port 0이 되는 함정 회피).
+  const portRaw = (process.env.SMTP_PORT ?? "").trim();
+  const portNum = Number(portRaw);
+  const port = portRaw !== "" && Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535 ? portNum : 587;
+
+  let from = process.env.SMTP_FROM || process.env.SMTP_USER || "noreply@uracle.co.kr";
+  try {
+    const row = await readRaw("integrations.smtp.fromAddress");
+    if (row && typeof row.value === "string" && row.value.length > 0) {
+      // 카탈로그 schema(email-or-empty)와 동일 규칙으로 검증(F7과 같은 정신, P1): 비어있지 않은 무효값
+      // (예: "not-an-email")은 env로 폴백한다 — 무효 행이 유효 env SMTP_FROM을 덮어 발송을 깨면 안 됨(D10).
+      // 깨진 행 자체는 listSettings의 항목별 INVALID 배지로 별도 노출(신호 보존).
+      const entry = getEntry("integrations.smtp.fromAddress");
+      const valid = entry?.kind === "systemSetting" && entry.schema.safeParse(row.value).success;
+      if (valid) from = row.value;
+      else console.warn("[settings] invalid integrations.smtp.fromAddress row; using env");
+    }
+  } catch (e) {
+    console.warn("[settings] failed reading integrations.smtp.fromAddress; using env", e);
+  }
+
+  return { host, port, secure, user, from };
 }
 
 // --- WRITE(fail-closed) ---
