@@ -1,16 +1,22 @@
 // @vitest-environment jsdom
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// react-query 모킹: useQuery(빈 이벤트) + RequestLeaveModal이 쓰는 useMutation/useQueryClient.
+// react-query 모킹: useQuery 데이터를 가변 queryData로(테스트가 holidays/unsyncedYears를 주입).
+const h = vi.hoisted(() => ({
+  queryData: { events: [] as unknown[], holidays: [] as unknown[], unsyncedYears: [] as number[] },
+}));
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({ data: [] }),
+  useQuery: () => ({ data: h.queryData }),
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
   useMutation: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
 }));
 
 import { LeaveCalendar } from "@/app/(app)/leave/_components/leave-calendar";
 
+beforeEach(() => {
+  h.queryData = { events: [], holidays: [], unsyncedYears: [] };
+});
 afterEach(() => {
   cleanup();
 });
@@ -55,5 +61,48 @@ describe("LeaveCalendar — 능력별 진입 분리(R1/R4)", () => {
     render(<LeaveCalendar canCreate canManage={false} />);
     fireEvent.click(screen.getAllByRole("button", { name: /추가/ })[0]);
     expect(within(screen.getByRole("dialog")).getByText("연차 신청")).toBeTruthy();
+  });
+});
+
+describe("LeaveCalendar — 직무 필터·범례·공휴일 안내(D2/D3/D4/D9)", () => {
+  it("직무 버튼 4개(전체/개발/민원/콘텐츠) + 기본 '전체' 선택", () => {
+    render(<LeaveCalendar canCreate canManage={false} />);
+    for (const label of ["전체", "개발", "민원", "콘텐츠"]) {
+      expect(screen.getByRole("button", { name: label })).toBeTruthy();
+    }
+    expect(screen.getByRole("button", { name: "전체" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "개발" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("직무 버튼 클릭 시 선택(aria-pressed) 전환", () => {
+    render(<LeaveCalendar canCreate canManage={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "개발" }));
+    expect(screen.getByRole("button", { name: "개발" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "전체" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("nav(이전/오늘/다음) 버튼 존재", () => {
+    render(<LeaveCalendar canCreate canManage={false} />);
+    for (const label of ["이전", "오늘", "다음"]) {
+      expect(screen.getByRole("button", { name: label })).toBeTruthy();
+    }
+  });
+
+  it("변형 A 정적 범례 칩(공휴일/연차/반차/반반차/대기중/반려·취소) 표시", () => {
+    render(<LeaveCalendar canCreate canManage={false} />);
+    for (const t of ["공휴일", "연차", "반차", "반반차", "대기중", "반려/취소"]) {
+      expect(screen.getByText(t)).toBeTruthy();
+    }
+  });
+
+  it("unsyncedYears 비어있지 않으면 인라인 안내 표시", () => {
+    h.queryData = { events: [], holidays: [], unsyncedYears: [2027] };
+    render(<LeaveCalendar canCreate canManage={false} />);
+    expect(screen.getByText(/2027년 공휴일 정보를 불러오지 못했습니다/)).toBeTruthy();
+  });
+
+  it("unsyncedYears 비었으면 안내 미표시", () => {
+    render(<LeaveCalendar canCreate canManage={false} />);
+    expect(screen.queryByText(/공휴일 정보를 불러오지 못했습니다/)).toBeNull();
   });
 });
