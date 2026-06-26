@@ -1,6 +1,6 @@
 # Task 04 — 메일 호출자 배선(leave · workflows)
 
-**Purpose**: 두 mail 호출자가 `getSmtpConfig()`로 해석한 config를 `sendMail`에 주입하도록 배선한다. 이로써 DB의 port/fromAddress가 실제 전송에 반영된다(D1). `getSmtpConfig`는 throw하지 않으므로(D10) 이 await가 유효 env 발송을 막지 않는다.
+**Purpose**: 두 mail 호출자가 `getSmtpConfig()`로 해석한 config를 `sendMail`에 주입하도록 배선한다. 이로써 DB의 `fromAddress`가 실제 전송에 반영된다(D1); host·user·secure·port는 env(D2·D11). `getSmtpConfig`는 throw하지 않으므로(D10) 이 await가 유효 env 발송을 막지 않는다.
 
 ## Files
 
@@ -54,7 +54,7 @@ import { getSmtpConfig } from "@/kernel/settings/reader";
 
 (b) `drainLeaveMailOutbox`에서 `const ids = await listDueDeliveryIds(new Date(), DRAIN_BATCH);` 바로 아래에 추가(배치당 1회 해석):
 ```ts
-  const smtpConfig = await getSmtpConfig(); // 배치당 1회 해석(throw 없음, D10) — DB port/from 반영
+  const smtpConfig = await getSmtpConfig(); // 배치당 1회 해석(throw 없음, D10) — DB fromAddress 반영(host·port 등은 env)
 ```
 
 (c) sendMail 호출(line 89)에 config 주입:

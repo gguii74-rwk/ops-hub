@@ -1,7 +1,7 @@
 # 설정 페이지 재구성 + 연동 설정 진실화 (PR-A) — 구현 계획
 
 - **Feature**: 설정 화면(`/admin/settings`) IA 재편 + SMTP 설정 DB 진실화 + 편집기 타입 분기.
-- **Goal**: 죽은 SMTP DB 설정을 실제 전송 경로에 배선하고(port/from), 상태 표시를 전송 동작과 일치시키며, 설정 화면을 영역(group)별 카드로 재편한다.
+- **Goal**: 죽은 SMTP DB 설정(fromAddress)을 실제 전송 경로에 배선하고, 상태 표시를 전송 동작과 일치시키며, 설정 화면을 영역(group)별 카드로 재편한다. (host·user·secure·port는 env 전용 — D2·D11.)
 - **Architecture**: 카탈로그에 표시 그룹 메타를 추가하고, 메일 전송 config 타입을 lib에 두어 kernel 해석기(`getSmtpConfig`)가 채택(경계 안전). 호출자(leave·workflows)가 해석한 config를 `sendMail`에 주입. 상태 점검은 전송 auth 분기와 동일 규칙. UI는 값 타입별 편집기로 분기.
 - **Tech Stack**: Next.js App Router, Prisma(PostgreSQL), zod, nodemailer, vitest, eslint-plugin-boundaries.
 - **Scope**: **PR-A 전용**. Google 전환(calendarIds→relational, seed cutover, 소스 CRUD)은 전부 **PR-B**(별도 plan·세션). 본 PR은 `integrations.google.calendarIds`를 `systemSetting`(string[])로 그대로 두고 리스트 편집기 UI만 입힌다.
@@ -154,5 +154,7 @@ plan review-loop 결과. blocking 미판정 0.
 | P1 | `getSmtpConfig`가 무효 DB `fromAddress`(비어있지 않은 비-이메일)를 검증 없이 전송 from에 사용 → 유효 env SMTP_FROM을 덮어 발송 깨질 수 있음 | high | **FIXED** | task-03 — 카탈로그 schema(email-or-empty)로 from 행 재검증, 무효면 env 폴백 + warn. §SC-2 "유효" 계약과 일치. 회귀 테스트 추가(무효행+유효 env→env). R2에서 소멸 확인. |
 | P2 | 死설정이던 SMTP DB 행이 cutover 가드 없이 배포 시 권위화 → stale 값이 env 전송설정을 덮어 메일 장애 가능 | high | **FIXED** | **사용자 결정 B1**: 수동 preflight(restart 전 `fromAddress` 행 확인/정리). 저장소 배포가 전부 수동이라 일관. D9(무마이그레이션) 유지. migrate/backfill·런타임 flag는 기각(D9 위반/복잡도). P3/A2로 port가 env 전용이 되어 cutover 대상이 fromAddress 하나로 축소. R3 재출현은 이 사용자 결정으로 종결(2회 반복 → 판정). |
 | P3 | 편집 가능 port(DB)와 TLS모드 `secure`(env)가 분리 → port/TLS 불일치(465+secure=false 등) 시 상태는 "정상"이나 미연결(정적 탐지 가능한 로컬 불변식) | medium | **FIXED** | **사용자 결정 A2**: **port도 env 전용**으로 전환 — port/secure를 env 한 곳에서 관리해 드리프트 원천 제거. DB 편집 SMTP면 = `fromAddress`만. task-01(port 카탈로그 제거)·task-03(port=env). F3 ACCEPTED 논리(정적 검증 불가)가 이 케이스엔 부분적으로만 맞다는 R3 지적을 수용해 회피 대신 제거. R3 재출현은 이 결정으로 종결. |
+| P4 | A2 적용 후 spec(SSOT) D1/D2·§5·§7·§10은 여전히 "port DB 편집"이라 plan과 모순 → 구현자가 SSOT 따르면 P3 재도입 | high | **FIXED** | R4 지적(정확). spec을 D11/A2로 reconcile: D1/D2 개정 + **D11 신설**(port env 전용, plan-review 갱신) + §3·§5.1·§5.2·§7·§8·§9·§10(F3/F4/F7) 본문의 "DB port" 표현 일괄 갱신 + stale task-03/04 문구 정리. spec·plan·task가 "DB 편집 SMTP=fromAddress뿐"으로 일치. |
+| P2′ | (P2 3회째 재출현, R4) cutover가 코드/CI 강제 없는 수동 preflight 의존 | high | **DUPLICATE(사용자 ACCEPTED)** | P2와 동일 fingerprint. 사용자가 R3 batch에서 **B1(수동 preflight)** 을 명시 선택(저장소 배포가 전부 수동인 맥락). 사용자 결정이 우선 — 재오픈 안 함(2회+ 반복 → 판정으로 종결). enforced 스크립트는 follow-up 후보로만 기록. |
 
-**추세(미판정 blocking score, high=3·medium=1)**: R1=3(P1) → R2=4(P2 3 + P3 1) → R3 P2·P3 재출현(2회 반복) → **사용자 batch 판정**으로 0. P1·P2·P3 모두 FIXED(P2=수동 preflight/B1, P3=port env전용/A2).
+**추세(미판정 blocking score, high=3·medium=1)**: R1=3(P1) → R2=4(P2 3 + P3 1) → R3 P2·P3 재출현 → **사용자 batch 판정**(B1·A2) → R4=3(P4 신규 SSOT 모순 + P2 3회째) → P4 FIXED·P2′ DUPLICATE → **0**. 최종: P1·P3·P4 FIXED, P2 사용자 ACCEPTED(B1). R3→R4의 P4는 A2 적용이 spec에 미반영된 후속 모순(churn 아닌 실재 sync gap)이라 reconcile로 닫음.

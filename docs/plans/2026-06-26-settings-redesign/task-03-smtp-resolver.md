@@ -1,6 +1,6 @@
 # Task 03 — kernel `getSmtpConfig` 해석기 + reader re-export
 
-**Purpose**: SMTP 전송 config를 해석하는 `getSmtpConfig()`를 kernel `service.ts`에 추가하고 `reader.ts`에서 re-export한다. host/user/secure는 env 전용(D2·F4), port/from은 `readRaw`로 DB 우선·env 폴백(F7), **절대 throw하지 않는다**(D10·F2).
+**Purpose**: SMTP 전송 config를 해석하는 `getSmtpConfig()`를 kernel `service.ts`에 추가하고 `reader.ts`에서 re-export한다. host/user/secure/**port**는 env 전용(D2·F4·D11/A2), **`from`만** `readRaw`로 DB 우선·env 폴백(유효 이메일만, P1), **절대 throw하지 않는다**(D10·F2).
 
 ## Files
 
