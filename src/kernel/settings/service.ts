@@ -151,7 +151,13 @@ export async function listSettings(userId: string): Promise<SettingsCatalogItem[
         });
       }
     } else if (e.kind === "envSecret") {
-      items.push({ ...base, status: secretHealth.get(e.key) ?? "attention_required" });
+      let status: SettingStatus = secretHealth.get(e.key) ?? "attention_required";
+      // F12: secret.smtp 행 상태를 전송 auth 분기와 일치. SMTP_USER 미설정(무인증 릴레이)이면
+      // 비밀번호 불필요 → not_required(중립). 그룹 헤더(smtpConfigured)와 어긋나지 않게 한다.
+      if (e.key === "secret.smtp" && (process.env.SMTP_USER ?? "").length === 0) {
+        status = "not_required";
+      }
+      items.push({ ...base, status });
     } else {
       items.push({ ...base, status: "LINK", manageHref: e.manageHref });
     }

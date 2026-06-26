@@ -155,12 +155,24 @@ describe("listSettings", () => {
     expect(from.status).toBe("INVALID");
     expect(from.value).toBe(""); // default
   });
-  it("envSecret status=coarse, value 없음", async () => {
+  it("envSecret status=coarse, value 없음 (secret.smtp, SMTP_USER 설정 시 secretHealth 따름)", async () => {
     setAllowed(new Set(["integrations.smtp:view"]));
-    const items = await listSettings("u1");
-    const smtp = items.find((i) => i.key === "secret.smtp")!;
-    expect(smtp.status).toBe("configured");
-    expect("value" in smtp).toBe(false);
+    const prev = process.env.SMTP_USER; process.env.SMTP_USER = "bob";
+    try {
+      const items = await listSettings("u1");
+      const smtp = items.find((i) => i.key === "secret.smtp")!;
+      expect(smtp.status).toBe("configured");
+      expect("value" in smtp).toBe(false);
+    } finally { if (prev === undefined) delete process.env.SMTP_USER; else process.env.SMTP_USER = prev; }
+  });
+
+  it("secret.smtp 행 상태(F12): SMTP_USER 미설정 → not_required(무인증 릴레이, 그룹 헤더와 일관)", async () => {
+    setAllowed(new Set(["integrations.smtp:view"]));
+    const prev = process.env.SMTP_USER; delete process.env.SMTP_USER;
+    try {
+      const items = await listSettings("u1");
+      expect(items.find((i) => i.key === "secret.smtp")!.status).toBe("not_required");
+    } finally { if (prev !== undefined) process.env.SMTP_USER = prev; }
   });
   it("relational status=LINK + manageHref", async () => {
     setAllowed(new Set(["workflows.billing:configure"]));
