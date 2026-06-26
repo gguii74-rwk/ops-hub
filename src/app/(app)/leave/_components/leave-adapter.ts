@@ -31,3 +31,18 @@ export function leaveToEvents(evs: Ev[]): CalendarEventInput[] {
     };
   });
 }
+
+// 공휴일 {date,name} → 공통 모델. kind=HOLIDAY(rose 색), status 없음(오버레이 없음), half-open 단일일(D14).
+// date는 "YYYY-MM-DD"(UTC) — leaveToEvents의 DB Date(UTC 자정)와 동일 규칙으로 allDayHalfOpen 처리.
+export function holidaysToEvents(hs: { date: string; name: string }[]): CalendarEventInput[] {
+  return hs.map((h) => {
+    const { start, end } = allDayHalfOpen(new Date(h.date), new Date(h.date));
+    return {
+      id: `holiday:${h.date}`,
+      title: h.name,
+      kind: "HOLIDAY",
+      start: start.toISOString(),
+      end: end.toISOString(),
+    };
+  });
+}

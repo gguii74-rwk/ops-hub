@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { leaveToEvents, type Ev } from "@/app/(app)/leave/_components/leave-adapter";
+import { leaveToEvents, holidaysToEvents, type Ev } from "@/app/(app)/leave/_components/leave-adapter";
 import { eventDayKeys } from "@/modules/calendar/ui/lanes";
+import { allDayHalfOpen } from "@/modules/calendar/time";
 
 function lv(p: Partial<Ev>): Ev {
   return {
@@ -28,5 +29,25 @@ describe("leaveToEvents (D14② inclusive→half-open)", () => {
     expect(e.status).toBe("PENDING");
     expect(e.title).toContain("김철수");
     expect(e.title).toContain("반반차");
+  });
+});
+
+describe("holidaysToEvents", () => {
+  it("kind=HOLIDAY · status 없음 · id=holiday:date · title=name", () => {
+    const out = holidaysToEvents([{ date: "2026-08-15", name: "광복절" }]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ id: "holiday:2026-08-15", title: "광복절", kind: "HOLIDAY" });
+    expect(out[0].status).toBeUndefined();
+  });
+
+  it("half-open 단일일(allDayHalfOpen과 동일 instant)", () => {
+    const { start, end } = allDayHalfOpen(new Date("2026-08-15"), new Date("2026-08-15"));
+    const out = holidaysToEvents([{ date: "2026-08-15", name: "광복절" }]);
+    expect(out[0].start).toBe(start.toISOString());
+    expect(out[0].end).toBe(end.toISOString());
+  });
+
+  it("빈 입력 → 빈 배열", () => {
+    expect(holidaysToEvents([])).toEqual([]);
   });
 });
