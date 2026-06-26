@@ -24,9 +24,10 @@
 - **D5. 공휴일은 직무와 무관하게 항상 표시.** 직무 필터를 어떤 값으로 두어도 공휴일은 남는다(`kind === "HOLIDAY"`는 필터 예외).
 - **D6. 공휴일은 별도 응답 필드로 전달.** API 응답을 `{ events, holidays }`로 확장한다(D9에서 `unsyncedYears`가 추가돼 최종 `{ events, holidays, unsyncedYears }`). 휴가 전용 필드(`leaveType`/`status`/`isSelf` 등)를 공휴일에 억지로 채우지 않기 위함. 클라이언트가 각각 공통 이벤트 모델로 변환.
 - **D7. 권한·마스킹은 기존 정책 유지 + jobFunction 미노출.** 이름·유형은 이미 공개, 사유·세부는 admin 외 마스킹(`getLeaveCalendar` line 104). 직무 필터는 **서버에서** 적용하므로 **`jobFunction`을 응답/`LeaveCalendarEvent`에 포함하지 않는다**(데이터 최소화 — 코워커 직무 속성 추가 노출 방지, 적대검증 F8). 직무 필터는 뷰어가 **이미 볼 수 있는 데이터 범위 안에서만** 적용된다(일반=본인+같은 팀 APPROVED, status=전 팀 APPROVED, admin=전체) — 직무 userId 집합과 권한 스코프의 **교집합**.
+  - **수용된 잔여(적대검증 F9, jobFunction 오라클):** `jobFunction`을 응답 필드로 안 보내도, 버튼을 순회하면 **가시 범위 내 코워커의 coarse 직무(4종)를 추론**할 수 있다(응답 차이 자체가 오라클). 이는 *이름이 보이는 사용자에게 per-job 필터를 제공*하는 한 기능 내재적 — 완전 차단하려면 일반 사용자에게 직무 필터를 주지 않아야 하나 그러면 외주 자체조회 목적(§1)이 무너진다. **수용 근거:** 노출은 (a) 이미 이름이 보이는 APPROVED 이벤트 한정, (b) coarse 4종, (c) 사실상 외주 전용 소규모 데이터. **보완:** 직무를 엄격 비공개로 둬야 하면 필터를 `leave.status:view`/admin 등 직무 조회 권한자에게만 노출하도록 제한(§6 후속).
 - **D8. 조회 경로는 동기화하지 않는다(read-only).** 캘린더 read GET은 외부 공휴일 동기화를 트리거하지 않는다. `Holiday` 테이블에 **이미 있는 공휴일만** 읽어 표시하고, 채우기는 기존 통로 — 부팅 시 current+익년(fire-and-forget, `instrumentation.ts`) · 연차 신청 백스톱(`createLeaveRequest` fail-closed) · admin 수동 동기화(`api/admin/leave/holidays/sync`) — 에 맡긴다. **이유(적대검증 F4):** read GET에서 `ensureYearsSynced`를 await하면 키 부재(`DATA_GO_KR_SERVICE_KEY`)·외부 API 장애 시 평범한 조회가 외부 호출에 블로킹되고, leave `Holiday` 테이블엔 통합 캘린더의 `CalendarSource`(TTL·`lastFetchedAt`) 같은 per-year fetch 상태가 없어 미적재(count===0) 연도는 **매 로드마다 재시도**된다. 미동기화 연도는 자동으로 채우지 않고 **D9 신호로 노출**한다. (정상 사용 = current/인접 월은 부팅 적재돼 공휴일이 정상 표시; 자동 채움이 필요해지면 durable sync-state를 후속으로 — §6.)
 - **D9. 미동기화는 조용히 비우지 않고 신호한다(주 메커니즘).** 라우트는 조회 윈도우가 걸친 연도에 대해 `getUnsyncedYears(years)`로 미적재 연도를 계산해 응답을 `{ events, holidays, unsyncedYears }`로 확장한다(통합 캘린더 피드의 `failedSources` 선례와 동일한 부분실패 메타데이터). `unsyncedYears`는 **'공휴일을 신뢰할 수 없는 연도'**를 뜻한다 — 미적재 연도뿐 아니라 **공휴일 조회/probe가 throw한 경우도 보수적으로 윈도우 전체 연도를 여기 담는다**(§3.3, F3). 비어있지 않으면 클라이언트는 "{연도} 공휴일 정보를 불러오지 못했습니다" 수준의 **간단한 인라인 안내**(차단 모달 아님)를 표시해, 빈 공휴일이 '공휴일 없음'으로 오인되지 않게 한다. 따라서 `{ holidays: [], unsyncedYears: [] }`는 **'윈도우 연도가 모두 적재됨 + 진짜 공휴일 없음'일 때만** 발생하고, 미적재·실패가 깨끗한 빈 상태로 둔갑하지 않는다. (안내는 미적재 연도로 네비게이트했을 때만 뜨고, 정상 월에는 나타나지 않는다.)
-- **D10. 조회 윈도우 입력 검증(하드닝).** 라우트는 ① `start <= end`, ② 연도 폭 `endYear - startYear <= 1`(월 그리드 윈도우는 최대 2개 연도), ③ 윈도우 양 끝을 운영 창(`now ± MAX_ANCHOR_MONTHS`, 통합 캘린더 feed와 동일 상수·`isAnchorWithinWindow` 재사용)으로 제한한다. 위반 시 400. ③은 먼 과거/미래 연도로 leaveRequest·user 조회를 enumerate하는 것을 막아(적대검증 F7) feed와 **동일한 바운드 모델**로 통일한다. (동기화는 D8로 제거됐고, 이건 조회 자체의 enumeration·연도별 쿼리 폭주 하드닝.)
+- **D10. 조회 윈도우 입력 검증(하드닝).** 라우트는 ① `start <= end`, ② **윈도우 일수 상한** `end - start <= 46일`(월 그리드 한 화면 = 최대 6주, 통합 캘린더 feed의 `normalizeToGridWindow`와 동일 폭), ③ 양 끝을 운영 창(`now ± MAX_ANCHOR_MONTHS`, feed와 동일 상수·`isAnchorWithinWindow` 재사용)으로 제한한다. 위반 시 400. ②는 자유 범위로 수백 일치 leaveRequest·user를 대량 조회/enumerate하는 것을(적대검증 F7/F10), ③은 먼 과거/미래로의 enumerate를 막아 feed와 **동일한 바운드 모델**로 통일한다. 일수 상한으로 윈도우가 걸친 연도는 자동으로 ≤2. (동기화는 D8로 제거됐고, 이건 조회 자체의 enumeration·쿼리 폭주 하드닝.)
 
 ## 3. 변경 상세 (계층별)
 
@@ -42,7 +43,7 @@
 - **`LeaveCalendarEvent`/응답에 `jobFunction`을 추가하지 않는다**(D7, 데이터 최소화). 이름 조회 쿼리(line 96)는 그대로(`name`만).
 
 ### 3.3 API 라우트 — `src/app/api/leave/calendar/route.ts`
-- **윈도우 입력 검증(D10)**: `start <= end` + 연도 폭 `endYear - startYear <= 1` + 양 끝 운영 창(`now ± MAX_ANCHOR_MONTHS`, `isAnchorWithinWindow` 재사용). 위반 시 400.
+- **윈도우 입력 검증(D10)**: `start <= end` + 일수 상한(`end - start <= 46일`) + 양 끝 운영 창(`now ± MAX_ANCHOR_MONTHS`, `isAnchorWithinWindow` 재사용). 위반 시 400.
 - **`job` 파싱·검증**: 쿼리 `job`이 `DEVELOPER|CIVIL_RESPONSE|CONTENT_MANAGER` 중 하나면 그 값을, 없거나 `ALL`이면 무필터(`null`)로 `getLeaveCalendar(..., job)`에 전달. 그 외 값 → 400(엄격 검증, 화이트리스트).
 - 조회 윈도우가 걸친 연도 집합을 계산한다(`start.getUTCFullYear()`..`end.getUTCFullYear()` 포함; D10으로 ≤2).
 - **동기화는 호출하지 않는다(D8, read-only)** — `Holiday` 테이블을 있는 그대로 읽는다.
@@ -87,7 +88,7 @@
 - `kernel/holidays`: `getHolidayEventsInRange`가 범위·이름·날짜키(YYYY-MM-DD)·정렬을 정확히 반환(빈 결과 포함).
 - `services/calendar`(서버 직무 필터): `job` 지정 시 해당 jobFunction의 ACTIVE 유저 이벤트만 반환(권한 스코프와 교집합); `job` 없음/`ALL`이면 전체; 빈 직무 집합이면 빈 결과. **반환 이벤트/`LeaveCalendarEvent`에 `jobFunction` 필드 없음**(D7).
 - API 라우트: 응답이 `{ events, holidays, unsyncedYears }` 형태; **동기화를 호출하지 않음**(D8, read-only — `ensureYearsSynced` 미호출); 적재된 연도는 `unsyncedYears: []`, 미적재 연도는 그 연도가 `unsyncedYears`에 포함.
-- API 라우트(입력 검증, D10): `end < start` → 400; 연도 폭 > 1 → 400; 운영 창(`now ± MAX_ANCHOR_MONTHS`) 밖 → 400.
+- API 라우트(입력 검증, D10): `end < start` → 400; 일수 상한 초과(`end - start > 46일`) → 400; 운영 창(`now ± MAX_ANCHOR_MONTHS`) 밖 → 400.
 - API 라우트(`job` 검증): 화이트리스트(`DEVELOPER|CIVIL_RESPONSE|CONTENT_MANAGER`) 외 값 → 400; `ALL`/없음 → 무필터로 서비스 호출.
 - API 라우트(실패 신호, F3): `getHolidayEventsInRange` 또는 `getUnsyncedYears`가 throw해도 `{ holidays: [], unsyncedYears: [] }`(깨끗한 빈 상태)를 **절대 만들지 않음** — 실패 시 `unsyncedYears`에 윈도우 전체 연도가 채워짐. (휴가 조회 실패는 기존대로 에러.)
 - 어댑터: `holidaysToEvents`가 `kind=HOLIDAY`·half-open·status 없음으로 변환.
@@ -100,4 +101,5 @@
 - 직무 버튼 동적 생성(데이터 기반)·PM 버튼: 이번엔 고정 4버튼(D2)로 고정, 필요 시 후속.
 - 외주/정규(employmentType) 필터: 연차 데이터는 사실상 외주만 존재하므로 추가하지 않음.
 - **CONTRACTOR 강제(employmentType, 적대검증 F6)**: 연차 캘린더·신청 생성·admin은 현재 권한만으로 대상을 정하고 employmentType을 강제하지 않는다(pre-existing). §1의 '연차=외주 전용'은 **조직 정책일 뿐 코드 불변식이 아니다.** 정규직 연차 레코드가 유입되면 캘린더에 섞일 수 있음. 강제하려면 신청 생성·admin·조회를 아우르는 별도 작업이 필요 — 이번(표현계층) 범위 밖, **후속 과제로 기록**(사용자 확정: 기존 유지 + follow-up).
+- **직무 필터 노출 범위(적대검증 F9)**: 직무 필터는 가시 범위 내 코워커의 coarse 직무를 버튼 순회로 추론 가능케 한다(오라클). 이번엔 외주 자체조회 목적상 권한 범위 내 전 사용자에게 노출(D7 수용). 직무를 비공개 속성으로 강화해야 하면, **필터 자체를 `leave.status:view`/admin 권한자에게만 노출**하도록 제한하는 후속 과제.
 - **공휴일 자동 채움(durable sync-state)**: 미동기화 연도를 캘린더 조회 시 자동으로 채우려면, `Holiday`에 연도별 fetch 상태(lastAttempt/lastError/backoff)를 두고 read 경로에서 backoff 가드 하에 동기화하는 방식이 필요(통합 캘린더 `CalendarSource` TTL 패턴에 대응). 이번 범위는 read-only(D8)+신호(D9)로 한정하고, 자동 채움이 필요해지면 후속 설계로 분리(마이그레이션 동반).
