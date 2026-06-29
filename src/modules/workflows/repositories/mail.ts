@@ -1,6 +1,6 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
-import type { MailDelivery, MailDeliveryStatus, WorkflowKind } from "@prisma/client";
+import type { MailDelivery, MailDeliveryStatus, WorkflowKind, WorkflowStatus } from "@prisma/client";
 import { prisma, type PrismaTx } from "@/lib/prisma";
 import { ConflictError } from "../types";
 
@@ -14,6 +14,7 @@ export interface DeliveryForAction {
 export async function createSendingDelivery(args: {
   taskId: string | null; step: string | null; recipients: string[]; subject: string;
   bodyHtml: string; attachmentPaths: string[]; sentById: string;
+  expectedTaskStatus?: WorkflowStatus; // D11: task가 이 status일 때만 SENDING 생성(cancel과 상호배제)
 }): Promise<MailDelivery> {
   // task-scoped 발송은 멱등 키 step이 필수다. step=null이면 부분 unique 인덱스가
   // 작동하지 않아(Postgres에서 NULL은 충돌하지 않음) 중복 발송을 막을 수 없으므로 거부한다.
@@ -28,6 +29,14 @@ export async function createSendingDelivery(args: {
           select: { id: true },
         });
         if (active) throw new ConflictError("이미 진행 중이거나 완료된 발송이 있습니다.");
+        if (args.expectedTaskStatus != null) {
+          // D11: task 행 잠금(FOR UPDATE) + status 가드 → cancel(H1)의 조건부 UPDATE와 같은 행에서 직렬화.
+          const rows = await tx.$queryRaw<Array<{ status: WorkflowStatus }>>`
+            SELECT status FROM workflows."WorkflowTask" WHERE id = ${args.taskId} FOR UPDATE`;
+          if (rows.length === 0 || rows[0].status !== args.expectedTaskStatus) {
+            throw new ConflictError("작업 상태가 발송 가능 상태가 아닙니다.");
+          }
+        }
       }
       return tx.mailDelivery.create({
         data: {
@@ -101,4 +110,29 @@ export async function findDeliveryForAction(deliveryId: string): Promise<Deliver
     attachmentPaths: Array.isArray(d.attachmentPaths) ? (d.attachmentPaths as string[]) : [],
     kind: d.task?.type.kind ?? null,
   };
+}
+
+// G2b: SMTP 성공 후 finalize(SENT)+task 전이를 한 tx로. SENDING이 이 tx 직전까지 유지되므로
+// "delivery=SENT인데 task 미전이" cancel 침투 창이 없다. SENT 전이만 sentAt stamp(STAMP_FOR_STATUS).
+export async function finalizeDeliveryWithTransition(
+  deliveryId: string,
+  patch: { providerMessageId: string | null },
+  transition: { taskId: string; fromStatus: WorkflowStatus; toStatus: WorkflowStatus; actorId: string },
+): Promise<MailDelivery> {
+  await prisma.$transaction(async (tx: PrismaTx) => {
+    const fin = await tx.mailDelivery.updateMany({
+      where: { id: deliveryId, status: "SENDING" },
+      data: { status: "SENT", sentAt: new Date(), providerMessageId: patch.providerMessageId, errorMessage: null },
+    });
+    if (fin.count !== 1) throw new ConflictError("발송이 이미 다른 경로에서 확정되었습니다.");
+    const trans = await tx.workflowTask.updateMany({
+      where: { id: transition.taskId, status: transition.fromStatus },
+      data: transition.toStatus === "SENT" ? { status: "SENT", sentAt: new Date() } : { status: transition.toStatus },
+    });
+    if (trans.count === 0) throw new ConflictError("작업 상태가 이미 변경되었습니다.");
+    await tx.workflowTaskEvent.create({
+      data: { taskId: transition.taskId, fromStatus: transition.fromStatus, toStatus: transition.toStatus, actorId: transition.actorId },
+    });
+  });
+  return prisma.mailDelivery.findUniqueOrThrow({ where: { id: deliveryId } });
 }

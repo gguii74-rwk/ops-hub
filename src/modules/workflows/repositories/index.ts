@@ -124,6 +124,34 @@ export async function hasActiveSending(taskId: string): Promise<boolean> {
   return n > 0;
 }
 
+// H1: cancel을 단일 조건부 UPDATE로 원자화. GENERATED는 ¬active-SENDING을 한 문장에 묶어
+// send-측 SENDING 점유와 순서 무관 상호배제. PENDING 등은 SENDING 위험이 없어 일반 status CAS.
+export async function cancelTaskAtomic(
+  taskId: string, fromStatus: WorkflowStatus, actorId: string, note?: string,
+): Promise<boolean> {
+  return prisma.$transaction(async (tx: PrismaTx) => {
+    let affected: number;
+    if (fromStatus === "GENERATED") {
+      affected = await tx.$executeRaw`
+        UPDATE workflows."WorkflowTask"
+        SET status = 'CANCELLED', "updatedAt" = now()
+        WHERE id = ${taskId} AND status = 'GENERATED'
+          AND NOT EXISTS (
+            SELECT 1 FROM workflows."MailDelivery"
+            WHERE "taskId" = ${taskId} AND status = 'SENDING'
+          )`;
+    } else {
+      const r = await tx.workflowTask.updateMany({ where: { id: taskId, status: fromStatus }, data: { status: "CANCELLED" } });
+      affected = r.count;
+    }
+    if (affected === 0) return false;
+    await tx.workflowTaskEvent.create({
+      data: { taskId, fromStatus, toStatus: "CANCELLED", actorId, note: note ?? null },
+    });
+    return true;
+  });
+}
+
 export interface FullTaskForGenerate { task: WorkflowTask; kind: WorkflowKind; }
 
 // generate용 전체 task + kind. generator.generate(task, outDir)에 WorkflowTask 전체를 넘겨야 한다.

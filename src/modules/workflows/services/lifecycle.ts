@@ -8,7 +8,7 @@ import {
   findWorkflowTypeKind,
   createTaskWithInitialEvent,
   applyTransitionAtomic,
-  hasActiveSending,
+  cancelTaskAtomic,
 } from "../repositories";
 
 function can(ctx: TransitionCtx, resource: string, action: string): boolean {
@@ -33,9 +33,10 @@ export async function transitionTask(taskId: string, to: WorkflowStatus, ctx: Tr
     if (!ctx.isOwner && task.createdById !== ctx.userId) {
       throw new ForbiddenError("본인 또는 관리자만 취소할 수 있습니다.");
     }
-    if (await hasActiveSending(taskId)) {
-      throw new ConflictError("발송이 진행 중이라 취소할 수 없습니다.");
-    }
+    // H1: 원자 술어(GENERATED는 ¬active-SENDING 포함). 비원자 hasActiveSending precheck 제거.
+    const ok = await cancelTaskAtomic(taskId, task.status, ctx.userId, ctx.note);
+    if (!ok) throw new ConflictError();
+    return;
   }
 
   const stampField = STAMP_FOR_STATUS[to] ?? null;

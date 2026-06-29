@@ -6,9 +6,17 @@ vi.mock("@/kernel/settings/reader", () => ({
   getSmtpConfig: vi.fn(async () => ({ host: "mail.x", port: 587, secure: false, user: "", from: "noreply@x.com" })),
 }));
 vi.mock("node:fs", () => ({ existsSync: vi.fn(() => true) }));
+vi.mock("@/lib/storage", () => ({
+  resolveStoragePath: vi.fn((p: string) => {
+    if (p.startsWith("out/") || p.startsWith("Template/")) return `/abs/${p}`;
+    throw new Error("strict: 절대경로/허용 안 된 경로");
+  }),
+  toStoredOutputPath: vi.fn((abs: string) => abs.replace("/abs/", "")),
+}));
 vi.mock("@/modules/workflows/repositories/mail", () => ({
   createSendingDelivery: vi.fn(),
   finalizeDelivery: vi.fn(async (id: string, patch: any) => ({ id, ...patch })),
+  finalizeDeliveryWithTransition: vi.fn(),
   findDeliveryForAction: vi.fn(),
   claimFailedForRetry: vi.fn(),
 }));
@@ -77,7 +85,7 @@ describe("deliver", () => {
 });
 
 describe("retryDelivery", () => {
-  const failed = { id: "d1", taskId: "t1", step: "send", status: "FAILED", recipients: ["a@x"], subject: "s", bodyHtml: "<p>저장본문</p>", attachmentPaths: ["/o/a.pdf"], kind: "WEEKLY_REPORT" };
+  const failed = { id: "d1", taskId: "t1", step: "send", status: "FAILED", recipients: ["a@x"], subject: "s", bodyHtml: "<p>저장본문</p>", attachmentPaths: ["out/workflows/t1/a.hwpx"], kind: "WEEKLY_REPORT" };
 
   it("FAILED를 저장된 bodyHtml로 재발송(워크플로 재생성 없음) → SENT", async () => {
     repo.findDeliveryForAction.mockResolvedValue(failed);
@@ -140,6 +148,13 @@ describe("retryDelivery", () => {
     ).rejects.toThrow("db down");
     expect(send).toHaveBeenCalled();
     expect(repo.finalizeDelivery).not.toHaveBeenCalledWith("d1", expect.objectContaining({ status: "FAILED" }));
+  });
+
+  it("절대경로 첨부 row → retry 거부(I4, exfiltration 차단)", async () => {
+    repo.findDeliveryForAction.mockResolvedValue({ ...failed, attachmentPaths: ["/etc/passwd"] });
+    const out = await retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.weekly:send"] }));
+    expect(send).not.toHaveBeenCalled();
+    expect((out as any).status).toBe("FAILED");
   });
 });
 

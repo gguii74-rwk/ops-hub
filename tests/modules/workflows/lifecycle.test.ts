@@ -7,6 +7,7 @@ vi.mock("@/modules/workflows/repositories", () => ({
   createTaskWithInitialEvent: vi.fn(),
   applyTransitionAtomic: vi.fn(),
   hasActiveSending: vi.fn(),
+  cancelTaskAtomic: vi.fn(),
 }));
 
 import { ForbiddenError } from "@/kernel/access";
@@ -26,6 +27,7 @@ beforeEach(() => {
   for (const k of Object.keys(m)) m[k].mockReset();
   m.applyTransitionAtomic.mockResolvedValue(true);
   m.hasActiveSending.mockResolvedValue(false);
+  m.cancelTaskAtomic.mockResolvedValue(true);
 });
 
 describe("transitionTask", () => {
@@ -54,10 +56,11 @@ describe("transitionTask", () => {
     expect(m.applyTransitionAtomic).toHaveBeenCalled();
   });
 
-  it("취소: 본인이면 통과", async () => {
+  it("취소: 본인이면 통과(cancelTaskAtomic 호출)", async () => {
     m.findTaskForTransition.mockResolvedValue({ id: "t1", status: "PENDING", createdById: "u1", kind: "WEEKLY_REPORT" });
     await transitionTask("t1", "CANCELLED", baseCtx({ keys: ["workflows.weekly:view"] }));
-    expect(m.applyTransitionAtomic).toHaveBeenCalledWith(expect.objectContaining({ toStatus: "CANCELLED", stampField: null }));
+    expect(m.cancelTaskAtomic).toHaveBeenCalledWith("t1", "PENDING", "u1", undefined);
+    expect(m.applyTransitionAtomic).not.toHaveBeenCalled();
   });
 
   it("취소: 본인도 OWNER도 아니면 ForbiddenError", async () => {
@@ -65,9 +68,9 @@ describe("transitionTask", () => {
     await expect(transitionTask("t1", "CANCELLED", baseCtx({ keys: ["workflows.weekly:view"] }))).rejects.toBeInstanceOf(ForbiddenError);
   });
 
-  it("취소: 활성 SENDING이 있으면 ConflictError", async () => {
+  it("취소: cancelTaskAtomic false(SENDING 존재 등) → ConflictError(H1 원자 거부)", async () => {
     m.findTaskForTransition.mockResolvedValue({ id: "t1", status: "GENERATED", createdById: "u1", kind: "WEEKLY_REPORT" });
-    m.hasActiveSending.mockResolvedValue(true);
+    m.cancelTaskAtomic.mockResolvedValue(false);
     await expect(transitionTask("t1", "CANCELLED", baseCtx({ keys: ["workflows.weekly:view"] }))).rejects.toBeInstanceOf(ConflictError);
     expect(m.applyTransitionAtomic).not.toHaveBeenCalled();
   });
@@ -105,9 +108,9 @@ describe("createTask", () => {
 });
 
 describe("cancelTask", () => {
-  it("transitionTask(CANCELLED)로 위임", async () => {
+  it("transitionTask(CANCELLED)로 위임 → cancelTaskAtomic 호출", async () => {
     m.findTaskForTransition.mockResolvedValue({ id: "t1", status: "PENDING", createdById: "u1", kind: "WEEKLY_REPORT" });
     await cancelTask("t1", baseCtx({ keys: ["workflows.weekly:view"] }));
-    expect(m.applyTransitionAtomic).toHaveBeenCalledWith(expect.objectContaining({ toStatus: "CANCELLED" }));
+    expect(m.cancelTaskAtomic).toHaveBeenCalledWith("t1", "PENDING", "u1", undefined);
   });
 });
