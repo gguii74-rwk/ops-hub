@@ -247,16 +247,13 @@ export async function commitGeneratedTransition(args: {
     });
 
     if (args.roundDate) {
-      // I3: 성공 commit 경로에서만, 기존 행 덮어쓰기 금지(수동 보정 회차일 보호).
-      const existing = await tx.billingRoundDate.findUnique({
-        where: { year_round: { year: args.roundDate.year, round: args.roundDate.round } },
-        select: { id: true },
+      // I3: 성공 commit 경로에서만 create-if-missing. ON CONFLICT DO NOTHING(skipDuplicates)으로 멱등·경합안전화 —
+      // 기존 행(수동 보정 회차일)은 덮어쓰지 않고, 같은 year_round를 병렬 commit하는 다른 task가 있어도
+      // P2002로 tx가 깨지지 않는다(check-then-create의 race 제거).
+      await tx.billingRoundDate.createMany({
+        data: [{ year: args.roundDate.year, round: args.roundDate.round, submitDate: args.roundDate.submitDate }],
+        skipDuplicates: true,
       });
-      if (!existing) {
-        await tx.billingRoundDate.create({
-          data: { year: args.roundDate.year, round: args.roundDate.round, submitDate: args.roundDate.submitDate },
-        });
-      }
     }
   });
 }

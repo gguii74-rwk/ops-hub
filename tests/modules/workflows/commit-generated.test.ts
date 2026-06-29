@@ -4,8 +4,8 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // commit을 거부해 패배자 산출물이 DB에 기록되지 않게 한다(disk≠DB 분기 차단).
 const h = vi.hoisted(() => {
   const calls: Record<string, unknown> = {};
-  const ret: { lockRows: Array<{ holder: string }>; taskUpdateCount: number; existingRound: unknown } = {
-    lockRows: [{ holder: "req-1" }], taskUpdateCount: 1, existingRound: null,
+  const ret: { lockRows: Array<{ holder: string }>; taskUpdateCount: number } = {
+    lockRows: [{ holder: "req-1" }], taskUpdateCount: 1,
   };
   return { calls, ret };
 });
@@ -17,8 +17,7 @@ vi.mock("@/lib/prisma", () => {
     generatedFile: { createMany: async (a: unknown) => ((h.calls.fileCreate = a), { count: 1 }) },
     workflowTaskEvent: { create: async (a: unknown) => ((h.calls.eventCreate = a), { id: "ev1" }) },
     billingRoundDate: {
-      findUnique: async (a: unknown) => ((h.calls.roundFind = a), h.ret.existingRound),
-      create: async (a: unknown) => ((h.calls.roundCreate = a), { id: "rd1" }),
+      createMany: async (a: unknown) => ((h.calls.roundCreateMany = a), { count: 1 }),
     },
   };
   return { prisma: { $transaction: async (fn: (t: typeof tx) => unknown) => fn(tx) } };
@@ -36,7 +35,6 @@ beforeEach(() => {
   for (const k of Object.keys(h.calls)) delete h.calls[k];
   h.ret.lockRows = [{ holder: "req-1" }];
   h.ret.taskUpdateCount = 1;
-  h.ret.existingRound = null;
 });
 
 describe("commitGeneratedTransition holder 가드 (R1-2)", () => {
@@ -65,15 +63,16 @@ describe("commitGeneratedTransition holder 가드 (R1-2)", () => {
     await expect(commitGeneratedTransition(baseArgs)).rejects.toBeInstanceOf(ConflictError);
   });
 
-  it("billing roundDate: 기존 행 없으면 create(I3, 덮어쓰기 금지)", async () => {
+  it("billing roundDate: createMany skipDuplicates로 멱등 create-if-missing(I3·R2-2 경합안전)", async () => {
     await commitGeneratedTransition({ ...baseArgs, roundDate: { year: 2026, round: 2, submitDate: new Date("2026-03-10T01:00:00Z") } });
-    expect(h.calls.roundFind).toBeDefined();
-    expect(h.calls.roundCreate).toBeDefined();
+    expect(h.calls.roundCreateMany).toMatchObject({
+      data: [{ year: 2026, round: 2 }],
+      skipDuplicates: true, // ON CONFLICT DO NOTHING — 기존 행 덮어쓰기 금지 + 병렬 commit P2002 방지
+    });
   });
 
-  it("billing roundDate: 기존 행 있으면 create 안 함(I3)", async () => {
-    h.ret.existingRound = { id: "rd-existing" };
-    await commitGeneratedTransition({ ...baseArgs, roundDate: { year: 2026, round: 2, submitDate: new Date("2026-03-10T01:00:00Z") } });
-    expect(h.calls.roundCreate).toBeUndefined();
+  it("roundDate 없으면(non-billing) createMany 미호출", async () => {
+    await commitGeneratedTransition(baseArgs);
+    expect(h.calls.roundCreateMany).toBeUndefined();
   });
 });

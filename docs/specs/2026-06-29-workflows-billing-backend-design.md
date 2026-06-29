@@ -376,6 +376,7 @@ TDD(실패 테스트 → FAIL 확인 → 최소 구현 → PASS → commit). nod
 - mail 첨부 절대경로 row 정규화: 과거/유입된 절대경로 `attachmentPaths`가 있으면 일회성 마이그레이션으로 storage-relative로 정규화(런타임 통과 없음, I4).
 - 주간보고·알림톡 sub-project가 `GENERATORS` 레지스트리에 등록만으로 generate/send/download 라우트 재사용.
 - 운영 cutover 시 과거 `BillingConfig`/`BillingRoundDate` 데이터 이전(Phase 6).
+- **HWPX 런타임 마커 fail-closed 가드**(impl 적대검증 R2 ACCEPTED): 현재 §12 골든(2층)+수동 한컴(3층)+§7.4 마커동기화+§11(템플릿 부재 fail-closed)로 정합성을 다룬다. 운영 템플릿이 코드 하드코딩 마커와 어긋나면 치환 누락이 정상 산출물로 위장될 수 있으나(런타임 무성 오발행) 3층 수동 게이트가 발송 전 차단한다. 방어 깊이를 더하려면 필수 마커별 치환 건수 0건 시 throw하는 런타임 가드를 추가한다 — 단 필수/선택 마커(폴백 치환·기성 회차행·분리 run은 조건부) 분류와 변경-템플릿 회귀 테스트가 필요하므로 설정 UI·템플릿 관리(버전닝) 시점에 함께 설계한다.
 - AI 서명 없는 commit(글로벌 규칙).
 
 ## 14. 적대검증 ledger (spec 단계, R1~R5)
