@@ -6,7 +6,8 @@ export const GENERATION_LEASE_TTL_MS = 120_000; // 2분. HWPX 4종 zip은 보통
 /**
  * CAS 점유: lease가 없거나 만료(lockedUntil < now)일 때만 1행. 반환 true=점유, false=타인 보유(409).
  * 단일 SQL 문이라 원자적 — 동시 2건도 Postgres 행 잠금으로 직렬화돼 하나만 affected=1.
- * expiry는 JS 클럭으로 계산(단일 서버, 2분 TTL이라 스큐 무시 가능). 만료 비교는 DB now()로.
+ * lockedUntil은 Node UTC Date로 set하고 만료는 DB now()로 비교한다. 컬럼이 TIMESTAMPTZ(R7-1)라 둘 다
+ * 절대 instant로 비교돼 DB 세션 TimeZone과 무관하다(비-UTC DB에서도 TTL 정확).
  */
 export async function acquireGenerationLease(
   taskId: string,

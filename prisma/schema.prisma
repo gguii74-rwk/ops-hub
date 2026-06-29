@@ -512,7 +512,10 @@ model BillingRoundDate {
 model GenerationLock {
   taskId      String   @id
   holder      String   // 요청별 식별자(reqId = crypto.randomUUID())
-  lockedUntil DateTime
+  // TIMESTAMPTZ: lease 만료는 raw SQL `lockedUntil < now()`로 비교되므로 절대 instant여야 한다(R7-1).
+  // 일반 TIMESTAMP면 Node UTC Date 저장값과 now() 비교가 DB 세션 TimeZone에 의존해, 비-UTC DB에서
+  // 갓 만든 lease가 즉시 만료로 보이거나 과도 유지되어 single-flight(J1)가 깨진다.
+  lockedUntil DateTime @db.Timestamptz(3)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
