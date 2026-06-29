@@ -34,15 +34,15 @@ day-sync 대금청구(월 1회 기성 대금 청구: 계약설정 CRUD → HWPX 
 | # | 결정 | 근거 |
 | --- | --- | --- |
 | D1 | **백엔드 우선, UI 분리.** 설정값은 시드/스크립트로 주입해 생성·발송 E2E 검증 | 위험한 본체(HWPX 생성·발송)에 집중. UI는 동작하는 백엔드 위에 자연스럽게 올라감([00-overview §5] "프론트 마지막") |
-| D2 | **파일 저장소 = `STORAGE_ROOT` env 1개 + `lib/storage` 헬퍼.** DB엔 storage-relative POSIX 경로만 저장. resolver는 **strict(절대경로 거부, 모든 신규 경로)** 와 **legacy(절대 통과, 메일 첨부 전용)** 로 분리(F4) | 공유 스토리지를 릴리즈와 분리(CLAUDE.md). 절대경로 누출·경로 주입 차단 |
+| D2 | **파일 저장소 = `STORAGE_ROOT` env 1개 + `lib/storage` 헬퍼.** DB엔 storage-relative POSIX 경로만 저장. resolver는 **전부 strict**(절대경로·`..`·드라이브 거부; 다운로드·generate·메일 첨부 모두, F4·I4). 절대경로 유입 row는 런타임 통과 없이 마이그레이션으로 정규화 | 공유 스토리지를 릴리즈와 분리(CLAUDE.md). 절대경로 누출·경로 주입·메일 exfiltration 차단 |
 | D3 | **출력 레이아웃 = `out/workflows/<taskId>/`** (taskId 기반). day-sync `billing-{YYYYMM}/` 폐기 | taskId가 유일 키 — 같은 달 재생성·다중 작업 충돌 방지. 다운로드가 task로 귀속 |
 | D4 | **스키마 변경 없음**(모델 선반영) → 표준 restart. `WorkflowType(BILLING)` 시드 + 권한/역할은 `seed-permissions.ts` `EXTRA_PERMISSIONS` | 비파괴 — full-stop 마이그레이션 불필요. foundation §13 후속 이행 |
 | D5 | **BigInt 경계**: DB는 BigInt 유지, 생성기 입력·API DTO는 `Number()`. **Zod refine으로 `<= Number.MAX_SAFE_INTEGER` 강제**(F3)해 Number() 경계를 검증으로 보장 | Prisma가 bigint 반환·`JSON.stringify`가 bigint 거부. 가정이 아닌 강제 — 큰 금액 조용한 변조 차단 |
 | D6 | **generate/send/download 라우트 일반화**(kind 디스패치) + `Record<WorkflowKind, GeneratorPort>` 레지스트리. billing만 등록, 미등록 kind는 명확한 에러 | 후속 sub-project가 라우트 3벌 복제 없이 재사용. 마이그레이션 문서의 port+레지스트리 패턴 |
 | D7 | **메일 제목/본문은 caller 제공**(A안). 단계별 기본 템플릿·발송 골든 대조는 후속 UI spec | day-sync `send.service`도 subject/body를 인자로 받음 — 텍스트 출처는 UI. 백엔드는 첨부 규칙·전이만 책임 |
-| D8 | **`mail.ts` 수술적 적응**: `deliver`는 `toStoredOutputPath`로 상대 저장, `retryDelivery`는 **`resolveAttachmentPath`(legacy)** 로 절대화. 절대 통과는 메일 첨부에만(다운로드는 strict, F4) | attachmentPaths 상대경로 일원화(D2)와 기존 `existsSync`/`sendMail` 조화. leave 발송 회귀 테스트로 보호 |
+| D8 | **`mail.ts` 수술적 적응**: `deliver`는 `toStoredOutputPath`로 상대 저장(out 밖이면 거부), `retryDelivery`는 **`resolveStoragePath`(strict)** 로 절대화·절대경로 row 거부(I4) | attachmentPaths 상대경로 일원화(D2)와 기존 `existsSync`/`sendMail` 조화. leave 회귀 테스트로 보호. 메일 exfiltration 차단 |
 | D9 | **HWPX 치환에 사용자 입력 XML 이스케이프 추가**(`& < > " '`). split/join 치환·분리 run 마커·"02월 기준" 마커·전월 회차 계산 보존 | day-sync는 신뢰 설정값이라 미적용했으나 ops-hub는 입력 신뢰도가 낮음. 누락 시 한컴 무성 실패 |
-| D10 | **회차 자동 upsert는 billing generator가 소유**(생성 직후, 멱등). 파일 기록 + GENERATED 전이는 orchestrator가 CAS-in-tx로 원자화 | 누락 시 과거 회차 날짜 전부 폴백(§8). 멱등이라 비원자 순서 안전. 동시 generate 중복 파일행은 CAS로 차단 |
+| D10 | **회차 영속은 최종 commit tx 안에서 `createRoundDateIfMissing`**(I3 — 성공 경로에서만, 기존 행 덮어쓰기 금지). FS 생성·승격은 tx 밖, 그 뒤 짧은 CAS tx로 GENERATED+파일+회차 기록 | 누락 시 과거 회차 날짜 폴백(§8)이나, 실패한 generation이 수동 보정 회차일을 오염시키면 안 됨(I3). FS I/O 동안 DB tx 미점유(I2) |
 | D11 | **send/cancel 상호배제(양측·삼중)**: ①send 선-SMTP — SENDING 선기록을 status 가드와 한 tx로 점유. ②send 후-SMTP(G2b) — finalize(SENT)+transition 한 tx, 그때까지 SENDING 유지. ③cancel 측(H1) — `GENERATED ∧ ¬active-SENDING` 단일 조건부 UPDATE로 원자화. `(taskId,step)` partial unique(마이그 20260619120000)가 DB 최종 방어선 | foundation §13 후속 필수 — 발송된 작업이 CANCELLED되는 불변식 위반 차단(양 끝 모두 원자화해야 닫힘) |
 | D12 | **검증 = 하이브리드 3층**: 순수함수 단위 + 4종 HWPX `section0.xml` 정규화 diff + 수동 한컴 열기 게이트. Phase 0 골든은 day-sync 기존 산출물·템플릿에서 박제 | HWPX 무성 실패는 사람만 최종 확인(STRATEGY §5). 골든으로 회귀 자동 감지 |
 | D13 | **다운로드는 `GeneratedFile.id`로 조회 후 resolve**(raw path 금지). 디렉터리면 ZIP, `Buffer`→`new Uint8Array` | 경로 주입 차단. billing outputPath는 디렉터리(§4) |
@@ -65,7 +65,7 @@ src/modules/workflows/
     generator-registry.ts         # 신규 — Record<WorkflowKind, GeneratorPort>
     generate.ts                   # 신규 — runGenerate(advisory lock 직렬화·kind 디스패치 orchestrator)
     send.ts                       # 신규 — runSend(단계별 첨부·양측 TOCTOU·finalize+전이 한 tx orchestrator)
-    mail.ts                       # 변경 — deliver(onDeliveredTx)·retryDelivery 첨부 resolveAttachmentPath(D8)
+    mail.ts                       # 변경 — deliver(onDeliveredTx, 상대 저장)·retryDelivery 첨부 resolveStoragePath strict(D8·I4)
   billing/period.ts               # 신규 — computeBillingPeriod 순수함수(전월·회차)
 src/app/api/workflows/
   billing/config/route.ts                       # 신규 GET·POST
@@ -120,22 +120,19 @@ export function getOutputRoot(): string;          // STORAGE_ROOT/out
 export function resolveStoragePath(stored: string): string;   // STRICT: Template/…|out/… 상대경로만 → 절대경로(가드). 절대경로·..·prefix불일치 모두 throw
 export function resolveTemplatePath(rel: string): string;     // 대금청구/… → 절대경로(strict 기반)
 export function resolveOutputPath(rel: string): string;       // workflows/<id>/… → 절대경로(strict 기반)
-export function toStoredOutputPath(abs: string): string;      // STORAGE_ROOT/out 하위 절대경로 → out/… 상대경로. 그 외 절대경로는 그대로 통과(메일 첨부 legacy 전용)
-export function resolveAttachmentPath(stored: string): string;// LEGACY 허용: 상대면 strict resolve, 이미-절대면 통과. mail deliver/retry 전용(D8·F4)
+export function toStoredOutputPath(abs: string): string;      // STORAGE_ROOT/out 하위 절대경로 → out/… 상대경로. 하위가 아니면 throw(절대경로를 DB에 저장하지 않음, I4)
 ```
 
-### 4.4 path traversal 가드 (보안 핵심) — F4 반영: strict / legacy 분리
+### 4.4 path traversal 가드 (보안 핵심) — F4·I4 반영: **모든 경로 strict, legacy 통과 없음**
 
-**`resolveStoragePath`(STRICT, 기본)** — 다운로드·generate·send 첨부 수집 등 **모든 신규 경로가 사용**:
+**`resolveStoragePath`(STRICT)** — 다운로드·generate·send 첨부 수집·**메일 첨부 해석(deliver/retry)** 등 **모든 경로가 사용**:
 
 - `getStorageRoot()`는 **절대경로만** 허용(상대·미설정 → 명확한 에러, fail-closed).
 - `stored`가 `Template/` 또는 `out/`로 시작할 때만 `path.resolve(getStorageRoot(), stored)` 후 **결과가 root 하위인지 검사**(`resolved === root || resolved.startsWith(root + path.sep)`). 이탈 시 throw.
-- **절대경로·드라이브 경로·`..` 포함·prefix 불일치는 전부 throw**(통과 없음). DB row가 마이그레이션·시드·운영 수정으로 절대경로를 담고 있어도 다운로드가 STORAGE_ROOT 밖을 읽지 못한다.
+- **절대경로·드라이브 경로·`..` 포함·prefix 불일치는 전부 throw**(통과 없음).
 
-**`resolveAttachmentPath`(LEGACY 허용)** — **오직 `mail.ts`의 첨부 해석(deliver/retry)에서만 사용**(D8):
+**legacy 절대경로 통과 없음(I4)**: 메일 첨부 해석도 strict를 쓴다 — `MailDelivery.attachmentPaths`에 절대경로가 있으면(마이그레이션·운영 수정으로 유입돼도) **retry가 거부**되어, 절대경로가 이메일 첨부로 exfiltration되지 못한다. **신규 workflow delivery는 항상 storage-relative만 저장**한다(`deliver`가 `toStoredOutputPath`로 환원하며, STORAGE_ROOT/out 밖이면 저장 거부). leave는 첨부가 없고(`[]`) billing은 relative라 무손실. 과거 절대경로 row가 존재하면 **런타임 통과가 아니라 일회성 마이그레이션으로 정규화**(후속).
 
-- 상대경로(`out/…`)면 strict와 동일하게 resolve. **이미-절대경로면 통과**(leave가 과거에 절대경로 첨부를 저장했을 수 있는 하위호환). 이 통과는 다운로드 경계와 **물리적으로 분리**되어, 절대경로 허용이 파일 다운로드로 새지 않는다.
-- (향후 cutover 정리: leave 첨부도 상대경로로 정규화되면 이 legacy 통과를 제거할 수 있다 — 후속.)
 - day-sync `resolveOutputPath`/`toStoredOutputPath`를 그대로 복사하지 않는다 — `process.cwd()/output` 가정을 `STORAGE_ROOT/out` 기준으로 바꿔 포팅한다(D2).
 
 ### 4.5 env
@@ -249,20 +246,20 @@ export const GENERATORS: Partial<Record<WorkflowKind, GeneratorPort>> = { BILLIN
 export function getGenerator(kind: WorkflowKind): GeneratorPort; // 미등록이면 명확한 도메인 에러(NotImplemented)
 ```
 
-### 8.2 `runGenerate(taskId, ctx)` (`services/generate.ts`, 일반 kind 디스패치) — F1·G1 반영: **승격 → 커밋 순서**
+### 8.2 `runGenerate(taskId, ctx)` (`services/generate.ts`, 일반 kind 디스패치) — F1·G1·I2·I3 반영
 
-동시 generate가 같은 `out/workflows/<taskId>/`에 써서 파일이 찢기거나(torn write) **패배자가 승자 산출물을 덮어쓰는 것**, 그리고 **"GENERATED인데 파일 없음" 복구 불가 상태**를 모두 막는다. 두 장치: **(a) taskId별 advisory lock으로 생성을 직렬화**(H2 — 동시 승격 자체를 제거), **(b) GENERATED는 파일 승격 뒤에만 set**(G1 — 복구성).
+동시 generate가 파일을 찢거나(torn write) **패배자가 승자 산출물을 덮어쓰거나**, **"GENERATED인데 파일 없음" 복구 불가 상태**가 되거나, **실패한 generation이 round date를 오염**시키는 것을 모두 막는다. 원칙: **(a) 직렬화는 DB 트랜잭션을 열어둔 채 하지 않는다**(I2 — FS I/O 동안 커넥션 점유 금지), **(b) GENERATED는 파일 승격 뒤에만 set**(G1), **(c) round-date 영속은 최종 commit tx 안에서 create-if-missing**(I3).
 
-0. **taskId별 직렬화(H2)**: `pg_advisory_xact_lock(hashtext('wf-gen:'||taskId))`(트랜잭션 범위 advisory lock)를 잡고 1~4를 수행한다. 동시 generate는 lock에서 대기 → 먼저 든 요청이 GENERATED로 만들면, 나중 요청은 lock 획득 후 **status≠PENDING을 보고 ConflictError**(파일을 건드리지 않음). 즉 **승격하는 요청은 항상 하나뿐** — 패배자가 승자 디렉터리를 덮을 경로가 없다(비결정적 산출물 가정 불필요).
-1. task 조회. 권한 `can(ctx, KIND_RESOURCE[kind], "generate")` 검사(fail-closed). **status가 PENDING이 아니면 ConflictError**.
-2. `getGenerator(kind).generate(task, tmpDir)` — **요청별 임시 디렉터리**(`out/workflows/.tmp/<taskId>-<reqId>/`)에 HWPX 기록, **billing generator가 현재 회차 `upsertRoundDate`(멱등, D10)**, 산출 파일 목록(최종 상대경로 = `out/workflows/<taskId>/…`) 반환.
-3. **승격(promote, atomic rename)**: 임시 디렉터리를 `out/workflows/<taskId>/`로 옮긴다. 최종 디렉터리가 이미 있으면(이전 시도 크래시 잔재) **원자 교체**(기존 final → 유니크 trash로 rename → tmp → final rename → trash 삭제 — 각 rename 원자적, live 디렉터리에 직접 쓰지 않아 torn write 없음). lock으로 직렬화돼 있어 이 시점에 경쟁 승격은 없다.
-4. **CAS 커밋(같은 tx)**: `updateMany({ where:{ id, status:"PENDING" }, data:{ status:"GENERATED", generatedAt, outputPath:"out/workflows/<id>" } })` → 0행이면 ConflictError → `createGeneratedFiles`(최종 경로) → `WorkflowTaskEvent`(PENDING→GENERATED). (`repositories/index.ts`에 `commitGeneratedTransition` 추가.) advisory lock·CAS·기록이 한 트랜잭션이라 커밋과 함께 lock 해제.
-5. 에러·예외 시 임시/trash 디렉터리 **cleanup**.
+0. **taskId별 직렬화(H2·I2)**: 같은 task의 동시 generate를 직렬화하되 **FS 작업 동안 DB 트랜잭션을 점유하지 않는다.** 구현 primitive는 impl에서 선택(`DEFERRED_TO_IMPL`) — 후보: (ⅰ) **session-level `pg_try_advisory_lock` + 타임아웃**(전용 커넥션, 즉시 실패 시 409), (ⅱ) 짧은 tx로 task에 **claim/lease** 표식 후 FS는 tx 밖. **금지: `pg_advisory_xact_lock`로 generate 전체를 감싸 FS I/O 내내 tx/커넥션을 잡는 것**(풀 고갈·lock 무한 대기). AC: lock 경합 시 빠른 409, FS 지연이 DB 커넥션을 점유하지 않음.
+1. task 조회 + lock 획득 후 **status가 PENDING이 아니면 ConflictError**(권한 `can(ctx, KIND_RESOURCE[kind], "generate")` fail-closed). lock 덕에 승격하는 요청은 하나뿐.
+2. `getGenerator(kind).generate(task, tmpDir)` — **요청별 임시 디렉터리**(`out/workflows/.tmp/<taskId>-<reqId>/`)에 HWPX 기록, 산출 파일 목록(최종 상대경로 = `out/workflows/<taskId>/…`) 반환. **이 단계는 DB tx 밖**(순수 FS·zip). **round-date는 여기서 건드리지 않는다(I3).**
+3. **승격(promote, atomic rename)**: 임시 디렉터리를 `out/workflows/<taskId>/`로 옮긴다. 최종 디렉터리가 이미 있으면(이전 시도 크래시 잔재) **원자 교체**(기존 final → 유니크 trash rename → tmp → final rename → trash 삭제 — 각 rename 원자적, live 디렉터리에 직접 쓰지 않아 torn write 없음). 직렬화돼 있어 경쟁 승격 없음.
+4. **짧은 최종 commit tx**: `updateMany({ where:{ id, status:"PENDING" }, data:{ status:"GENERATED", generatedAt, outputPath } })` → 0행이면 ConflictError → `createGeneratedFiles`(최종 경로) → `WorkflowTaskEvent`(PENDING→GENERATED) → **(billing) `createRoundDateIfMissing(computeBillingPeriod(scheduledAt))`**(I3 — 성공 commit 경로에서만, **기존 행 덮어쓰기 금지**). 이 tx만 짧게 DB를 점유한다(`commitGeneratedTransition`).
+5. 에러·예외·CAS 패배 시 임시/trash 디렉터리 **cleanup**, lock 해제.
 
-**복구성(G1)**: GENERATED는 승격(3) 성공 후에만 set → "GENERATED인데 파일 없음" 미발생. 승격 후 커밋 전 크래시는 status를 **PENDING으로 남겨**(파일은 최종 위치) → 재생성이 PENDING에서 정상 진행 → 별도 보상/repair 불필요. 회차 upsert는 멱등이라 재생성 안전.
+**복구성(G1)**: GENERATED는 승격(3) 성공 후에만 set → "GENERATED인데 파일 없음" 미발생. 승격 후 commit 전 크래시는 status를 **PENDING으로 남겨**(파일은 최종 위치) → 재생성이 정상 진행. round-date는 commit tx 안에서만 기록되므로 **실패한 generation은 round date를 바꾸지 않는다(I3)**.
 
-**AC**: 동시 generate 2건 → advisory lock 직렬화로 1건만 GENERATED·파일 1세트, 진 요청 409 + 임시/trash cleanup(잔여 없음, **승자 final 디렉터리 미변경**); 승격 후 커밋 전 중단 모사 → 재생성 복구(GENERATED-without-files 미발생).
+**AC**: 동시 generate 2건 → 직렬화로 1건만 GENERATED·파일 1세트, 진 요청 409 + cleanup(승자 final 미변경); 승격 후 commit 전 중단 → 재생성 복구; **generation 실패 시 `BillingRoundDate` 불변**(I3); lock 경합 시 빠른 409(FS 지연이 커넥션 미점유, I2).
 
 ### 8.3 라우트
 
@@ -286,7 +283,7 @@ export function getGenerator(kind: WorkflowKind): GeneratorPort; // 미등록이
 ### 9.2 `runSend(taskId, { step, subject, body }, ctx)` (`services/send.ts`) — 1·2단계 한정
 
 1. 권한 `can(ctx, KIND_RESOURCE[kind], "send")` 검사(라우트 진입 직후, fail-closed — `deliver`는 자체 authz 없음).
-2. `step`은 **1 또는 2만 허용**(3단계 요청은 `NotImplemented`/422 — 후속 UI spec). 단계별 목표 status 결정 + 첨부 목록 산출(§9.1). 수신자 = `task.recipients ?? type.defaultRecipients`. subject/body는 **caller 제공**(D7).
+2. `step`은 **1 또는 2만 허용**(3단계 요청은 `NotImplemented`/422 — 후속 UI spec). 단계별 목표 status 결정 + 첨부 목록 산출(§9.1). **수신자(I1)**: `body.recipients ?? task.recipients ?? type.defaultRecipients`로 해석하고, **결과가 비어 있으면 `MailDelivery` 생성 전 400/409로 거부**(빈/null 수신자로 SMTP 도달·오해성 발송 기록 방지). subject/body/recipients 모두 **caller 제공**(D7·백엔드 우선이라 task.recipients를 채울 UI가 없으므로 send 입력으로 받음). 해석된 수신자는 zod로 형식 검증.
 3. **선(先) TOCTOU 가드 점유(D11)**: `createSendingDelivery`를 **task-status 가드와 한 트랜잭션**으로 — 현재 status가 이 단계의 `fromStatus`(1단계=GENERATED, 2단계=SENT)이고 활성 SENDING이 없을 때만 SENDING 레코드 생성. CANCELLED/비-sendable이면 ConflictError. (foundation `createSendingDelivery`에 expected fromStatus 조건 추가 — foundation §13 후속 "cancel vs 동시 발송 TOCTOU" 이행.) 동시 중복은 `(taskId,step)` partial unique index가 DB 레벨 최종 방어선(foundation, 마이그레이션 `20260619120000`에 존재).
 4. 첨부 상대→절대(**`resolveStoragePath` strict**) 후 SMTP 발송. **발송 직전~직후 내내 delivery는 SENDING 유지** → `hasActiveSending`이 이를 관측해 cancel을 계속 차단.
 5. **후(後) 원자 확정(G2b)**: SMTP 성공 시 `finalizeDelivery(SENT)` + `transitionTask(targetStatus)`를 **한 DB 트랜잭션**으로 처리한다. SENDING이 이 tx 직전까지 유지되므로 "delivery=SENT인데 task 미전이"인 cancel 침투 창이 없다(메일 발송된 작업이 CANCELLED되는 것 차단). SMTP 실패 시 `finalizeDelivery(FAILED)`만, 전이 없음(발송 실패가 전이를 막지 않음). SMTP 성공 후 이 tx가 실패하면 **SENDING으로 남기고 에러 전파**(FAILED 둔갑 금지 — 중복 발송 방지, admin resolve, foundation §6.2·§6.3). `sentAt`은 SENT에서만 stamp.
@@ -300,15 +297,15 @@ D11의 send-측 가드(SENDING 선기록을 status=GENERATED 조건으로 점유
 - 그러면 send-측 점유(SENDING 삽입, status=GENERATED 조건)와 cancel-측(GENERATED ∧ ¬SENDING)이 **순서와 무관하게 상호배제**: 먼저 commit한 쪽이 이긴다. cancel 먼저면 send의 SENDING 삽입이 status≠GENERATED로 차단(SMTP 미발생). send 먼저면 cancel이 SENDING 존재로 0행(차단).
 - foundation `transitionTask`의 CANCELLED 경로(`hasActiveSending` 별도 precheck + CAS)를 이 원자 술어로 대체한다(foundation §13 후속 이행). **AC**: cancel이 precheck를 통과한 뒤 SENDING이 삽입되고 cancel이 commit을 시도하는 인터리빙에서 cancel이 거부됨을 동시성 테스트로 보장.
 
-### 9.3 mail.ts 적응 (D8, 공유 코드) — F4 반영: legacy resolver는 첨부 전용
+### 9.3 mail.ts 적응 (D8, 공유 코드) — F4·I4 반영: 첨부도 strict
 
-- `deliver`: `args.msg.attachments[].path`는 **절대경로**로 받아 SMTP에 사용하고, **DB 저장(`createSendingDelivery`)에는 `toStoredOutputPath(a.path)` 결과**를 넣는다 — `STORAGE_ROOT/out` 하위면 상대경로로 환원, 그 외 절대경로(leave 등)는 그대로 저장(하위호환).
-- `retryDelivery`: 저장된 `attachmentPaths`를 **`resolveAttachmentPath`(legacy 허용)** 로 절대화한 뒤 `existsSync`·`sendMail`. 이미-절대경로는 통과(leave 하위호환). **이 legacy 통과는 다운로드 경계(`resolveStoragePath` strict)와 분리**돼 있어 절대경로 허용이 파일 다운로드로 새지 않는다(F4).
-- **leave 발송 회귀 테스트**: leave 알림 메일(첨부 없음 `[]`)이 적응 후에도 그대로 통과함을 보장.
+- `deliver`: `args.msg.attachments[].path`는 **절대경로**로 받아 SMTP에 사용하고, **DB 저장(`createSendingDelivery`)에는 `toStoredOutputPath(a.path)` 결과(storage-relative)**를 넣는다. STORAGE_ROOT/out 밖 첨부면 저장 거부(신규 row는 절대경로 미저장, I4).
+- `retryDelivery`: 저장된 `attachmentPaths`를 **`resolveStoragePath`(strict)** 로 절대화한 뒤 `existsSync`·`sendMail`. **절대경로 row는 거부**(exfiltration 차단, I4).
+- **leave 발송 회귀 테스트**: leave 알림 메일(첨부 없음 `[]`)이 적응 후에도 그대로 통과함을 보장. **AC**: 절대경로 첨부 row의 retry가 거부됨.
 
 ### 9.4 라우트
 
-`POST /api/workflows/[id]/send` (일반). body: `{ step, subject, body }`, `step ∈ {1,2}`(zod enum, 3은 거부 — F2). 권한은 `runSend` 내부 kind별 게이트.
+`POST /api/workflows/[id]/send` (일반). body: `{ step, subject, body, recipients }`, `step ∈ {1,2}`(zod enum, 3은 거부 — F2), `recipients`는 이메일 배열(빈 배열·미해석 시 400 — I1). 권한은 `runSend` 내부 kind별 게이트.
 
 ## 10. 다운로드 API — ⑥·D13
 
@@ -364,7 +361,7 @@ TDD(실패 테스트 → FAIL 확인 → 최소 구현 → PASS → commit). nod
 - **설정 UI**(`/workflows/billing/settings`): React Query + ops-hub 프리미티브로 day-sync 610줄 page 재작성. 봉투 제거에 맞춰 `json.success` 분기도 제거.
 - **3단계(FINAL_SENT) 최종 발송 + 업로드 artifact 계약**(F2): 업로드 endpoint(저장 위치 `out/workflows/<taskId>/uploads/` 등), `GeneratedFile.id[]`/upload id 기반 첨부 선택, task 소속·kind·stage·확장자·존재 검증, 첨부 없으면 409. UI와 함께.
 - **단계별 메일 제목/본문 템플릿** + 발송 메일 골든 대조(텍스트 출처 확정 후).
-- mail 첨부 legacy 절대경로 통과 제거: cutover에서 leave 첨부를 상대경로로 정규화하면 `resolveAttachmentPath`의 절대 통과를 폐지(F4).
+- mail 첨부 절대경로 row 정규화: 과거/유입된 절대경로 `attachmentPaths`가 있으면 일회성 마이그레이션으로 storage-relative로 정규화(런타임 통과 없음, I4).
 - 주간보고·알림톡 sub-project가 `GENERATORS` 레지스트리에 등록만으로 generate/send/download 라우트 재사용.
 - 운영 cutover 시 과거 `BillingConfig`/`BillingRoundDate` 데이터 이전(Phase 6).
 - AI 서명 없는 commit(글로벌 규칙).
