@@ -509,6 +509,16 @@ model BillingRoundDate {
   @@schema("workflows")
 }
 
+model GenerationLock {
+  taskId      String   @id
+  holder      String   // 요청별 식별자(reqId = crypto.randomUUID())
+  lockedUntil DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@schema("workflows")
+}
+
 model Deliverable {
   id             String   @id @default(cuid())
   year           Int
