@@ -165,6 +165,27 @@ export async function findTaskForGenerate(id: string): Promise<FullTaskForGenera
   return { task, kind: type.kind };
 }
 
+export interface TaskForSend {
+  id: string; status: WorkflowStatus; kind: WorkflowKind; outputPath: string | null;
+  recipients: string[] | null; defaultRecipients: string[] | null;
+}
+
+export async function findTaskForSend(id: string): Promise<TaskForSend | null> {
+  const t = await prisma.workflowTask.findUnique({
+    where: { id },
+    select: {
+      id: true, status: true, outputPath: true, recipients: true,
+      type: { select: { kind: true, defaultRecipients: true } },
+    },
+  });
+  if (!t) return null;
+  return {
+    id: t.id, status: t.status, kind: t.type.kind, outputPath: t.outputPath,
+    recipients: Array.isArray(t.recipients) ? (t.recipients as string[]) : null,
+    defaultRecipients: Array.isArray(t.type.defaultRecipients) ? (t.type.defaultRecipients as string[]) : null,
+  };
+}
+
 // 짧은 최종 commit tx(spec §8.2 step 4): status CAS(PENDING→GENERATED) + 파일 기록 + 이벤트
 // + (billing) round-date create-if-missing(I3, 기존 행 덮어쓰기 금지). FS I/O는 이 tx 밖에서 끝난 상태.
 export async function commitGeneratedTransition(args: {
