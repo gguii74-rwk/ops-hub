@@ -45,3 +45,32 @@ describe("fillGisungTable (행·열·누계 BigInt)", () => {
     expect(out).toContain("<hp:t>418,770,000</hp:t>"); // 139,590,000 * 3
   });
 });
+
+describe("fillGisungTable — roundDateMap KST 변환 경로", () => {
+  it("roundDateMap[1]의 submitDate에서 KST DD를 추출(일반 케이스)", () => {
+    // 2026-03-23T09:00:00Z = 2026-03-23 18:00 KST → KST day = 23
+    const xml = "02월 10일";
+    const submitDate = new Date("2026-03-23T09:00:00Z");
+    const out = fillGisungTable(xml, "10", 1, "139,590,000", 139590000n, { 1: submitDate });
+    expect(out).toContain("02월 23일"); // KST day = 23
+  });
+
+  it("KST 경계: UTC day 22이지만 KST day 23인 submitDate → 23을 사용해야 함(TZ 회귀 방지)", () => {
+    // 2026-03-22T15:30:00Z = 2026-03-23 00:30 KST → KST day = 23, UTC day = 22
+    const xml = "02월 10일";
+    const submitDate = new Date("2026-03-22T15:30:00Z");
+    const out = fillGisungTable(xml, "10", 1, "139,590,000", 139590000n, { 1: submitDate });
+    expect(out).toContain("02월 23일"); // KST day(23), UTC day(22) 아님
+    expect(out).not.toContain("02월 22일");
+  });
+
+  it("round=2, roundDateMap[2] 있으면 3월 날짜도 KST DD로 치환", () => {
+    // 2026-04-22T15:00:00Z = 2026-04-23 00:00 KST → KST day = 23
+    const xml = "02월 10일03월 10일";
+    const d1 = new Date("2026-03-23T09:00:00Z"); // KST day 23
+    const d2 = new Date("2026-04-22T15:00:00Z"); // KST day 23 (경계)
+    const out = fillGisungTable(xml, "10", 2, "139,590,000", 139590000n, { 1: d1, 2: d2 });
+    expect(out).toContain("02월 23일");
+    expect(out).toContain("03월 23일");
+  });
+});
