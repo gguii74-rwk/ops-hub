@@ -38,6 +38,7 @@ const ctx = (over: Partial<{ isOwner: boolean; isAdmin: boolean; keys: string[] 
 beforeEach(() => {
   repo.createSendingDelivery.mockReset().mockResolvedValue({ id: "d1" });
   repo.finalizeDelivery.mockReset().mockImplementation(async (id: string, patch: any) => ({ id, ...patch }));
+  repo.finalizeDeliveryWithTransition.mockReset().mockResolvedValue({ id: "d1", status: "SENT" });
   repo.findDeliveryForAction.mockReset();
   repo.claimFailedForRetry.mockReset().mockResolvedValue(true);
   send.mockReset().mockResolvedValue({ providerMessageId: "pm1" });
@@ -45,7 +46,7 @@ beforeEach(() => {
 });
 
 describe("deliver", () => {
-  it("SENDING 선기록 → SMTP 성공 → SENT 갱신", async () => {
+  it("SENDING 선기록 → SMTP 성공 → SENT 갱신(onDelivered 없음 경로)", async () => {
     const out = await deliver({ taskId: "t1", step: "send", msg: { to: ["a@x"], subject: "s", html: "<p>h</p>" }, sentById: "u1" });
     expect(repo.createSendingDelivery).toHaveBeenCalledWith(expect.objectContaining({ taskId: "t1", step: "send", bodyHtml: "<p>h</p>" }));
     expect(send).toHaveBeenCalledWith(
@@ -53,6 +54,28 @@ describe("deliver", () => {
       expect.objectContaining({ host: "mail.x" }),
     );
     expect(repo.finalizeDelivery).toHaveBeenCalledWith("d1", expect.objectContaining({ status: "SENT", providerMessageId: "pm1" }));
+    // G2b 전이 경로는 사용하지 않아야 한다.
+    expect(repo.finalizeDeliveryWithTransition).not.toHaveBeenCalled();
+    expect((out as any).status).toBe("SENT");
+  });
+
+  // G2b: onDelivered + taskId 지정 시 SMTP 성공 → finalizeDeliveryWithTransition 호출,
+  // plain finalizeDelivery(SENT) 는 호출 금지.
+  it("SMTP 성공 + onDelivered 지정 → finalizeDeliveryWithTransition 호출, finalizeDelivery(SENT) 미호출", async () => {
+    const out = await deliver({
+      taskId: "t1",
+      step: "send",
+      msg: { to: ["a@x"], subject: "s", html: "<p>h</p>" },
+      sentById: "u1",
+      onDelivered: { fromStatus: "GENERATED", toStatus: "SENT", actorId: "u1" },
+    });
+    expect(repo.finalizeDeliveryWithTransition).toHaveBeenCalledWith(
+      "d1",
+      expect.objectContaining({ providerMessageId: "pm1" }),
+      expect.objectContaining({ taskId: "t1", fromStatus: "GENERATED", toStatus: "SENT", actorId: "u1" }),
+    );
+    // plain SENT finalizer는 이 경로에서 사용하지 않는다.
+    expect(repo.finalizeDelivery).not.toHaveBeenCalledWith("d1", expect.objectContaining({ status: "SENT" }));
     expect((out as any).status).toBe("SENT");
   });
 

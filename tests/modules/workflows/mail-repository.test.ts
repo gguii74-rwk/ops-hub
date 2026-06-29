@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 
 const h = vi.hoisted(() => {
   const calls: Record<string, any> = {};
-  const ret: any = { active: null, created: { id: "d1" }, found: null, throwP2002: false, updateManyCount: 0 };
+  const ret: any = { active: null, created: { id: "d1" }, found: null, throwP2002: false, updateManyCount: 0, taskUpdateManyCount: 1 };
   return { calls, ret };
 });
 
@@ -17,16 +17,28 @@ vi.mock("@/lib/prisma", () => {
         return { id: "d1", ...a.data };
       },
       update: async (a: any) => ((h.calls.update = a), { id: a.where.id, ...a.data }),
-      updateMany: async (a: any) => ((h.calls.updateMany = a), { count: h.ret.updateManyCount }),
+      updateMany: async (a: any) => {
+        h.calls.updateMany = a;
+        return { count: h.ret.updateManyCount };
+      },
       findUnique: async (a: any) => ((h.calls.findUnique = a), h.ret.found),
-      findUniqueOrThrow: async (a: any) => ((h.calls.findUnique = a), h.ret.found),
+      findUniqueOrThrow: async (a: any) => ((h.calls.findUniqueOrThrow = a), h.ret.found),
+    },
+    workflowTask: {
+      updateMany: async (a: any) => {
+        h.calls.taskUpdateMany = a;
+        return { count: h.ret.taskUpdateManyCount };
+      },
+    },
+    workflowTaskEvent: {
+      create: async (a: any) => ((h.calls.taskEventCreate = a), { id: "ev1", ...a.data }),
     },
     $transaction: async (fn: any) => fn(client),
   };
   return { prisma: client };
 });
 
-import { claimFailedForRetry, createSendingDelivery, finalizeDelivery, findDeliveryForAction } from "@/modules/workflows/repositories/mail";
+import { claimFailedForRetry, createSendingDelivery, finalizeDelivery, finalizeDeliveryWithTransition, findDeliveryForAction } from "@/modules/workflows/repositories/mail";
 import { ConflictError } from "@/modules/workflows/types";
 
 beforeEach(() => {
@@ -35,6 +47,7 @@ beforeEach(() => {
   h.ret.found = null;
   h.ret.throwP2002 = false;
   h.ret.updateManyCount = 0;
+  h.ret.taskUpdateManyCount = 1;
 });
 
 describe("createSendingDelivery", () => {
@@ -116,5 +129,52 @@ describe("findDeliveryForAction", () => {
   });
   it("없으면 null", async () => {
     expect(await findDeliveryForAction("nope")).toBeNull();
+  });
+});
+
+describe("finalizeDeliveryWithTransition (G2b 한 tx)", () => {
+  const transition = { taskId: "t1", fromStatus: "GENERATED" as const, toStatus: "SENT" as const, actorId: "u1" };
+
+  it("SUCCESS: delivery SENDING→SENT + task CAS → resolves, event 기록", async () => {
+    h.ret.updateManyCount = 1;    // mailDelivery.updateMany count
+    h.ret.taskUpdateManyCount = 1; // workflowTask.updateMany count
+    h.ret.found = { id: "d1", status: "SENT", providerMessageId: "pm1" };
+
+    const out = await finalizeDeliveryWithTransition("d1", { providerMessageId: "pm1" }, transition);
+
+    // delivery finalize: SENDING→SENT
+    expect(h.calls.updateMany).toMatchObject({
+      where: { id: "d1", status: "SENDING" },
+      data: expect.objectContaining({ status: "SENT", providerMessageId: "pm1" }),
+    });
+    // task CAS: fromStatus→toStatus
+    expect(h.calls.taskUpdateMany).toMatchObject({
+      where: { id: "t1", status: "GENERATED" },
+      data: expect.objectContaining({ status: "SENT" }),
+    });
+    // event 기록
+    expect(h.calls.taskEventCreate).toMatchObject({
+      data: expect.objectContaining({ taskId: "t1", fromStatus: "GENERATED", toStatus: "SENT", actorId: "u1" }),
+    });
+    expect(out).toMatchObject({ id: "d1", status: "SENT" });
+  });
+
+  // G2b 핵심: cancel이 먼저 task 상태를 바꾼 경우(count 0) → ConflictError. delivery SENT도 커밋 안 됨($transaction 롤백).
+  it("CONFLICT(cancel 침투): task CAS count 0 → ConflictError", async () => {
+    h.ret.updateManyCount = 1;     // delivery finalize 성공
+    h.ret.taskUpdateManyCount = 0; // task CAS 실패(취소가 먼저)
+
+    await expect(
+      finalizeDeliveryWithTransition("d1", { providerMessageId: "pm1" }, transition),
+    ).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it("CONFLICT: delivery finalize count !== 1 → ConflictError(이미 다른 경로에서 확정)", async () => {
+    h.ret.updateManyCount = 0;     // delivery 이미 확정됨
+    h.ret.taskUpdateManyCount = 1;
+
+    await expect(
+      finalizeDeliveryWithTransition("d1", { providerMessageId: "pm1" }, transition),
+    ).rejects.toBeInstanceOf(ConflictError);
   });
 });
