@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
 import { ForbiddenError } from "@/kernel/access";
 import type { PermissionSummary } from "@/kernel/access";
-import { ConflictError } from "@/modules/workflows/types";
+import { ConflictError, NotImplementedError } from "@/modules/workflows/types";
 import type { SessionUser } from "@/lib/auth/types";
 
 // 알려진 도메인 에러만 상태로 매핑. 그 외는 rethrow(Next가 500).
 export function mapError(error: unknown): NextResponse {
   if (error instanceof ForbiddenError) return NextResponse.json({ error: error.message }, { status: 403 });
   if (error instanceof ConflictError) return NextResponse.json({ error: error.message }, { status: 409 });
+  if (error instanceof NotImplementedError) return NextResponse.json({ error: error.message }, { status: 422 });
   throw error;
 }
 

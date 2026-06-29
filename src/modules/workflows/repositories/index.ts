@@ -1,8 +1,9 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma, type PrismaTx } from "@/lib/prisma";
-import type { WorkflowKind, WorkflowStatus, MailDeliveryStatus } from "@prisma/client";
+import type { WorkflowKind, WorkflowStatus, MailDeliveryStatus, WorkflowTask } from "@prisma/client";
 import type { GeneratorResult } from "../types";
+import { ConflictError } from "../types";
 
 export interface TaskListRow { id: string; kind: WorkflowKind; typeName: string; scheduledAt: Date; status: WorkflowStatus; }
 export interface TaskListFilter { kinds: WorkflowKind[]; statuses?: WorkflowStatus[]; start?: Date; end?: Date; }
@@ -121,4 +122,62 @@ export async function createGeneratedFiles(taskId: string, files: GeneratorResul
 export async function hasActiveSending(taskId: string): Promise<boolean> {
   const n = await prisma.mailDelivery.count({ where: { taskId, status: "SENDING" } });
   return n > 0;
+}
+
+export interface FullTaskForGenerate { task: WorkflowTask; kind: WorkflowKind; }
+
+// generate용 전체 task + kind. generator.generate(task, outDir)에 WorkflowTask 전체를 넘겨야 한다.
+export async function findTaskForGenerate(id: string): Promise<FullTaskForGenerate | null> {
+  const t = await prisma.workflowTask.findUnique({
+    where: { id },
+    include: { type: { select: { kind: true } } },
+  });
+  if (!t) return null;
+  const { type, ...task } = t;
+  return { task, kind: type.kind };
+}
+
+// 짧은 최종 commit tx(spec §8.2 step 4): status CAS(PENDING→GENERATED) + 파일 기록 + 이벤트
+// + (billing) round-date create-if-missing(I3, 기존 행 덮어쓰기 금지). FS I/O는 이 tx 밖에서 끝난 상태.
+export async function commitGeneratedTransition(args: {
+  taskId: string; actorId: string; outputPath: string;
+  files: GeneratorResult["files"];
+  roundDate?: { year: number; round: number; submitDate: Date };
+}): Promise<void> {
+  await prisma.$transaction(async (tx: PrismaTx) => {
+    const res = await tx.workflowTask.updateMany({
+      where: { id: args.taskId, status: "PENDING" },
+      data: { status: "GENERATED", generatedAt: new Date(), outputPath: args.outputPath },
+    });
+    if (res.count === 0) throw new ConflictError("상태가 이미 변경되었습니다.");
+
+    if (args.files.length > 0) {
+      await tx.generatedFile.createMany({
+        data: args.files.map((f) => ({
+          taskId: args.taskId,
+          path: f.path,
+          displayName: f.displayName,
+          mimeType: f.mimeType ?? null,
+          sizeBytes: f.sizeBytes != null ? BigInt(f.sizeBytes) : null,
+        })),
+      });
+    }
+
+    await tx.workflowTaskEvent.create({
+      data: { taskId: args.taskId, fromStatus: "PENDING", toStatus: "GENERATED", actorId: args.actorId },
+    });
+
+    if (args.roundDate) {
+      // I3: 성공 commit 경로에서만, 기존 행 덮어쓰기 금지(수동 보정 회차일 보호).
+      const existing = await tx.billingRoundDate.findUnique({
+        where: { year_round: { year: args.roundDate.year, round: args.roundDate.round } },
+        select: { id: true },
+      });
+      if (!existing) {
+        await tx.billingRoundDate.create({
+          data: { year: args.roundDate.year, round: args.roundDate.round, submitDate: args.roundDate.submitDate },
+        });
+      }
+    }
+  });
 }

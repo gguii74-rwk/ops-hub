@@ -8,6 +8,14 @@ export class ConflictError extends Error {
   }
 }
 
+/** 미등록 kind generator 등 미구현 경로 → API 422. */
+export class NotImplementedError extends Error {
+  constructor(message = "지원하지 않는 작업입니다.") {
+    super(message);
+    this.name = "NotImplementedError";
+  }
+}
+
 /** 전이/생성/취소 권한 컨텍스트. permissionKeys = getPermissionSummary().keys → Set. */
 export interface TransitionCtx {
   userId: string;
