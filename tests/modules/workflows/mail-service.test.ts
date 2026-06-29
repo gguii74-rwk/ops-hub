@@ -179,6 +179,35 @@ describe("retryDelivery", () => {
     expect(send).not.toHaveBeenCalled();
     expect((out as any).status).toBe("FAILED");
   });
+
+  // R1-2 fix: billing step 발송은 복구도 전이 인지여야 한다. retry 성공 시 finalizeDeliveryWithTransition으로
+  // SENT 확정 + 워크플로 전이(GENERATED→SENT)를 한 tx로. plain finalizeDelivery(SENT) 미사용.
+  it("billing step1 retry 성공 → finalizeDeliveryWithTransition(GENERATED→SENT), plain SENT 미사용", async () => {
+    repo.findDeliveryForAction.mockResolvedValue({ ...failed, kind: "BILLING", step: "1" });
+    await retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.billing:send"] }));
+    expect(repo.finalizeDeliveryWithTransition).toHaveBeenCalledWith(
+      "d1",
+      expect.objectContaining({ providerMessageId: "pm1" }),
+      expect.objectContaining({ taskId: "t1", fromStatus: "GENERATED", toStatus: "SENT", actorId: "u1" }),
+    );
+    expect(repo.finalizeDelivery).not.toHaveBeenCalledWith("d1", expect.objectContaining({ status: "SENT" }));
+  });
+
+  it("billing step2 retry 성공 → finalizeDeliveryWithTransition(SENT→HQ_REQUESTED)", async () => {
+    repo.findDeliveryForAction.mockResolvedValue({ ...failed, kind: "BILLING", step: "2" });
+    await retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.billing:send"] }));
+    expect(repo.finalizeDeliveryWithTransition).toHaveBeenCalledWith(
+      "d1", expect.anything(),
+      expect.objectContaining({ fromStatus: "SENT", toStatus: "HQ_REQUESTED" }),
+    );
+  });
+
+  it("전이 매핑 없는 step(kind=WEEKLY) retry 성공 → 현행 plain finalizeDelivery(SENT) 유지", async () => {
+    repo.findDeliveryForAction.mockResolvedValue(failed); // kind=WEEKLY_REPORT, step="send"
+    await retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.weekly:send"] }));
+    expect(repo.finalizeDeliveryWithTransition).not.toHaveBeenCalled();
+    expect(repo.finalizeDelivery).toHaveBeenCalledWith("d1", expect.objectContaining({ status: "SENT" }));
+  });
 });
 
 describe("resolveDelivery", () => {
@@ -203,5 +232,22 @@ describe("resolveDelivery", () => {
   it("SENDING이 아니면 Conflict", async () => {
     repo.findDeliveryForAction.mockResolvedValue({ ...sending, status: "SENT" });
     await expect(resolveDelivery({ deliveryId: "d1", taskId: "t1", to: "FAILED" }, ctx({ isAdmin: true }))).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  // R1-2 fix: billing step의 SENDING→SENT 수동 확정은 워크플로 전이도 적용(메일은 이미 나갔으나 전이 tx가 실패해 남은 잔여).
+  it("billing step1 SENDING→SENT resolve → finalizeDeliveryWithTransition(GENERATED→SENT)", async () => {
+    repo.findDeliveryForAction.mockResolvedValue({ ...sending, kind: "BILLING", step: "1" });
+    await resolveDelivery({ deliveryId: "d1", taskId: "t1", to: "SENT" }, ctx({ isAdmin: true }));
+    expect(repo.finalizeDeliveryWithTransition).toHaveBeenCalledWith(
+      "d1", expect.objectContaining({ providerMessageId: null }),
+      expect.objectContaining({ taskId: "t1", fromStatus: "GENERATED", toStatus: "SENT", actorId: "u1" }),
+    );
+  });
+
+  it("billing step1 SENDING→FAILED resolve → 전이 없음(plain finalizeDelivery)", async () => {
+    repo.findDeliveryForAction.mockResolvedValue({ ...sending, kind: "BILLING", step: "1" });
+    await resolveDelivery({ deliveryId: "d1", taskId: "t1", to: "FAILED" }, ctx({ isAdmin: true }));
+    expect(repo.finalizeDeliveryWithTransition).not.toHaveBeenCalled();
+    expect(repo.finalizeDelivery).toHaveBeenCalledWith("d1", expect.objectContaining({ status: "FAILED" }));
   });
 });

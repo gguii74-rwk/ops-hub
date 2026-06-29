@@ -4,20 +4,21 @@ vi.mock("@/kernel/access", () => ({ ForbiddenError: class ForbiddenError extends
 vi.mock("node:crypto", () => ({ randomUUID: vi.fn(() => "req-1") }));
 vi.mock("node:fs", () => ({ default: { mkdirSync: vi.fn(), existsSync: vi.fn(() => false), renameSync: vi.fn(), rmSync: vi.fn() } }));
 vi.mock("@/lib/storage", () => ({ resolveOutputPath: vi.fn((rel: string) => `/abs/${rel}`) }));
-vi.mock("@/modules/workflows/repositories/generation-lock", () => ({ acquireGenerationLease: vi.fn(), releaseGenerationLease: vi.fn() }));
+vi.mock("@/modules/workflows/repositories/generation-lock", () => ({ acquireGenerationLease: vi.fn(), releaseGenerationLease: vi.fn(), holdsGenerationLease: vi.fn() }));
 vi.mock("@/modules/workflows/repositories", () => ({ findTaskForGenerate: vi.fn(), commitGeneratedTransition: vi.fn() }));
 vi.mock("@/modules/workflows/services/generator-registry", () => ({ getGenerator: vi.fn() }));
 
 import fs from "node:fs";
 import { ForbiddenError } from "@/kernel/access";
 import { ConflictError } from "@/modules/workflows/types";
-import { acquireGenerationLease, releaseGenerationLease } from "@/modules/workflows/repositories/generation-lock";
+import { acquireGenerationLease, releaseGenerationLease, holdsGenerationLease } from "@/modules/workflows/repositories/generation-lock";
 import { findTaskForGenerate, commitGeneratedTransition } from "@/modules/workflows/repositories";
 import { getGenerator } from "@/modules/workflows/services/generator-registry";
 import { runGenerate } from "@/modules/workflows/services/generate";
 
 const acquire = acquireGenerationLease as unknown as ReturnType<typeof vi.fn>;
 const release = releaseGenerationLease as unknown as ReturnType<typeof vi.fn>;
+const holds = holdsGenerationLease as unknown as ReturnType<typeof vi.fn>;
 const findTask = findTaskForGenerate as unknown as ReturnType<typeof vi.fn>;
 const commit = commitGeneratedTransition as unknown as ReturnType<typeof vi.fn>;
 const getGen = getGenerator as unknown as ReturnType<typeof vi.fn>;
@@ -30,9 +31,10 @@ const billingTask = { id: "t1", status: "PENDING", scheduledAt: new Date("2026-0
 const gen = { generate: vi.fn(async () => ({ files: [{ path: "out/workflows/t1/a.hwpx", displayName: "a.hwpx" }] })) };
 
 beforeEach(() => {
-  [acquire, release, findTask, commit, getGen, fsRename, fsRm].forEach((f) => f.mockReset());
+  [acquire, release, holds, findTask, commit, getGen, fsRename, fsRm].forEach((f) => f.mockReset());
   fsExists.mockReset().mockReturnValue(false);
   acquire.mockResolvedValue(true);
+  holds.mockResolvedValue(true);
   findTask.mockResolvedValue({ task: billingTask, kind: "BILLING" });
   getGen.mockReturnValue(gen);
   gen.generate.mockClear().mockResolvedValue({ files: [{ path: "out/workflows/t1/a.hwpx", displayName: "a.hwpx" }] });
@@ -67,9 +69,18 @@ describe("runGenerate (F1·G1·H2·I2·I3·J1)", () => {
     expect(gen.generate).toHaveBeenCalledWith(billingTask, "/abs/workflows/.tmp/t1-req-1");
     expect(fsRename).toHaveBeenCalledWith("/abs/workflows/.tmp/t1-req-1", "/abs/workflows/t1");
     expect(commit).toHaveBeenCalledWith(expect.objectContaining({
-      taskId: "t1", outputPath: "out/workflows/t1",
+      taskId: "t1", outputPath: "out/workflows/t1", holder: "req-1",
       roundDate: { year: 2026, round: 2, submitDate: billingTask.scheduledAt }, // KST 3/10 → 전월 2월
     }));
+    expect(release).toHaveBeenCalledWith("t1", "req-1");
+  });
+
+  it("승격 직전 lease steal(holdsGenerationLease=false) → Conflict, promote(rename)·commit 미수행(R1-2)", async () => {
+    holds.mockResolvedValue(false); // 생성 도중 steal당함
+    await expect(runGenerate("t1", ctx(["workflows.billing:generate"]))).rejects.toBeInstanceOf(ConflictError);
+    expect(fsRename).not.toHaveBeenCalled(); // stale 산출물을 final에 올리지 않음
+    expect(commit).not.toHaveBeenCalled();
+    expect(fsRm).toHaveBeenCalledWith("/abs/workflows/.tmp/t1-req-1", { recursive: true, force: true }); // tmp 정리
     expect(release).toHaveBeenCalledWith("t1", "req-1");
   });
   it("기존 final 있으면 trash 경유 원자 교체(rename 2회 + trash rm)", async () => {

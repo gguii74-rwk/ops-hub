@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 
 const h = vi.hoisted(() => {
   const calls: Record<string, any> = {};
-  const ret: any = { active: null, created: { id: "d1" }, found: null, throwP2002: false, updateManyCount: 0, taskUpdateManyCount: 1 };
+  const ret: any = { active: null, created: { id: "d1" }, found: null, throwP2002: false, throwP2002OnUpdateMany: false, updateManyCount: 0, taskUpdateManyCount: 1 };
   return { calls, ret };
 });
 
@@ -19,6 +19,7 @@ vi.mock("@/lib/prisma", () => {
       update: async (a: any) => ((h.calls.update = a), { id: a.where.id, ...a.data }),
       updateMany: async (a: any) => {
         h.calls.updateMany = a;
+        if (h.ret.throwP2002OnUpdateMany) throw new Prisma.PrismaClientKnownRequestError("dup", { code: "P2002", clientVersion: "x" });
         return { count: h.ret.updateManyCount };
       },
       findUnique: async (a: any) => ((h.calls.findUnique = a), h.ret.found),
@@ -46,6 +47,7 @@ beforeEach(() => {
   h.ret.active = null;
   h.ret.found = null;
   h.ret.throwP2002 = false;
+  h.ret.throwP2002OnUpdateMany = false;
   h.ret.updateManyCount = 0;
   h.ret.taskUpdateManyCount = 1;
 });
@@ -173,6 +175,15 @@ describe("finalizeDeliveryWithTransition (G2b 한 tx)", () => {
     h.ret.updateManyCount = 0;     // delivery 이미 확정됨
     h.ret.taskUpdateManyCount = 1;
 
+    await expect(
+      finalizeDeliveryWithTransition("d1", { providerMessageId: "pm1" }, transition),
+    ).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  // R1-2 fix: 복구 경로(retry/resolve)가 호출할 때 같은 (taskId,step)에 이미 활성 SENT가 있으면
+  // SENDING→SENT 갱신이 부분 unique(P2002)를 위반 → 500이 아니라 ConflictError(409)로 가시화.
+  it("P2002(중복 활성 SENT) → ConflictError로 정규화", async () => {
+    h.ret.throwP2002OnUpdateMany = true;
     await expect(
       finalizeDeliveryWithTransition("d1", { providerMessageId: "pm1" }, transition),
     ).rejects.toBeInstanceOf(ConflictError);

@@ -211,11 +211,19 @@ export async function findTaskForDownload(id: string): Promise<TaskForDownload |
 }
 
 export async function commitGeneratedTransition(args: {
-  taskId: string; actorId: string; outputPath: string;
+  taskId: string; actorId: string; outputPath: string; holder: string;
   files: GeneratorResult["files"];
   roundDate?: { year: number; round: number; submitDate: Date };
 }): Promise<void> {
   await prisma.$transaction(async (tx: PrismaTx) => {
+    // lease 소유권 권위 가드: 생성 도중 lease가 steal당했으면(holder 불일치/소멸) 이 요청의 산출물은
+    // 더 이상 권위가 아니므로 commit 금지(승자만 GeneratedFile/이벤트를 쓴다 — disk≠DB 분기 차단).
+    // FOR UPDATE로 lock 행을 잠가 동시 acquire(steal)와 직렬화한다.
+    const lockRows = await tx.$queryRaw<Array<{ holder: string }>>`
+      SELECT "holder" FROM workflows."GenerationLock" WHERE "taskId" = ${args.taskId} FOR UPDATE`;
+    if (lockRows.length === 0 || lockRows[0].holder !== args.holder) {
+      throw new ConflictError("생성 lease를 더 이상 보유하지 않습니다.");
+    }
     const res = await tx.workflowTask.updateMany({
       where: { id: args.taskId, status: "PENDING" },
       data: { status: "GENERATED", generatedAt: new Date(), outputPath: args.outputPath },

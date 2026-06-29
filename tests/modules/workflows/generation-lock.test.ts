@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-vi.mock("@/lib/prisma", () => ({ prisma: { $executeRaw: vi.fn() } }));
+vi.mock("@/lib/prisma", () => ({ prisma: { $executeRaw: vi.fn(), $queryRaw: vi.fn() } }));
 
 import { prisma } from "@/lib/prisma";
-import { acquireGenerationLease, releaseGenerationLease, GENERATION_LEASE_TTL_MS } from "@/modules/workflows/repositories/generation-lock";
+import { acquireGenerationLease, releaseGenerationLease, holdsGenerationLease, GENERATION_LEASE_TTL_MS } from "@/modules/workflows/repositories/generation-lock";
 
 const exec = (prisma as unknown as { $executeRaw: ReturnType<typeof vi.fn> }).$executeRaw;
+const query = (prisma as unknown as { $queryRaw: ReturnType<typeof vi.fn> }).$queryRaw;
 
-beforeEach(() => { exec.mockReset(); });
+beforeEach(() => { exec.mockReset(); query.mockReset(); });
 
 describe("acquireGenerationLease (J1 CAS)", () => {
   it("affected-rows 1 → true(점유 성공)", async () => {
@@ -28,5 +29,16 @@ describe("releaseGenerationLease", () => {
     exec.mockResolvedValue(1);
     await releaseGenerationLease("t1", "h1");
     expect(exec).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("holdsGenerationLease (steal 감지)", () => {
+  it("내 holder의 row 존재 → true", async () => {
+    query.mockResolvedValue([{ ok: 1 }]);
+    expect(await holdsGenerationLease("t1", "h1")).toBe(true);
+  });
+  it("row 없음(steal/release됨) → false", async () => {
+    query.mockResolvedValue([]);
+    expect(await holdsGenerationLease("t1", "h1")).toBe(false);
   });
 });

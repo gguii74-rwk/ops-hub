@@ -8,7 +8,7 @@ import { resolveOutputPath } from "@/lib/storage";
 import { ConflictError, type TransitionCtx } from "../types";
 import { KIND_RESOURCE } from "../policy";
 import { getGenerator } from "./generator-registry";
-import { acquireGenerationLease, releaseGenerationLease } from "../repositories/generation-lock";
+import { acquireGenerationLease, releaseGenerationLease, holdsGenerationLease } from "../repositories/generation-lock";
 import { findTaskForGenerate, commitGeneratedTransition } from "../repositories";
 import { computeBillingPeriod } from "../billing/period";
 
@@ -65,13 +65,19 @@ export async function runGenerate(taskId: string, ctx: TransitionCtx): Promise<v
     const result = await getGenerator(kind).generate(task, tmpDir); // 정확히 1회
 
     // 3. 원자 승격(GENERATED는 파일 안착 후에만 — G1).
+    //    승격 직전 lease 소유권 재검증: 생성이 TTL을 넘겨 steal당했으면 stale 산출물을 final에 올리지 않는다.
+    //    (cheap early-abort. 최종 권위 가드는 commit tx의 FOR UPDATE holder 검사.)
+    if (!(await holdsGenerationLease(taskId, reqId))) {
+      throw new ConflictError("생성 lease를 더 이상 보유하지 않습니다.");
+    }
     promoteDir(tmpDir, finalDir);
     promoted = true;
 
-    // 4. 짧은 commit tx: status CAS + 파일 + 이벤트 + (billing) round-date create-if-missing.
+    // 4. 짧은 commit tx: holder 가드 + status CAS + 파일 + 이벤트 + (billing) round-date create-if-missing.
     await commitGeneratedTransition({
       taskId,
       actorId: ctx.userId,
+      holder: reqId,
       outputPath: `out/workflows/${taskId}`,
       files: result.files,
       roundDate: billingRoundDate(kind, task.scheduledAt),

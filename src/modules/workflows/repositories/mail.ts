@@ -119,20 +119,30 @@ export async function finalizeDeliveryWithTransition(
   patch: { providerMessageId: string | null },
   transition: { taskId: string; fromStatus: WorkflowStatus; toStatus: WorkflowStatus; actorId: string },
 ): Promise<MailDelivery> {
-  await prisma.$transaction(async (tx: PrismaTx) => {
-    const fin = await tx.mailDelivery.updateMany({
-      where: { id: deliveryId, status: "SENDING" },
-      data: { status: "SENT", sentAt: new Date(), providerMessageId: patch.providerMessageId, errorMessage: null },
+  try {
+    await prisma.$transaction(async (tx: PrismaTx) => {
+      const fin = await tx.mailDelivery.updateMany({
+        where: { id: deliveryId, status: "SENDING" },
+        data: { status: "SENT", sentAt: new Date(), providerMessageId: patch.providerMessageId, errorMessage: null },
+      });
+      if (fin.count !== 1) throw new ConflictError("발송이 이미 다른 경로에서 확정되었습니다.");
+      const trans = await tx.workflowTask.updateMany({
+        where: { id: transition.taskId, status: transition.fromStatus },
+        data: transition.toStatus === "SENT" ? { status: "SENT", sentAt: new Date() } : { status: transition.toStatus },
+      });
+      if (trans.count === 0) throw new ConflictError("작업 상태가 이미 변경되었습니다.");
+      await tx.workflowTaskEvent.create({
+        data: { taskId: transition.taskId, fromStatus: transition.fromStatus, toStatus: transition.toStatus, actorId: transition.actorId },
+      });
     });
-    if (fin.count !== 1) throw new ConflictError("발송이 이미 다른 경로에서 확정되었습니다.");
-    const trans = await tx.workflowTask.updateMany({
-      where: { id: transition.taskId, status: transition.fromStatus },
-      data: transition.toStatus === "SENT" ? { status: "SENT", sentAt: new Date() } : { status: transition.toStatus },
-    });
-    if (trans.count === 0) throw new ConflictError("작업 상태가 이미 변경되었습니다.");
-    await tx.workflowTaskEvent.create({
-      data: { taskId: transition.taskId, fromStatus: transition.fromStatus, toStatus: transition.toStatus, actorId: transition.actorId },
-    });
-  });
+  } catch (e) {
+    // 복구 경로(retry/resolve)가 호출할 때, 같은 (taskId,step)에 이미 활성 SENT가 있으면 SENDING→SENT 갱신이
+    // 부분 unique 인덱스를 위반(P2002)한다 → 중복 확정을 409로 가시화(500 방지). happy-path는 createSendingDelivery가
+    // 활성 중복을 막아 여기 도달하지 않는다.
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      throw new ConflictError("이미 진행 중이거나 완료된 발송이 있습니다.");
+    }
+    throw e;
+  }
   return prisma.mailDelivery.findUniqueOrThrow({ where: { id: deliveryId } });
 }

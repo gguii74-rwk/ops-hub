@@ -33,3 +33,16 @@ export async function releaseGenerationLease(taskId: string, holder: string): Pr
     WHERE "taskId" = ${taskId} AND "holder" = ${holder}
   `;
 }
+
+/**
+ * 현재 lease holder가 나(holder)인지 검사(steal 감지). steal당하면 row의 holder가 바뀌거나(다른 요청이 점유)
+ * release 후 row가 사라져 false. 만료-미steal 상태(holder는 나)면 true이나, promote 직전 cheap early-abort 용도이고
+ * 최종 권위 가드는 commitGeneratedTransition의 FOR UPDATE holder 검사다(원자적).
+ */
+export async function holdsGenerationLease(taskId: string, holder: string): Promise<boolean> {
+  const rows = await prisma.$queryRaw<Array<{ ok: number }>>`
+    SELECT 1 AS ok FROM workflows."GenerationLock"
+    WHERE "taskId" = ${taskId} AND "holder" = ${holder}
+  `;
+  return rows.length > 0;
+}

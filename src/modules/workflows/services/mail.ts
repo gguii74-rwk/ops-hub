@@ -7,7 +7,7 @@ import { sendMail, type MailMessage } from "@/lib/integrations/mail";
 import { getSmtpConfig } from "@/kernel/settings/reader";
 import { resolveStoragePath, toStoredOutputPath } from "@/lib/storage";
 import { ConflictError, type MailActionCtx } from "../types";
-import { KIND_RESOURCE } from "../policy";
+import { KIND_RESOURCE, sendStepTransition } from "../policy";
 import { claimFailedForRetry, createSendingDelivery, finalizeDelivery, finalizeDeliveryWithTransition, findDeliveryForAction } from "../repositories/mail";
 
 function canSend(ctx: MailActionCtx, kind: WorkflowKind): boolean {
@@ -104,6 +104,14 @@ export async function retryDelivery(
     const message = e instanceof Error ? e.message : String(e);
     return finalizeDelivery(d.id, { status: "FAILED", sentAt: null, errorMessage: message });
   }
+  // 복구도 happy-path(G2b)와 대칭: step 전이가 있는 task-scoped 발송이면 SENT 확정 + 워크플로 전이를
+  // 한 tx로 적용한다. 누락하면 메일은 나갔는데 task가 fromStatus에 묶여 다음 단계로 진행 못 한다.
+  const transition = sendStepTransition(d.kind, d.step);
+  if (transition && d.taskId) {
+    return finalizeDeliveryWithTransition(d.id, { providerMessageId }, {
+      taskId: d.taskId, fromStatus: transition.from, toStatus: transition.to, actorId: ctx.userId,
+    });
+  }
   return finalizeDelivery(d.id, { status: "SENT", sentAt: new Date(), providerMessageId });
 }
 
@@ -117,6 +125,14 @@ export async function resolveDelivery(
   if (!d) throw new ForbiddenError("발송 이력을 찾을 수 없습니다.");
   if (d.taskId !== args.taskId) throw new ForbiddenError("해당 작업의 발송이 아닙니다.");
   if (d.status !== "SENDING") throw new ConflictError("SENDING 상태만 수동 확정할 수 있습니다.");
+  // SENDING→SENT(메일은 이미 나갔으나 finalize+전이 tx가 실패해 남은 잔여)면 워크플로 전이도 함께 적용한다.
+  // FAILED 확정은 전이 없음(발송 실패가 전이를 막지 않는다).
+  const transition = args.to === "SENT" ? sendStepTransition(d.kind, d.step) : null;
+  if (transition && d.taskId) {
+    return finalizeDeliveryWithTransition(d.id, { providerMessageId: null }, {
+      taskId: d.taskId, fromStatus: transition.from, toStatus: transition.to, actorId: ctx.userId,
+    });
+  }
   return finalizeDelivery(d.id, {
     status: args.to,
     sentAt: args.to === "SENT" ? new Date() : null,
