@@ -43,7 +43,7 @@ day-sync 대금청구(월 1회 기성 대금 청구: 계약설정 CRUD → HWPX 
 | D8 | **`mail.ts` 수술적 적응**: `deliver`는 `toStoredOutputPath`로 상대 저장, `retryDelivery`는 **`resolveAttachmentPath`(legacy)** 로 절대화. 절대 통과는 메일 첨부에만(다운로드는 strict, F4) | attachmentPaths 상대경로 일원화(D2)와 기존 `existsSync`/`sendMail` 조화. leave 발송 회귀 테스트로 보호 |
 | D9 | **HWPX 치환에 사용자 입력 XML 이스케이프 추가**(`& < > " '`). split/join 치환·분리 run 마커·"02월 기준" 마커·전월 회차 계산 보존 | day-sync는 신뢰 설정값이라 미적용했으나 ops-hub는 입력 신뢰도가 낮음. 누락 시 한컴 무성 실패 |
 | D10 | **회차 자동 upsert는 billing generator가 소유**(생성 직후, 멱등). 파일 기록 + GENERATED 전이는 orchestrator가 CAS-in-tx로 원자화 | 누락 시 과거 회차 날짜 전부 폴백(§8). 멱등이라 비원자 순서 안전. 동시 generate 중복 파일행은 CAS로 차단 |
-| D11 | **send TOCTOU 가드**: SENDING 선기록을 task-status(sendable) 가드와 **한 트랜잭션**으로 점유 | foundation §13 후속 필수 — cancel 가능 상태(GENERATED)에서 background 발송과 cancel 경합 차단 |
+| D11 | **send TOCTOU 가드(양끝)**: ①선-SMTP — SENDING 선기록을 task-status(sendable) 가드와 한 tx로 점유. ②후-SMTP(G2b) — finalize(SENT)+transition을 한 tx로, 그때까지 SENDING 유지. `(taskId,step)` partial unique(마이그 20260619120000)가 DB 최종 방어선 | foundation §13 후속 필수 — cancel 가능 상태(GENERATED)에서 발송과 cancel 경합·발송된 작업 CANCELLED 차단 |
 | D12 | **검증 = 하이브리드 3층**: 순수함수 단위 + 4종 HWPX `section0.xml` 정규화 diff + 수동 한컴 열기 게이트. Phase 0 골든은 day-sync 기존 산출물·템플릿에서 박제 | HWPX 무성 실패는 사람만 최종 확인(STRATEGY §5). 골든으로 회귀 자동 감지 |
 | D13 | **다운로드는 `GeneratedFile.id`로 조회 후 resolve**(raw path 금지). 디렉터리면 ZIP, `Buffer`→`new Uint8Array` | 경로 주입 차단. billing outputPath는 디렉터리(§4) |
 
@@ -246,16 +246,19 @@ export const GENERATORS: Partial<Record<WorkflowKind, GeneratorPort>> = { BILLIN
 export function getGenerator(kind: WorkflowKind): GeneratorPort; // 미등록이면 명확한 도메인 에러(NotImplemented)
 ```
 
-### 8.2 `runGenerate(taskId, ctx)` (`services/generate.ts`, 일반 kind 디스패치) — F1 반영: temp-dir + atomic promote
+### 8.2 `runGenerate(taskId, ctx)` (`services/generate.ts`, 일반 kind 디스패치) — F1·G1 반영: **승격 → 커밋 순서**
 
-동시 generate가 **같은 `out/workflows/<taskId>/` 경로에 동시에 써서 파일이 찢기거나(torn write) DB 기록과 디스크 내용이 어긋나는 것**을 막는다. 디스크 쓰기를 task 디렉터리에 직접 하지 않고, **요청별 임시 디렉터리에 쓴 뒤 CAS 성공 시에만 atomic rename으로 승격**한다.
+동시 generate가 같은 `out/workflows/<taskId>/`에 동시에 써서 파일이 찢기거나(torn write) DB·디스크가 어긋나는 것을 막고, **"GENERATED인데 파일 없음" 같은 복구 불가 상태가 절대 생기지 않게** 한다. 핵심: **GENERATED는 파일이 최종 위치에 안착(승격)한 뒤에만 set한다.** 디스크 쓰기 → 승격 → CAS 커밋 순서.
 
-1. task 조회. 권한 `can(ctx, KIND_RESOURCE[kind], "generate")` 검사(fail-closed). **status가 PENDING이 아니면 ConflictError**(중복 생성·파일행 중복 방지).
-2. `getGenerator(kind).generate(task, tmpDir)` — **요청별 임시 디렉터리**(`out/workflows/.tmp/<taskId>-<reqId>/`)에 HWPX 기록, **billing generator가 현재 회차 `upsertRoundDate`(멱등, D10)**, `GeneratorResult.files`(승격 후 최종 상대경로 = `out/workflows/<taskId>/…`) 반환.
-3. **DB 트랜잭션(원자, CAS-in-tx)**: `updateMany({ where:{ id, status:"PENDING" }, data:{ status:"GENERATED", generatedAt, outputPath:"out/workflows/<id>" } })` → 0행이면 ConflictError(동시 generate) → tx 롤백(파일행 미기록) → `createGeneratedFiles`(최종 경로) → `WorkflowTaskEvent`(PENDING→GENERATED). (`repositories/index.ts`에 `commitGeneratedTransition` 추가.)
-4. **CAS 커밋 성공 후에만** 임시 디렉터리를 `out/workflows/<taskId>/`로 **atomic rename**(승격). CAS 실패(동시 generate에서 진 요청)·에러·예외 시 **임시 디렉터리 cleanup**(승자 산출물을 건드리지 않음).
-   - rename은 원자적이라 torn write가 없다. CAS 커밋 후 rename 실패(희박)는 "GENERATED인데 파일 미승격"으로 timeline에 드러나며 재생성으로 복구(무성 실패 아님). 회차 upsert는 멱등이라 재생성 안전.
-   - **AC**: 동시 generate 2건 → 정확히 1건만 GENERATED·파일 1세트, 진 요청은 409 + 임시 디렉터리 cleanup(잔여 없음)을 테스트로 보장.
+1. task 조회. 권한 `can(ctx, KIND_RESOURCE[kind], "generate")` 검사(fail-closed). **status가 PENDING이 아니면 ConflictError**(중복 생성 방지).
+2. `getGenerator(kind).generate(task, tmpDir)` — **요청별 임시 디렉터리**(`out/workflows/.tmp/<taskId>-<reqId>/`)에 HWPX 기록, **billing generator가 현재 회차 `upsertRoundDate`(멱등, D10)**, 산출 파일 목록(최종 상대경로 = `out/workflows/<taskId>/…`) 반환.
+3. **승격(promote, atomic rename)**: 임시 디렉터리를 `out/workflows/<taskId>/`로 옮긴다. 최종 디렉터리가 이미 있으면(이전 시도 잔재·동시 generate) **원자 교체**(기존 final → 유니크 trash로 rename → tmp → final rename → trash 삭제 — 각 rename은 원자적, live 디렉터리에 직접 쓰지 않아 torn write 없음).
+4. **DB 트랜잭션(원자, CAS-in-tx)**: `updateMany({ where:{ id, status:"PENDING" }, data:{ status:"GENERATED", generatedAt, outputPath:"out/workflows/<id>" } })` → 0행이면 ConflictError(동시 generate에서 진 요청; 승격된 파일은 결정적이라 승자 산출물과 동일 바이트 → 무해) → `createGeneratedFiles`(최종 경로) → `WorkflowTaskEvent`(PENDING→GENERATED). (`repositories/index.ts`에 `commitGeneratedTransition` 추가.)
+5. 에러·예외·CAS 패배 시 임시/trash 디렉터리 **cleanup**(승자 산출물 미손상).
+
+**복구성(G1)**: GENERATED는 승격(3) 성공 후에만 set되므로 "GENERATED인데 파일 없음" 상태가 발생하지 않는다. 승격 후 CAS 전 크래시는 status를 **PENDING으로 남겨**(파일은 최종 위치에 있음) → 재생성이 PENDING에서 정상 진행(재승격은 결정적이라 동일 바이트로 덮음) → 별도 보상/repair 경로 불필요. 회차 upsert는 멱등이라 재생성 안전.
+
+**AC**: 동시 generate 2건 → 정확히 1건만 GENERATED·파일 1세트, 진 요청 409 + 임시/trash cleanup(잔여 없음); 승격 후 커밋 전 중단을 모사 → 재생성으로 복구(GENERATED-without-files 미발생).
 
 ### 8.3 라우트
 
@@ -280,9 +283,10 @@ export function getGenerator(kind: WorkflowKind): GeneratorPort; // 미등록이
 
 1. 권한 `can(ctx, KIND_RESOURCE[kind], "send")` 검사(라우트 진입 직후, fail-closed — `deliver`는 자체 authz 없음).
 2. `step`은 **1 또는 2만 허용**(3단계 요청은 `NotImplemented`/422 — 후속 UI spec). 단계별 목표 status 결정 + 첨부 목록 산출(§9.1). 수신자 = `task.recipients ?? type.defaultRecipients`. subject/body는 **caller 제공**(D7).
-3. **TOCTOU 가드 점유(D11)**: `createSendingDelivery`를 **task-status 가드와 한 트랜잭션**으로 — 현재 status가 이 단계의 `fromStatus`(1단계=GENERATED, 2단계=SENT)이고 활성 SENDING이 없을 때만 SENDING 레코드 생성. CANCELLED/비-sendable이면 ConflictError. (foundation `createSendingDelivery`에 expected fromStatus 조건 추가 — foundation §13 후속 "cancel vs 동시 발송 TOCTOU" 이행.)
-4. 첨부 상대→절대(**`resolveStoragePath` strict**) 후 `deliver({ taskId, step, msg })`로 SMTP·SENT/FAILED 확정.
-5. SENT면 `transitionTask(targetStatus, ctx)`. **발송 실패가 전이를 막지 않음**(foundation §6.3 순서 계약). `sentAt`은 SENT에서만 stamp(hq는 안 찍음 — policy 이미 일치).
+3. **선(先) TOCTOU 가드 점유(D11)**: `createSendingDelivery`를 **task-status 가드와 한 트랜잭션**으로 — 현재 status가 이 단계의 `fromStatus`(1단계=GENERATED, 2단계=SENT)이고 활성 SENDING이 없을 때만 SENDING 레코드 생성. CANCELLED/비-sendable이면 ConflictError. (foundation `createSendingDelivery`에 expected fromStatus 조건 추가 — foundation §13 후속 "cancel vs 동시 발송 TOCTOU" 이행.) 동시 중복은 `(taskId,step)` partial unique index가 DB 레벨 최종 방어선(foundation, 마이그레이션 `20260619120000`에 존재).
+4. 첨부 상대→절대(**`resolveStoragePath` strict**) 후 SMTP 발송. **발송 직전~직후 내내 delivery는 SENDING 유지** → `hasActiveSending`이 이를 관측해 cancel을 계속 차단.
+5. **후(後) 원자 확정(G2b)**: SMTP 성공 시 `finalizeDelivery(SENT)` + `transitionTask(targetStatus)`를 **한 DB 트랜잭션**으로 처리한다. SENDING이 이 tx 직전까지 유지되므로 "delivery=SENT인데 task 미전이"인 cancel 침투 창이 없다(메일 발송된 작업이 CANCELLED되는 것 차단). SMTP 실패 시 `finalizeDelivery(FAILED)`만, 전이 없음(발송 실패가 전이를 막지 않음). SMTP 성공 후 이 tx가 실패하면 **SENDING으로 남기고 에러 전파**(FAILED 둔갑 금지 — 중복 발송 방지, admin resolve, foundation §6.2·§6.3). `sentAt`은 SENT에서만 stamp.
+   - 구현: foundation `deliver`를 **선택적 `onDeliveredTx`(finalize와 같은 tx에서 실행할 전이)** 를 받도록 확장하거나, send 오케스트레이션이 `createSendingDelivery`(guarded) + `sendMail` + `finalize+transition` 한 tx를 직접 조립한다. 기본(전이 없음) 동작은 불변 — leave 등 기존 소비자 영향 없음.
 
 ### 9.3 mail.ts 적응 (D8, 공유 코드) — F4 반영: legacy resolver는 첨부 전용
 
