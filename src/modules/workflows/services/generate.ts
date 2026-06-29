@@ -35,15 +35,17 @@ function billingRoundDate(kind: WorkflowKind, scheduledAt: Date) {
 // 일반 kind 디스패치 generate 오케스트레이터(spec §8.2). 권한·status·직렬화·승격·commit를 조립.
 export async function runGenerate(taskId: string, ctx: TransitionCtx): Promise<void> {
   const reqId = randomUUID();
-  // 0. lease 점유로 직렬화(J1). 실패면 동시 generate 진행 중 → 즉시 409(무한 대기 없음).
-  if (!(await acquireGenerationLease(taskId, reqId))) {
-    throw new ConflictError("이미 생성이 진행 중입니다.");
-  }
+  // 경로 해석을 lease 획득 전에 끝낸다(R6-3): resolveOutputPath가 throw(STORAGE_ROOT 문제 등)해도 lease가
+  // 새지 않게(획득 전이라 release 불필요). 경로는 taskId·reqId의 순수 함수라 lease와 무관.
   const tmpDir = resolveOutputPath(`workflows/.tmp/${taskId}-${reqId}`);
   // per-request 커밋 경로(R3-1): 공유 out/workflows/<taskId> 대신 요청별 고유 디렉터리. stale 패배자가
   // 승자 산출물을 덮어쓸 수 없고(서로 다른 reqId 디렉터리), holder 가드 commit이 승자 경로를 DB에 기록한다.
   const finalRel = `out/workflows/${taskId}/${reqId}`;
   const finalDir = resolveOutputPath(`workflows/${taskId}/${reqId}`);
+  // 0. lease 점유로 직렬화(J1). 실패면 동시 generate 진행 중 → 즉시 409(무한 대기 없음).
+  if (!(await acquireGenerationLease(taskId, reqId))) {
+    throw new ConflictError("이미 생성이 진행 중입니다.");
+  }
   let promoted = false;
   try {
     // 1. task 로드 + 권한 + status. lease 덕에 승격하는 요청은 하나뿐.

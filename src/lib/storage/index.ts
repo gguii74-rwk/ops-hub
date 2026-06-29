@@ -6,12 +6,14 @@ const ALLOWED_PREFIXES = ["Template", "out"] as const;
 type AllowedPrefix = (typeof ALLOWED_PREFIXES)[number];
 
 // STORAGE_ROOT(절대경로). 미설정·상대경로면 throw(fail-closed, spec §4.5).
+// path.resolve로 정규화해 끝 구분자(/srv/storage/·D:\storage\)를 제거한다(R6-1) — 정규화하지 않으면
+// `root + path.sep` 포함 검사가 깨져(`/srv/storage//`) 정상 하위 경로도 root 이탈로 오판된다.
 export function getStorageRoot(): string {
   const root = process.env.STORAGE_ROOT;
   if (!root || !path.isAbsolute(root)) {
     throw new Error("STORAGE_ROOT가 설정되지 않았거나 절대경로가 아닙니다.");
   }
-  return root;
+  return path.resolve(root);
 }
 
 export function getTemplateRoot(): string {

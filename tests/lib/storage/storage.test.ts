@@ -65,4 +65,11 @@ describe("lib/storage strict resolver (F4·I4·D2·D13)", () => {
   it("resolveTemplatePath: .. 포함 거부(M-2)", () => {
     expect(() => resolveTemplatePath("../etc")).toThrow();
   });
+  // R6-1: STORAGE_ROOT 끝 구분자가 있어도 정상 하위 경로가 root 이탈로 오판되지 않는다(정규화).
+  it("STORAGE_ROOT 끝 구분자(trailing separator)도 정규화되어 하위 경로 통과(R6-1)", () => {
+    process.env.STORAGE_ROOT = ROOT + path.sep;
+    expect(getStorageRoot()).toBe(ROOT); // 끝 구분자 제거
+    expect(resolveStoragePath("out/workflows/t1/a.hwpx")).toBe(path.resolve(ROOT, "out/workflows/t1/a.hwpx"));
+    expect(toStoredOutputPath(path.resolve(ROOT, "out/workflows/t1/a.hwpx"))).toBe("out/workflows/t1/a.hwpx");
+  });
 });

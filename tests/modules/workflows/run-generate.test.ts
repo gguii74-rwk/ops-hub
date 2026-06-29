@@ -47,6 +47,13 @@ describe("runGenerate (F1·G1·H2·I2·I3·J1)", () => {
     await expect(runGenerate("t1", ctx(["workflows.billing:generate"]))).rejects.toBeInstanceOf(ConflictError);
     expect(getGen).not.toHaveBeenCalled();
   });
+  it("경로 resolve 실패 → lease 미획득(누수 없음, R6-3)", async () => {
+    const { resolveOutputPath } = await import("@/lib/storage");
+    (resolveOutputPath as ReturnType<typeof vi.fn>).mockImplementationOnce(() => { throw new Error("STORAGE_ROOT 미설정"); });
+    await expect(runGenerate("t1", ctx(["workflows.billing:generate"]))).rejects.toThrow("STORAGE_ROOT");
+    expect(acquire).not.toHaveBeenCalled(); // 경로 해석이 lease 획득 전 → 누수 불가
+    expect(release).not.toHaveBeenCalled();
+  });
   it("동시 2건: 1진행·1 409(lease가 직렬화) — spec §8.2 AC", async () => {
     acquire.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     const [a, b] = await Promise.allSettled([
