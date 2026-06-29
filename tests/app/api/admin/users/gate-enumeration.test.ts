@@ -210,6 +210,11 @@ const knownProtected = new Set<string>([
   "/api/admin/roles/matrix",
   "/api/admin/roles/[roleId]/permissions/[permissionId]",
   "/api/admin/roles/[roleId]/permissions/bulk",
+  // billing config API (task-04) — auth()→getPermissionSummary→workflows.billing:view|configure 게이트
+  "/api/workflows/billing/config",
+  "/api/workflows/billing/config/[year]",
+  "/api/workflows/billing/config/[year]/rounds",
+  "/api/workflows/billing/config/[year]/rounds/[round]",
 ]);
 
 beforeEach(() => {
