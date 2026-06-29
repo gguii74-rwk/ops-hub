@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 
 const h = vi.hoisted(() => {
   const calls: Record<string, any> = {};
-  const ret: any = { active: null, created: { id: "d1" }, found: null, throwP2002: false, throwP2002OnUpdateMany: false, updateManyCount: 0, taskUpdateManyCount: 1 };
+  const ret: any = { active: null, created: { id: "d1" }, found: null, throwP2002: false, throwP2002OnUpdateMany: false, updateManyCount: 0, taskUpdateManyCount: 1, taskStatusRows: [] };
   return { calls, ret };
 });
 
@@ -34,6 +34,7 @@ vi.mock("@/lib/prisma", () => {
     workflowTaskEvent: {
       create: async (a: any) => ((h.calls.taskEventCreate = a), { id: "ev1", ...a.data }),
     },
+    $queryRaw: async (..._a: any[]) => h.ret.taskStatusRows,
     $transaction: async (fn: any) => fn(client),
   };
   return { prisma: client };
@@ -50,6 +51,7 @@ beforeEach(() => {
   h.ret.throwP2002OnUpdateMany = false;
   h.ret.updateManyCount = 0;
   h.ret.taskUpdateManyCount = 1;
+  h.ret.taskStatusRows = [];
 });
 
 describe("createSendingDelivery", () => {
@@ -120,6 +122,26 @@ describe("claimFailedForRetry", () => {
   it("0건 갱신(이미 SENDING/다른 상태 — 경합에서 짐)이면 false", async () => {
     h.ret.updateManyCount = 0;
     expect(await claimFailedForRetry("d1", "t1")).toBe(false);
+  });
+
+  // R4-1: expectedTaskStatus 지정 시 task 행 FOR UPDATE 가드(cancel과 직렬화).
+  it("expectedTaskStatus 지정 + task가 기대 상태 → 점유(count 1 → true)", async () => {
+    h.ret.taskStatusRows = [{ status: "GENERATED" }];
+    h.ret.updateManyCount = 1;
+    expect(await claimFailedForRetry("d1", "t1", "GENERATED")).toBe(true);
+    expect(h.calls.updateMany).toMatchObject({ where: { id: "d1", taskId: "t1", status: "FAILED" }, data: { status: "SENDING" } });
+  });
+
+  it("expectedTaskStatus 지정 + task 상태 불일치(취소됨) → false, delivery 미갱신(SMTP 차단)", async () => {
+    h.ret.taskStatusRows = [{ status: "CANCELLED" }];
+    expect(await claimFailedForRetry("d1", "t1", "GENERATED")).toBe(false);
+    expect(h.calls.updateMany).toBeUndefined(); // 가드가 먼저 막아 SENDING 점유 안 함
+  });
+
+  it("expectedTaskStatus 지정 + task row 없음 → false", async () => {
+    h.ret.taskStatusRows = [];
+    expect(await claimFailedForRetry("d1", "t1", "GENERATED")).toBe(false);
+    expect(h.calls.updateMany).toBeUndefined();
   });
 });
 

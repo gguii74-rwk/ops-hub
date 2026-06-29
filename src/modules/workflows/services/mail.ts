@@ -71,10 +71,14 @@ export async function retryDelivery(
   if (d.status !== "FAILED") throw new ConflictError("실패한 발송만 재시도할 수 있습니다.");
   if (!d.kind || !canSend(ctx, d.kind)) throw new ForbiddenError("재발송 권한이 없습니다.");
 
-  // 단일 비행 점유: FAILED→SENDING 원자 갱신. 동시 재시도 중 진 쪽은 여기서 멈춰
-  // SMTP 중복 발송을 차단한다. 점유 후엔 SENDING이므로 cancel 게이트/멱등 가드에도 가시화된다(§6.2).
-  if (!(await claimFailedForRetry(d.id, args.taskId))) {
-    throw new ConflictError("이미 재시도가 진행 중입니다.");
+  // 발송 단계 전이(있으면). claim 가드의 기대 fromStatus와 발송 성공 후 전이에 모두 쓴다.
+  const transition = sendStepTransition(d.kind, d.step);
+
+  // 단일 비행 점유: FAILED→SENDING 원자 갱신. 동시 재시도 중 진 쪽은 여기서 멈춰 SMTP 중복 발송을 차단한다.
+  // D11/H1을 retry 경로까지 확장(R4-1): step 전이가 있으면 task를 FOR UPDATE로 잠그고 기대 fromStatus일 때만 점유 —
+  // 취소된(또는 단계가 어긋난) 작업의 FAILED delivery 재시도가 실제 메일을 발송하지 못하게 한다(cancel과 직렬화).
+  if (!(await claimFailedForRetry(d.id, args.taskId, transition?.from))) {
+    throw new ConflictError("재시도가 진행 중이거나 작업이 발송 가능 상태가 아닙니다.");
   }
 
   // I4: 저장된 storage-relative 경로를 strict resolve. 절대경로 row면 throw → FAILED 확정(exfiltration 차단).
@@ -106,7 +110,6 @@ export async function retryDelivery(
   }
   // 복구도 happy-path(G2b)와 대칭: step 전이가 있는 task-scoped 발송이면 SENT 확정 + 워크플로 전이를
   // 한 tx로 적용한다. 누락하면 메일은 나갔는데 task가 fromStatus에 묶여 다음 단계로 진행 못 한다.
-  const transition = sendStepTransition(d.kind, d.step);
   if (transition && d.taskId) {
     return finalizeDeliveryWithTransition(d.id, { providerMessageId }, {
       taskId: d.taskId, fromStatus: transition.from, toStatus: transition.to, actorId: ctx.userId,

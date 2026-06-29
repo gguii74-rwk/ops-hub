@@ -81,12 +81,31 @@ export async function finalizeDelivery(
 
 // 재시도 단일 비행 가드: FAILED→SENDING 원자 점유. 동시 retry 중 1건만 count 1을 받고,
 // 나머지는 0(이미 SENDING/다른 상태) → false. 점유 성공 후에만 SMTP를 발송한다(§6.2).
-export async function claimFailedForRetry(deliveryId: string, taskId: string): Promise<boolean> {
-  const { count } = await prisma.mailDelivery.updateMany({
-    where: { id: deliveryId, taskId, status: "FAILED" },
-    data: { status: "SENDING" },
+// expectedTaskStatus 지정 시(step 전이가 있는 발송) D11/H1을 retry까지 확장(R4-1): task 행을 FOR UPDATE로
+// 잠가 cancel(cancelTaskAtomic의 조건부 UPDATE)과 직렬화하고, task가 기대 상태일 때만 점유한다 —
+// 취소·단계 어긋남이면 SMTP 전에 거부. 미지정(전이 없는 발송)은 기존 동작 유지.
+export async function claimFailedForRetry(
+  deliveryId: string,
+  taskId: string,
+  expectedTaskStatus?: WorkflowStatus,
+): Promise<boolean> {
+  if (expectedTaskStatus == null) {
+    const { count } = await prisma.mailDelivery.updateMany({
+      where: { id: deliveryId, taskId, status: "FAILED" },
+      data: { status: "SENDING" },
+    });
+    return count === 1;
+  }
+  return prisma.$transaction(async (tx: PrismaTx) => {
+    const rows = await tx.$queryRaw<Array<{ status: WorkflowStatus }>>`
+      SELECT status FROM workflows."WorkflowTask" WHERE id = ${taskId} FOR UPDATE`;
+    if (rows.length === 0 || rows[0].status !== expectedTaskStatus) return false;
+    const { count } = await tx.mailDelivery.updateMany({
+      where: { id: deliveryId, taskId, status: "FAILED" },
+      data: { status: "SENDING" },
+    });
+    return count === 1;
   });
-  return count === 1;
 }
 
 export async function findDeliveryForAction(deliveryId: string): Promise<DeliveryForAction | null> {

@@ -118,9 +118,9 @@ describe("retryDelivery", () => {
   });
 
   it("SMTP 전에 FAILED→SENDING 원자 점유(claimFailedForRetry)로 단일 비행", async () => {
-    repo.findDeliveryForAction.mockResolvedValue(failed);
+    repo.findDeliveryForAction.mockResolvedValue(failed); // kind=WEEKLY_REPORT, step="send" → 전이 매핑 없음
     await retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.weekly:send"] }));
-    expect(repo.claimFailedForRetry).toHaveBeenCalledWith("d1", "t1");
+    expect(repo.claimFailedForRetry).toHaveBeenCalledWith("d1", "t1", undefined); // 전이 없음 → task-status 가드 미적용
     expect(repo.claimFailedForRetry.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
   });
 
@@ -200,6 +200,21 @@ describe("retryDelivery", () => {
       "d1", expect.anything(),
       expect.objectContaining({ fromStatus: "SENT", toStatus: "HQ_REQUESTED" }),
     );
+  });
+
+  // R4-1: billing step retry는 claim에 기대 fromStatus 가드를 넘긴다(D11/H1 retry 확장).
+  it("billing step1 retry → claimFailedForRetry에 기대 fromStatus(GENERATED) 전달", async () => {
+    repo.findDeliveryForAction.mockResolvedValue({ ...failed, kind: "BILLING", step: "1" });
+    await retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.billing:send"] }));
+    expect(repo.claimFailedForRetry).toHaveBeenCalledWith("d1", "t1", "GENERATED");
+  });
+
+  // R4-1 핵심: 취소·단계 어긋남으로 claim이 거부되면(false) → ConflictError, SMTP 미발생.
+  it("취소된 작업(claim false) retry → Conflict, SMTP 미발생", async () => {
+    repo.findDeliveryForAction.mockResolvedValue({ ...failed, kind: "BILLING", step: "1" });
+    repo.claimFailedForRetry.mockResolvedValue(false); // task가 GENERATED가 아님(예: CANCELLED) → 점유 거부
+    await expect(retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.billing:send"] }))).rejects.toBeInstanceOf(ConflictError);
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("전이 매핑 없는 step(kind=WEEKLY) retry 성공 → 현행 plain finalizeDelivery(SENT) 유지", async () => {
