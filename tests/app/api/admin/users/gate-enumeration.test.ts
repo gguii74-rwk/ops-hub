@@ -219,6 +219,9 @@ const knownProtected = new Set<string>([
   "/api/workflows/[id]/generate",
   // send API (task-10) — auth()→getPermissionSummary→workflows.billing:send 게이트(runSend 내부)
   "/api/workflows/[id]/send",
+  // download API (task-11) — auth()→getPermissionSummary→workflows.billing:view 게이트(service 내부)
+  "/api/workflows/[id]/download",
+  "/api/workflows/[id]/files/[fileId]",
 ]);
 
 beforeEach(() => {
