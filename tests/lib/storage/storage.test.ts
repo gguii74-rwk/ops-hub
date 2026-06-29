@@ -57,4 +57,12 @@ describe("lib/storage strict resolver (F4·I4·D2·D13)", () => {
     expect(() => toStoredOutputPath(path.resolve(ROOT, "Template/x"))).toThrow();
     expect(() => toStoredOutputPath(path.join(os.tmpdir(), "elsewhere"))).toThrow();
   });
+  // I-1: win32에서 드라이브 상대 슬래시 경로(/out/foo)는 첫 세그먼트가 빈 문자열 → prefix 불일치로 throw.
+  it("드라이브 상대 슬래시 경로 거부(I-1)", () => {
+    expect(() => resolveStoragePath("/out/foo")).toThrow();
+  });
+  // M-2: resolveTemplatePath의 .. 통과 방지.
+  it("resolveTemplatePath: .. 포함 거부(M-2)", () => {
+    expect(() => resolveTemplatePath("../etc")).toThrow();
+  });
 });

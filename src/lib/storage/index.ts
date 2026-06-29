@@ -29,6 +29,7 @@ export function resolveStoragePath(stored: string): string {
   if (path.isAbsolute(stored) || /^[A-Za-z]:/.test(stored)) {
     throw new Error(`저장 경로는 절대경로일 수 없습니다: ${stored}`);
   }
+  // Windows 백슬래시를 슬래시로 정규화한 뒤 세그먼트 분리.
   const segments = stored.replace(/\\/g, "/").split("/");
   if (segments.includes("..")) {
     throw new Error(`경로에 ..를 포함할 수 없습니다: ${stored}`);
@@ -52,9 +53,11 @@ export function resolveOutputPath(rel: string): string {
 }
 
 // <root>/out 하위 절대경로 → "out/…" 상대(POSIX). 하위가 아니면 throw(절대경로를 DB에 저장하지 않음, I4).
+// path.relative 기반 포함 검사: 드라이브 대소문자·구분자 차이에 강건하다(win32 I-2).
 export function toStoredOutputPath(abs: string): string {
   const outRoot = getOutputRoot();
-  if (abs !== outRoot && !abs.startsWith(outRoot + path.sep)) {
+  const rel = path.relative(outRoot, abs);
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
     throw new Error(`out 하위 경로가 아닙니다: ${abs}`);
   }
   return path.relative(getStorageRoot(), abs).split(path.sep).join("/");
