@@ -143,12 +143,20 @@ export function toStoredOutputPath(abs: string): string;      // STORAGE_ROOT/ou
 
 스키마 변경 **없음**. `BillingConfig`/`BillingRoundDate`/`GeneratedFile`은 모두 선반영(BigInt 금액·`@@unique([year,round])`·`@@index([year])` 포함). 마이그레이션 불필요 → **표준 restart**.
 
-### 5.1 `WorkflowType(BILLING)` 시드 (`seed.ts`, create-if-absent)
+### 5.1 `WorkflowType(BILLING)` 시드 (`seed.ts`, **kind 기준 upsert** — J3)
 
 ```ts
-{ id: "billing", kind: "BILLING", name: "대금청구", templatePath: "Template/대금청구",
-  recurrence: "monthly", defaultRecipients: null, isActive: true }  // 수신자는 task.recipients 우선(§9.2). 시드 기본은 null
+// kind는 @unique. id로 create하면 기존 row와 kind 충돌(seed-demo.ts가 이미 id="wf-billing"으로 BILLING 생성).
+// 따라서 kind 기준 upsert로 templatePath/name/recurrence/defaultRecipients를 신규 저장소 규약으로 정규화한다.
+prisma.workflowType.upsert({
+  where: { kind: "BILLING" },
+  update: { name: "대금청구", templatePath: "Template/대금청구", recurrence: "monthly" },  // stale templatePath(예: "Template/billing.hwpx") 정규화
+  create: { id: "billing", kind: "BILLING", name: "대금청구", templatePath: "Template/대금청구",
+            recurrence: "monthly", defaultRecipients: null, isActive: true },  // 수신자는 send 입력 우선(§9.2)
+})
 ```
+
+**AC(J3)**: 기존 DB(seed-demo BILLING row 존재)에서 seed가 충돌 없이 통과하고 `templatePath`가 `Template/대금청구`로 정규화됨을 검증.
 
 ### 5.2 권한·역할 (`seed-permissions.ts` `EXTRA_PERMISSIONS` + 멱등 upgrade)
 
@@ -167,7 +175,7 @@ export function toStoredOutputPath(abs: string): string;      // STORAGE_ROOT/ou
 
 ### 6.1 validations (`validations/index.ts`, Zod 4)
 
-- `billingConfigSchema`: `year`(int 2020~2100), `projectName`/`contractNumber`(min 1), `contractAmount`/`monthlyAmount`(**`z.coerce.bigint()` 양수 + `.refine(v => v <= BigInt(Number.MAX_SAFE_INTEGER))`** — F3: Number() 경계 안전 보장. 실제 계약 금액(원)은 이 한계를 훨씬 밑돌므로 가드 성격), `contractAmountKor`/`monthlyAmountKor`(min 1).
+- `billingConfigSchema`: `year`(int 2020~2100), `projectName`/`contractNumber`(min 1), `contractAmount`/`monthlyAmount`(**`z.coerce.bigint()` 양수**. `contractAmount ≤ MAX_SAFE_INTEGER`(F3), **`monthlyAmount ≤ floor(MAX_SAFE_INTEGER / 12)`**(J4 — 12회차 누계 `monthlyAmount*12`도 안전정수 내). 실제 계약 금액(원)은 이 한계를 훨씬 밑돌므로 가드 성격), `contractAmountKor`/`monthlyAmountKor`(min 1).
 - `billingConfigUpdateSchema = billingConfigSchema.partial().omit({ year: true })`.
 - `billingRoundDateUpdateSchema`: `submitDate`(ISO datetime).
 
@@ -219,14 +227,14 @@ export function toStoredOutputPath(abs: string): string;      // STORAGE_ROOT/ou
 - 템플릿: `resolveTemplatePath("대금청구/…(02월).hwpx")`. 출력: `resolveOutputPath("workflows/<taskId>/…")` → 디스크 기록 → `GeneratorResult.files`는 **storage-relative 경로**.
 - 4종 산출물 파일명은 day-sync와 동등(골든 대조 위해).
 
-### 7.3 날짜·회차 (`billing/period.ts` 순수함수, 전월 기준 보존 — D9)
+### 7.3 날짜·회차 (`billing/period.ts` 순수함수, 전월 기준 보존 — D9·J2)
 
 ```ts
 export function computeBillingPeriod(scheduledAt: Date): { projectYear: number; round: number; billingDate: Date };
-// prevDate = new Date(y, m-1, 1); projectYear = prevDate.getFullYear(); round = prevDate.getMonth()+1
 ```
 
-- `fillGisungTable`: 1~현재 round 행 채움. 1·2회차는 기존 행 날짜 치환, `round===1`이면 2회차 행(rowAddr=6) `clearCellText`. 3회차+는 `fillEmptyCell`로 colAddr별(1=제출일·2=기성금액·4=청구금액·6=누계). **누계 = `monthlyAmount * i`**. 회차 제출일 = `roundDateMap[round]`의 DD(없으면 청구일 DD).
+- **timezone(J2)**: `scheduledAt`은 Prisma `DateTime`(UTC instant)다. **전월 계산은 반드시 Asia/Seoul 기준**으로 한다 — JS `Date`의 로컬 메서드(`getMonth`/`getFullYear`)를 그대로 쓰면 운영 서버 TZ가 KST가 아닐 때 월 경계가 어긋난다(예: `2026-03-01 00:00 KST = 2026-02-28T15:00Z` → UTC 서버는 2월로 읽어 회차/연도 오산 → 오청구). KST로 변환 후 전월의 연/월을 산정한다(기존 calendar 모듈의 KST 규약 재사용). **AC**: UTC·KST 서버 모두에서 동일 결과, 1월(전월=전년 12월) 경계, 월 첫날 자정(KST) 경계 테스트.
+- `fillGisungTable`: 1~현재 round 행 채움. 1·2회차는 기존 행 날짜 치환, `round===1`이면 2회차 행(rowAddr=6) `clearCellText`. 3회차+는 `fillEmptyCell`로 colAddr별(1=제출일·2=기성금액·4=청구금액·6=누계). **누계 = `monthlyAmount * i`를 BigInt로 계산**(J4 — `Number` 곱셈 금지; 포맷 직전에만 문자열화). 회차 제출일 = `roundDateMap[round]`의 DD(없으면 청구일 DD).
 
 ### 7.4 HWPX 함정 보존 (D9)
 
@@ -250,7 +258,11 @@ export function getGenerator(kind: WorkflowKind): GeneratorPort; // 미등록이
 
 동시 generate가 파일을 찢거나(torn write) **패배자가 승자 산출물을 덮어쓰거나**, **"GENERATED인데 파일 없음" 복구 불가 상태**가 되거나, **실패한 generation이 round date를 오염**시키는 것을 모두 막는다. 원칙: **(a) 직렬화는 DB 트랜잭션을 열어둔 채 하지 않는다**(I2 — FS I/O 동안 커넥션 점유 금지), **(b) GENERATED는 파일 승격 뒤에만 set**(G1), **(c) round-date 영속은 최종 commit tx 안에서 create-if-missing**(I3).
 
-0. **taskId별 직렬화(H2·I2)**: 같은 task의 동시 generate를 직렬화하되 **FS 작업 동안 DB 트랜잭션을 점유하지 않는다.** 구현 primitive는 impl에서 선택(`DEFERRED_TO_IMPL`) — 후보: (ⅰ) **session-level `pg_try_advisory_lock` + 타임아웃**(전용 커넥션, 즉시 실패 시 409), (ⅱ) 짧은 tx로 task에 **claim/lease** 표식 후 FS는 tx 밖. **금지: `pg_advisory_xact_lock`로 generate 전체를 감싸 FS I/O 내내 tx/커넥션을 잡는 것**(풀 고갈·lock 무한 대기). AC: lock 경합 시 빠른 409, FS 지연이 DB 커넥션을 점유하지 않음.
+0. **taskId별 직렬화(H2·I2)** — `DEFERRED_TO_IMPL`, 단 **계약을 명시**(J1, primitive 선택은 impl이되 아래 속성을 모두 만족해야 하고 impl 단계 review-loop가 검증):
+   - **직렬화**: 같은 taskId의 동시 generate는 정확히 하나만 진행, 나머지는 즉시 **409**(무한 대기 금지 = 타임아웃/try).
+   - **FS 동안 DB tx/커넥션 미점유**: HWPX 생성·승격 동안 열린 트랜잭션을 들고 있지 않는다(풀 고갈 금지). DB는 **짧은 commit tx(step 4)만** 점유.
+   - **연결 일관성(Prisma 함정 명시)**: session-level `pg_advisory_lock`/`pg_try_advisory_lock`을 쓰면 **lock·unlock·그 사이 작업이 같은 물리 커넥션이어야** 한다(`$transaction` interactive로 감싸면 FS 동안 tx 점유 = 금지에 위배; 풀에서 임의 커넥션으로 `$queryRaw` 두 번 호출하면 다른 커넥션이라 lock이 샌다). → **전용 커넥션 checkout + `try/finally` unlock + 타임아웃 + 크래시 시 자동 해제(session 종료로)** 를 계약화하거나, **lease 컬럼 방식**(필요 schema/만료/steal 규칙·CAS 쿼리 포함)을 택한다.
+   - **AC**: 동시 2건 중 1건만 진행·1건 409, FS 지연이 커넥션 풀을 고갈시키지 않음, 보유자 크래시 후 lock 자동 해제(다음 generate 가능). **두 후보(advisory-lock-on-dedicated-connection / lease-column) 중 하나를 impl plan에서 확정**하고 위 AC로 검증.
 1. task 조회 + lock 획득 후 **status가 PENDING이 아니면 ConflictError**(권한 `can(ctx, KIND_RESOURCE[kind], "generate")` fail-closed). lock 덕에 승격하는 요청은 하나뿐.
 2. `getGenerator(kind).generate(task, tmpDir)` — **요청별 임시 디렉터리**(`out/workflows/.tmp/<taskId>-<reqId>/`)에 HWPX 기록, 산출 파일 목록(최종 상대경로 = `out/workflows/<taskId>/…`) 반환. **이 단계는 DB tx 밖**(순수 FS·zip). **round-date는 여기서 건드리지 않는다(I3).**
 3. **승격(promote, atomic rename)**: 임시 디렉터리를 `out/workflows/<taskId>/`로 옮긴다. 최종 디렉터리가 이미 있으면(이전 시도 크래시 잔재) **원자 교체**(기존 final → 유니크 trash rename → tmp → final rename → trash 삭제 — 각 rename 원자적, live 디렉터리에 직접 쓰지 않아 torn write 없음). 직렬화돼 있어 경쟁 승격 없음.
@@ -365,3 +377,30 @@ TDD(실패 테스트 → FAIL 확인 → 최소 구현 → PASS → commit). nod
 - 주간보고·알림톡 sub-project가 `GENERATORS` 레지스트리에 등록만으로 generate/send/download 라우트 재사용.
 - 운영 cutover 시 과거 `BillingConfig`/`BillingRoundDate` 데이터 이전(Phase 6).
 - AI 서명 없는 commit(글로벌 규칙).
+
+## 14. 적대검증 ledger (spec 단계, R1~R5)
+
+blocking score 추세: R1=8 → R2=6 → R3=7 → R4=10 → R5=8. R4/R5에서 비감소 → 판정 루프 전환(더 FIXED로 쫓지 않고 닫음). 5회(max) 도달로 종료.
+
+| ID | round | 결함 | sev | disposition | 닫은 방법 / 연결 |
+| --- | --- | --- | --- | --- | --- |
+| F1 | R1 | 동시 generate FS 레이스 | high | FIXED | 임시 디렉터리→atomic 승격 (§8.2, 이후 H2·I2로 강화) |
+| F2 | R1 | 3단계 업로드 첨부 계약 부재 | high | FIXED(범위 축소) | send 1·2단계 한정, FINAL_SENT는 후속 UI spec(§9.1·§13) |
+| F3 | R1 | BigInt→Number 미강제 | medium | FIXED | Zod refine ≤ MAX_SAFE_INTEGER (§6.1, J4로 보강) |
+| F4 | R1 | absolute pass-through ↔ 다운로드 경계 혼재 | medium | FIXED | strict/(이후 I4) 전면 strict (§4.4) |
+| G1 | R2 | GENERATED 커밋이 승격보다 먼저 → 복구 불가 | high | FIXED | 승격→커밋 순서, GENERATED는 파일 안착 후만 (§8.2) |
+| G2a | R2 | (taskId,step) DB 유니크 부재 | high | ACCEPTED(오탐) | partial unique index 마이그 20260619120000에 이미 존재 |
+| G2b | R2 | SENT 확정·전이 분리 → cancel 침투 | high | FIXED | finalize+transition 한 tx, SENDING 유지 (§9.2) |
+| H1 | R3 | cancel 측 비원자 | high | FIXED | cancel을 GENERATED∧¬SENDING 단일 조건부 UPDATE (§9.2.1) |
+| H2 | R3 | CAS 패배자가 승자 파일 덮어쓰기 | high | FIXED | 직렬화(이후 I2·J1로 contract 강화) (§8.2) |
+| H3 | R3 | 기존 DB에 신규 grant 미적용 | medium | FIXED | 멱등 upgrade helper (§5.2) |
+| I1 | R4 | 수신자 없이 SMTP 도달 | high | FIXED | recipients send 입력 + 빈 수신자 400/409 (§9.2·§9.4) |
+| I2 | R4 | advisory_xact_lock이 FS 내내 tx 점유 | high | FIXED | FS는 tx 밖, 짧은 commit tx만 (§8.2, primitive는 J1) |
+| I3 | R4 | 실패한 generation이 round date 오염 | high | FIXED | round-date를 commit tx로·create-if-missing (§8.2·D10) |
+| I4 | R4 | legacy absolute 첨부 메일 exfiltration | medium | FIXED | 첨부 해석도 strict, legacy 통과 제거 (§4.4·§9.3) |
+| **J1** | **R5** | **generate 직렬화 primitive 미정(Prisma 커넥션 pinning)** | **high** | **DEFERRED_TO_IMPL** | **§8.2 step 0에 계약(직렬화·tx 미점유·연결 일관성·크래시 해제)+AC 명시. impl plan에서 advisory-lock-on-dedicated-connection / lease-column 중 확정, impl review-loop가 검증** |
+| J2 | R5 | 전월 회차가 서버 timezone 의존(오청구) | high | FIXED | computeBillingPeriod Asia/Seoul + 경계 테스트 (§7.3) |
+| J3 | R5 | WorkflowType seed가 seed-demo와 kind 충돌 | medium | FIXED | kind 기준 upsert + templatePath 정규화 (§5.1) |
+| J4 | R5 | 누계 overflow(MAX_SAFE_INTEGER 밖) | medium | FIXED | 금액 산술 BigInt + monthlyAmount ≤ MAX/12 refine (§6.1·§7.3) |
+
+**impl 진입 전 연결(필수)**: J1(DEFERRED_TO_IMPL)을 impl plan의 task/AC로 가져간다 — 직렬화 primitive 확정 + §8.2 step 0의 AC(동시 2건 1진행·1 409, FS 지연 풀 미고갈, 보유자 크래시 후 해제) 테스트. F1·G1·H2·I2 계열(generate 동시성)과 G2b·H1(send/cancel)·I3(round-date tx)·J2(timezone)의 동시성·경계 테스트도 impl AC로 명시.
