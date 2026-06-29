@@ -97,6 +97,20 @@ describe("runGenerate (F1·G1·H2·I2·I3·J1)", () => {
     expect(commit).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalled();
   });
+
+  it("승격 후 commit이 ConflictError(확정 롤백) → finalDir orphan 정리(R5-1)", async () => {
+    commit.mockRejectedValue(new ConflictError());
+    await expect(runGenerate("t1", ctx(["workflows.billing:generate"]))).rejects.toBeInstanceOf(ConflictError);
+    expect(fsRm).toHaveBeenCalledWith("/abs/workflows/t1/req-1", { recursive: true, force: true });
+  });
+
+  it("승격 후 commit이 애매한 오류(비-ConflictError) → finalDir 보존(데이터 손실 차단, R5-1)", async () => {
+    commit.mockRejectedValue(new Error("connection lost after commit"));
+    await expect(runGenerate("t1", ctx(["workflows.billing:generate"]))).rejects.toThrow("connection lost");
+    // 커밋됐을 수 있으므로 파일을 지우지 않는다 — tmp도 finalDir도 rm 호출 없음(이미 승격됨).
+    expect(fsRm).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalled();
+  });
   it("non-billing kind는 roundDate 없이 commit", async () => {
     findTask.mockResolvedValue({ task: { id: "t2", status: "PENDING", scheduledAt: new Date() }, kind: "WEEKLY_REPORT" });
     await runGenerate("t2", ctx(["workflows.weekly:generate"]));

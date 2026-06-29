@@ -80,9 +80,15 @@ export async function runGenerate(taskId: string, ctx: TransitionCtx): Promise<v
       roundDate: billingRoundDate(kind, task.scheduledAt),
     });
   } catch (e) {
-    // per-request 디렉터리는 이 요청 전용 → 승격 후 commit 실패(holder/status 패배)면 자기 디렉터리를 정리(승자 미침범).
-    // 승격 전 실패는 tmp 정리. 어느 경우든 status는 PENDING으로 남아 재생성이 새 reqId로 정상 복구된다(G1).
-    safeRm(promoted ? finalDir : tmpDir);
+    if (!promoted) {
+      safeRm(tmpDir); // 승격 전 실패 — tmp는 미커밋·이 요청 전용.
+    } else if (e instanceof ConflictError) {
+      // 승격 후 known 도메인 충돌(holder/status 가드는 commit tx 내부에서 throw = 확정 롤백) → 내 orphan finalDir 정리.
+      safeRm(finalDir);
+    }
+    // 그 외 승격 후 오류(커밋 응답 유실·커넥션 오류 등 애매)는 finalDir를 지우지 않는다(R5-1) — tx가 커밋됐을 수 있어
+    // (task GENERATED + GeneratedFile rows) 파일을 지우면 복구 불가 데이터 손실. 고아는 후속 orphan cleanup에 맡기고,
+    // status가 PENDING으로 남으면 재생성이 새 reqId로 복구된다(G1).
     throw e;
   } finally {
     await releaseGenerationLease(taskId, reqId);
