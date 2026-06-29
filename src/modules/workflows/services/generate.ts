@@ -20,18 +20,10 @@ function safeRm(dir: string): void {
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
 }
 
-// 임시 디렉터리를 final로 원자 승격. 기존 final이 있으면 유니크 trash로 치운 뒤 교체(torn write 없음).
+// per-request finalDir는 reqId로 유일 → 사전 존재 불가. 단순 atomic rename(공유 디렉터리 clobber 없음 — R3-1).
 function promoteDir(tmpDir: string, finalDir: string): void {
   fs.mkdirSync(path.dirname(finalDir), { recursive: true });
-  if (fs.existsSync(finalDir)) {
-    const trash = resolveOutputPath(`workflows/.trash/${path.basename(finalDir)}-${randomUUID()}`);
-    fs.mkdirSync(path.dirname(trash), { recursive: true });
-    fs.renameSync(finalDir, trash);  // 기존 final → trash (atomic)
-    fs.renameSync(tmpDir, finalDir); // tmp → final (atomic)
-    safeRm(trash);                   // trash 정리(실패해도 무해)
-  } else {
-    fs.renameSync(tmpDir, finalDir);
-  }
+  fs.renameSync(tmpDir, finalDir);
 }
 
 function billingRoundDate(kind: WorkflowKind, scheduledAt: Date) {
@@ -48,7 +40,10 @@ export async function runGenerate(taskId: string, ctx: TransitionCtx): Promise<v
     throw new ConflictError("이미 생성이 진행 중입니다.");
   }
   const tmpDir = resolveOutputPath(`workflows/.tmp/${taskId}-${reqId}`);
-  const finalDir = resolveOutputPath(`workflows/${taskId}`);
+  // per-request 커밋 경로(R3-1): 공유 out/workflows/<taskId> 대신 요청별 고유 디렉터리. stale 패배자가
+  // 승자 산출물을 덮어쓸 수 없고(서로 다른 reqId 디렉터리), holder 가드 commit이 승자 경로를 DB에 기록한다.
+  const finalRel = `out/workflows/${taskId}/${reqId}`;
+  const finalDir = resolveOutputPath(`workflows/${taskId}/${reqId}`);
   let promoted = false;
   try {
     // 1. task 로드 + 권한 + status. lease 덕에 승격하는 요청은 하나뿐.
@@ -63,10 +58,12 @@ export async function runGenerate(taskId: string, ctx: TransitionCtx): Promise<v
     // 2. 생성 — 요청별 임시 디렉터리(DB tx 밖, 순수 FS·zip). round-date는 여기서 안 건드림(I3).
     fs.mkdirSync(tmpDir, { recursive: true });
     const result = await getGenerator(kind).generate(task, tmpDir); // 정확히 1회
+    // 생성기가 돌려준 파일명(basename)을 per-request 커밋 경로로 재작성한다(생성기는 파일명만 의미 있음).
+    const files = result.files.map((f) => ({ ...f, path: `${finalRel}/${path.posix.basename(f.path)}` }));
 
     // 3. 원자 승격(GENERATED는 파일 안착 후에만 — G1).
-    //    승격 직전 lease 소유권 재검증: 생성이 TTL을 넘겨 steal당했으면 stale 산출물을 final에 올리지 않는다.
-    //    (cheap early-abort. 최종 권위 가드는 commit tx의 FOR UPDATE holder 검사.)
+    //    승격 직전 lease 소유권 재검증: 생성이 TTL을 넘겨 steal당했으면 stale 산출물을 올리지 않는다(early-abort).
+    //    per-request 경로라 승격 자체는 승자를 침범하지 않지만, 무의미한 stale 디렉터리 생성을 줄인다.
     if (!(await holdsGenerationLease(taskId, reqId))) {
       throw new ConflictError("생성 lease를 더 이상 보유하지 않습니다.");
     }
@@ -78,13 +75,14 @@ export async function runGenerate(taskId: string, ctx: TransitionCtx): Promise<v
       taskId,
       actorId: ctx.userId,
       holder: reqId,
-      outputPath: `out/workflows/${taskId}`,
-      files: result.files,
+      outputPath: finalRel,
+      files,
       roundDate: billingRoundDate(kind, task.scheduledAt),
     });
   } catch (e) {
-    // 승격 전 실패만 tmp 정리. 승격 후 commit 실패는 final 유지(status PENDING, 재생성 복구 G1).
-    if (!promoted) safeRm(tmpDir);
+    // per-request 디렉터리는 이 요청 전용 → 승격 후 commit 실패(holder/status 패배)면 자기 디렉터리를 정리(승자 미침범).
+    // 승격 전 실패는 tmp 정리. 어느 경우든 status는 PENDING으로 남아 재생성이 새 reqId로 정상 복구된다(G1).
+    safeRm(promoted ? finalDir : tmpDir);
     throw e;
   } finally {
     await releaseGenerationLease(taskId, reqId);

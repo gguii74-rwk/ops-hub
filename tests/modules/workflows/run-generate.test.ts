@@ -64,12 +64,14 @@ describe("runGenerate (F1·G1·H2·I2·I3·J1)", () => {
     findTask.mockResolvedValue({ task: { ...billingTask, status: "GENERATED" }, kind: "BILLING" });
     await expect(runGenerate("t1", ctx(["workflows.billing:generate"]))).rejects.toBeInstanceOf(ConflictError);
   });
-  it("정상: generate → 승격(rename) → commit(billing roundDate 포함) → release", async () => {
+  it("정상: generate → per-request 승격(rename) → commit(per-request 경로·billing roundDate) → release", async () => {
     await runGenerate("t1", ctx(["workflows.billing:generate"]));
     expect(gen.generate).toHaveBeenCalledWith(billingTask, "/abs/workflows/.tmp/t1-req-1");
-    expect(fsRename).toHaveBeenCalledWith("/abs/workflows/.tmp/t1-req-1", "/abs/workflows/t1");
+    // per-request finalDir: out/workflows/<taskId>/<reqId> (R3-1)
+    expect(fsRename).toHaveBeenCalledWith("/abs/workflows/.tmp/t1-req-1", "/abs/workflows/t1/req-1");
     expect(commit).toHaveBeenCalledWith(expect.objectContaining({
-      taskId: "t1", outputPath: "out/workflows/t1", holder: "req-1",
+      taskId: "t1", outputPath: "out/workflows/t1/req-1", holder: "req-1",
+      files: [{ path: "out/workflows/t1/req-1/a.hwpx", displayName: "a.hwpx" }], // basename을 per-request 경로로 재작성
       roundDate: { year: 2026, round: 2, submitDate: billingTask.scheduledAt }, // KST 3/10 → 전월 2월
     }));
     expect(release).toHaveBeenCalledWith("t1", "req-1");
@@ -83,11 +85,10 @@ describe("runGenerate (F1·G1·H2·I2·I3·J1)", () => {
     expect(fsRm).toHaveBeenCalledWith("/abs/workflows/.tmp/t1-req-1", { recursive: true, force: true }); // tmp 정리
     expect(release).toHaveBeenCalledWith("t1", "req-1");
   });
-  it("기존 final 있으면 trash 경유 원자 교체(rename 2회 + trash rm)", async () => {
-    fsExists.mockReturnValue(true);
+  it("per-request 승격은 단일 rename(공유 디렉터리 trash-swap 없음 — R3-1)", async () => {
     await runGenerate("t1", ctx(["workflows.billing:generate"]));
-    expect(fsRename).toHaveBeenCalledTimes(2);
-    expect(fsRm).toHaveBeenCalled(); // trash 삭제
+    expect(fsRename).toHaveBeenCalledTimes(1); // reqId로 유일한 finalDir → 사전 존재 없음, clobber 없음
+    expect(fsRm).not.toHaveBeenCalled();
   });
   it("generate 실패 → tmp cleanup + 에러 전파 + release(commit 미호출)", async () => {
     gen.generate.mockRejectedValue(new Error("zip fail"));
