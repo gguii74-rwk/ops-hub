@@ -8,6 +8,14 @@ export class ConflictError extends Error {
   }
 }
 
+/** 미등록 kind generator 등 미구현 경로 → API 422. */
+export class NotImplementedError extends Error {
+  constructor(message = "지원하지 않는 작업입니다.") {
+    super(message);
+    this.name = "NotImplementedError";
+  }
+}
+
 /** 전이/생성/취소 권한 컨텍스트. permissionKeys = getPermissionSummary().keys → Set. */
 export interface TransitionCtx {
   userId: string;
@@ -30,7 +38,8 @@ export interface GeneratorResult {
 }
 export interface GeneratorPort {
   kind: WorkflowKind;
-  generate(task: WorkflowTask): Promise<GeneratorResult>;
+  /** outDir: 요청별 임시 절대경로(orchestrator가 만들어 전달). 파일은 outDir에 쓰고, files[].path는 최종 storage-relative 경로(SC-4). */
+  generate(task: WorkflowTask, outDir: string): Promise<GeneratorResult>;
 }
 
 // 정책에서 쓰는 보조 별칭(소비처 가독성용).

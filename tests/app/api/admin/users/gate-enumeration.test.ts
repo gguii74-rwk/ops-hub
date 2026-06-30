@@ -210,6 +210,18 @@ const knownProtected = new Set<string>([
   "/api/admin/roles/matrix",
   "/api/admin/roles/[roleId]/permissions/[permissionId]",
   "/api/admin/roles/[roleId]/permissions/bulk",
+  // billing config API (task-04) — auth()→getPermissionSummary→workflows.billing:view|configure 게이트
+  "/api/workflows/billing/config",
+  "/api/workflows/billing/config/[year]",
+  "/api/workflows/billing/config/[year]/rounds",
+  "/api/workflows/billing/config/[year]/rounds/[round]",
+  // generate API (task-08) — auth()→getPermissionSummary→workflows.billing:generate 게이트(runGenerate 내부)
+  "/api/workflows/[id]/generate",
+  // send API (task-10) — auth()→getPermissionSummary→workflows.billing:send 게이트(runSend 내부)
+  "/api/workflows/[id]/send",
+  // download API (task-11) — auth()→getPermissionSummary→workflows.billing:view 게이트(service 내부)
+  "/api/workflows/[id]/download",
+  "/api/workflows/[id]/files/[fileId]",
 ]);
 
 beforeEach(() => {

@@ -1,13 +1,14 @@
 import "server-only";
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
-import type { MailDelivery, WorkflowKind } from "@prisma/client";
+import type { MailDelivery, WorkflowKind, WorkflowStatus } from "@prisma/client";
 import { ForbiddenError } from "@/kernel/access";
 import { sendMail, type MailMessage } from "@/lib/integrations/mail";
 import { getSmtpConfig } from "@/kernel/settings/reader";
+import { resolveStoragePath, toStoredOutputPath } from "@/lib/storage";
 import { ConflictError, type MailActionCtx } from "../types";
-import { KIND_RESOURCE } from "../policy";
-import { claimFailedForRetry, createSendingDelivery, finalizeDelivery, findDeliveryForAction } from "../repositories/mail";
+import { KIND_RESOURCE, sendStepTransition } from "../policy";
+import { claimFailedForRetry, createSendingDelivery, finalizeDelivery, finalizeDeliveryWithTransition, findDeliveryForAction } from "../repositories/mail";
 
 function canSend(ctx: MailActionCtx, kind: WorkflowKind): boolean {
   return ctx.isOwner || ctx.permissionKeys.has(`${KIND_RESOURCE[kind]}:send`);
@@ -20,6 +21,8 @@ function canSend(ctx: MailActionCtx, kind: WorkflowKind): boolean {
 // (재시도/해소는 retryDelivery/resolveDelivery가 자체적으로 authz를 강제한다.)
 export async function deliver(args: {
   taskId: string | null; step: string | null; msg: MailMessage; sentById: string;
+  expectedTaskStatus?: WorkflowStatus; // D11
+  onDelivered?: { fromStatus: WorkflowStatus; toStatus: WorkflowStatus; actorId: string }; // G2b
 }): Promise<MailDelivery> {
   // 멱등 가드 + SENDING 선기록. 활성 중복이면 ConflictError(SMTP 미발생).
   const record = await createSendingDelivery({
@@ -28,8 +31,10 @@ export async function deliver(args: {
     recipients: args.msg.to,
     subject: args.msg.subject,
     bodyHtml: args.msg.html,
-    attachmentPaths: (args.msg.attachments ?? []).map((a) => a.path),
+    // D8·I4: 첨부 절대경로 → storage-relative로 저장(out 밖이면 throw). 빈 배열이면 그대로 [](leave/무첨부 무영향).
+    attachmentPaths: (args.msg.attachments ?? []).map((a) => toStoredOutputPath(a.path)),
     sentById: args.sentById,
+    expectedTaskStatus: args.expectedTaskStatus,
   });
 
   // SMTP 실패만 FAILED로 확정한다. sendMail 성공 후 SENT 확정(finalizeDelivery)이 실패하면
@@ -42,6 +47,15 @@ export async function deliver(args: {
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return finalizeDelivery(record.id, { status: "FAILED", sentAt: null, errorMessage: message });
+  }
+  // G2b: 성공 시 finalize+전이 한 tx(전이 지정 시). 미지정이면 기존 동작(전이 없음).
+  if (args.onDelivered && args.taskId != null) {
+    return finalizeDeliveryWithTransition(record.id, { providerMessageId }, {
+      taskId: args.taskId,
+      fromStatus: args.onDelivered.fromStatus,
+      toStatus: args.onDelivered.toStatus,
+      actorId: args.onDelivered.actorId,
+    });
   }
   return finalizeDelivery(record.id, { status: "SENT", sentAt: new Date(), providerMessageId });
 }
@@ -57,14 +71,24 @@ export async function retryDelivery(
   if (d.status !== "FAILED") throw new ConflictError("실패한 발송만 재시도할 수 있습니다.");
   if (!d.kind || !canSend(ctx, d.kind)) throw new ForbiddenError("재발송 권한이 없습니다.");
 
-  // 단일 비행 점유: FAILED→SENDING 원자 갱신. 동시 재시도 중 진 쪽은 여기서 멈춰
-  // SMTP 중복 발송을 차단한다. 점유 후엔 SENDING이므로 cancel 게이트/멱등 가드에도 가시화된다(§6.2).
-  if (!(await claimFailedForRetry(d.id, args.taskId))) {
-    throw new ConflictError("이미 재시도가 진행 중입니다.");
+  // 발송 단계 전이(있으면). claim 가드의 기대 fromStatus와 발송 성공 후 전이에 모두 쓴다.
+  const transition = sendStepTransition(d.kind, d.step);
+
+  // 단일 비행 점유: FAILED→SENDING 원자 갱신. 동시 재시도 중 진 쪽은 여기서 멈춰 SMTP 중복 발송을 차단한다.
+  // D11/H1을 retry 경로까지 확장(R4-1): step 전이가 있으면 task를 FOR UPDATE로 잠그고 기대 fromStatus일 때만 점유 —
+  // 취소된(또는 단계가 어긋난) 작업의 FAILED delivery 재시도가 실제 메일을 발송하지 못하게 한다(cancel과 직렬화).
+  if (!(await claimFailedForRetry(d.id, args.taskId, transition?.from))) {
+    throw new ConflictError("재시도가 진행 중이거나 작업이 발송 가능 상태가 아닙니다.");
   }
 
-  // 첨부가 shared storage에서 사라졌으면 조용히 실패시키지 않고 FAILED로 확정(§6.2).
-  const missing = d.attachmentPaths.filter((p) => !existsSync(p));
+  // I4: 저장된 storage-relative 경로를 strict resolve. 절대경로 row면 throw → FAILED 확정(exfiltration 차단).
+  let absPaths: string[];
+  try {
+    absPaths = d.attachmentPaths.map((p) => resolveStoragePath(p));
+  } catch {
+    return finalizeDelivery(d.id, { status: "FAILED", sentAt: null, errorMessage: "첨부 경로가 유효하지 않습니다." });
+  }
+  const missing = absPaths.filter((p) => !existsSync(p));
   if (missing.length > 0) {
     return finalizeDelivery(d.id, { status: "FAILED", sentAt: null, errorMessage: `첨부 파일 없음: ${missing.join(", ")}` });
   }
@@ -78,11 +102,18 @@ export async function retryDelivery(
       to: d.recipients,
       subject: d.subject,
       html: d.bodyHtml ?? "",
-      attachments: d.attachmentPaths.map((p) => ({ filename: basename(p), path: p })),
+      attachments: absPaths.map((p) => ({ filename: basename(p), path: p })),
     }, smtpConfig));
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return finalizeDelivery(d.id, { status: "FAILED", sentAt: null, errorMessage: message });
+  }
+  // 복구도 happy-path(G2b)와 대칭: step 전이가 있는 task-scoped 발송이면 SENT 확정 + 워크플로 전이를
+  // 한 tx로 적용한다. 누락하면 메일은 나갔는데 task가 fromStatus에 묶여 다음 단계로 진행 못 한다.
+  if (transition && d.taskId) {
+    return finalizeDeliveryWithTransition(d.id, { providerMessageId }, {
+      taskId: d.taskId, fromStatus: transition.from, toStatus: transition.to, actorId: ctx.userId,
+    });
   }
   return finalizeDelivery(d.id, { status: "SENT", sentAt: new Date(), providerMessageId });
 }
@@ -97,6 +128,14 @@ export async function resolveDelivery(
   if (!d) throw new ForbiddenError("발송 이력을 찾을 수 없습니다.");
   if (d.taskId !== args.taskId) throw new ForbiddenError("해당 작업의 발송이 아닙니다.");
   if (d.status !== "SENDING") throw new ConflictError("SENDING 상태만 수동 확정할 수 있습니다.");
+  // SENDING→SENT(메일은 이미 나갔으나 finalize+전이 tx가 실패해 남은 잔여)면 워크플로 전이도 함께 적용한다.
+  // FAILED 확정은 전이 없음(발송 실패가 전이를 막지 않는다).
+  const transition = args.to === "SENT" ? sendStepTransition(d.kind, d.step) : null;
+  if (transition && d.taskId) {
+    return finalizeDeliveryWithTransition(d.id, { providerMessageId: null }, {
+      taskId: d.taskId, fromStatus: transition.from, toStatus: transition.to, actorId: ctx.userId,
+    });
+  }
   return finalizeDelivery(d.id, {
     status: args.to,
     sentAt: args.to === "SENT" ? new Date() : null,

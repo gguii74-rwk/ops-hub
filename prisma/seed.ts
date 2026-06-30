@@ -7,6 +7,7 @@ import { EXTRA_PERMISSIONS } from "./seed-permissions";
 import { ROLE_ALLOW } from "./seed-roles";
 import { applyTeamsPermissionUpgrade } from "./migrate-helpers/teams-upgrade";
 import { applyLeaveNotificationsPermissionUpgrade } from "./migrate-helpers/leave-notifications-upgrade";
+import { applyBillingPermissionUpgrade } from "./migrate-helpers/billing-upgrade";
 import { bootstrapRolePermissions } from "./migrate-helpers/roles-bootstrap";
 import { planGoogleSources } from "./seed-google";
 import { seedNavigation } from "./seed-navigation";
@@ -67,6 +68,19 @@ async function main() {
   await prisma.$transaction((tx) => applyTeamsPermissionUpgrade(tx, roleIdByKey, permissionIdByKey));
   // 3c. 업그레이드-once(D6) — 기존 DB에 leave.admin:configure를 pm에 멱등 grant(bootstrap 스킵 보완, R4).
   await prisma.$transaction((tx) => applyLeaveNotificationsPermissionUpgrade(tx, roleIdByKey, permissionIdByKey));
+  // 3d. 업그레이드-once(H3) — 기존 DB에 billing 4권한을 pm에 멱등 grant(bootstrap 스킵 보완).
+  await prisma.$transaction((tx) => applyBillingPermissionUpgrade(tx, roleIdByKey, permissionIdByKey));
+
+  // 3e. WorkflowType(BILLING) — kind 기준 upsert(J3). seed-demo가 id="wf-billing"으로 만든 행과 kind 충돌 없이
+  //     templatePath/name/recurrence를 신규 저장소 규약(Template/대금청구)으로 정규화한다.
+  await prisma.workflowType.upsert({
+    where: { kind: "BILLING" },
+    update: { name: "대금청구", templatePath: "Template/대금청구", recurrence: "monthly" },
+    create: {
+      id: "billing", kind: "BILLING", name: "대금청구", templatePath: "Template/대금청구",
+      recurrence: "monthly", isActive: true,
+    },
+  });
 
   // 4. Admin (PM, OWNER). 특권 계정은 약한/기본 비밀번호로 만들지 않는다 — 미설정/짧으면 즉시 중단(E1).
   const email = process.env.SEED_ADMIN_EMAIL ?? "admin@uracle.co.kr";

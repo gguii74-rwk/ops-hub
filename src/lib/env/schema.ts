@@ -17,6 +17,7 @@ export const envSchema = z
     LIBREOFFICE_PATH: z.string().optional(),
     TEMPLATE_DIR: z.string().optional(),
     OUTPUT_DIR: z.string().optional(),
+    STORAGE_ROOT: z.string().optional(),
   })
   .refine((d) => Boolean(d.NEXTAUTH_SECRET || d.AUTH_SECRET), {
     message: "NEXTAUTH_SECRET or AUTH_SECRET is required",

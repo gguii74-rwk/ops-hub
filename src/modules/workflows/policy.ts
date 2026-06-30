@@ -40,3 +40,21 @@ export const STAMP_FOR_STATUS: Partial<Record<WorkflowStatus, "generatedAt" | "r
   REVIEWED: "reviewedAt",
   SENT: "sentAt",
 };
+
+// 단계별 발송이 성공했을 때 적용할 워크플로 전이 (kind, step → from/to). 단일 출처:
+// send(happy-path)와 retry/resolve(복구 경로)가 모두 이 매핑을 써서 발송 성공 시 동일 전이를 적용한다.
+// 미정의 kind/step(예: leave·step=null)은 전이 없음 → 복구는 plain finalize(SENT) 유지.
+export const SEND_STEP_TRANSITION: Partial<Record<WorkflowKind, Record<string, { from: WorkflowStatus; to: WorkflowStatus }>>> = {
+  BILLING: {
+    "1": { from: "GENERATED", to: "SENT" },
+    "2": { from: "SENT", to: "HQ_REQUESTED" },
+  },
+};
+
+export function sendStepTransition(
+  kind: WorkflowKind | null,
+  step: string | null,
+): { from: WorkflowStatus; to: WorkflowStatus } | null {
+  if (!kind || step == null) return null;
+  return SEND_STEP_TRANSITION[kind]?.[step] ?? null;
+}

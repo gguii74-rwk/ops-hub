@@ -1,8 +1,9 @@
 import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma, type PrismaTx } from "@/lib/prisma";
-import type { WorkflowKind, WorkflowStatus, MailDeliveryStatus } from "@prisma/client";
+import type { WorkflowKind, WorkflowStatus, MailDeliveryStatus, WorkflowTask } from "@prisma/client";
 import type { GeneratorResult } from "../types";
+import { ConflictError } from "../types";
 
 export interface TaskListRow { id: string; kind: WorkflowKind; typeName: string; scheduledAt: Date; status: WorkflowStatus; }
 export interface TaskListFilter { kinds: WorkflowKind[]; statuses?: WorkflowStatus[]; start?: Date; end?: Date; }
@@ -121,4 +122,138 @@ export async function createGeneratedFiles(taskId: string, files: GeneratorResul
 export async function hasActiveSending(taskId: string): Promise<boolean> {
   const n = await prisma.mailDelivery.count({ where: { taskId, status: "SENDING" } });
   return n > 0;
+}
+
+// H1: cancel을 단일 조건부 UPDATE로 원자화. GENERATED는 ¬active-SENDING을 한 문장에 묶어
+// send-측 SENDING 점유와 순서 무관 상호배제. PENDING 등은 SENDING 위험이 없어 일반 status CAS.
+export async function cancelTaskAtomic(
+  taskId: string, fromStatus: WorkflowStatus, actorId: string, note?: string,
+): Promise<boolean> {
+  return prisma.$transaction(async (tx: PrismaTx) => {
+    let affected: number;
+    if (fromStatus === "GENERATED") {
+      affected = await tx.$executeRaw`
+        UPDATE workflows."WorkflowTask"
+        SET status = 'CANCELLED', "updatedAt" = now()
+        WHERE id = ${taskId} AND status = 'GENERATED'
+          AND NOT EXISTS (
+            SELECT 1 FROM workflows."MailDelivery"
+            WHERE "taskId" = ${taskId} AND status = 'SENDING'
+          )`;
+    } else {
+      const r = await tx.workflowTask.updateMany({ where: { id: taskId, status: fromStatus }, data: { status: "CANCELLED" } });
+      affected = r.count;
+    }
+    if (affected === 0) return false;
+    await tx.workflowTaskEvent.create({
+      data: { taskId, fromStatus, toStatus: "CANCELLED", actorId, note: note ?? null },
+    });
+    return true;
+  });
+}
+
+export interface FullTaskForGenerate { task: WorkflowTask; kind: WorkflowKind; }
+
+// generate용 전체 task + kind. generator.generate(task, outDir)에 WorkflowTask 전체를 넘겨야 한다.
+export async function findTaskForGenerate(id: string): Promise<FullTaskForGenerate | null> {
+  const t = await prisma.workflowTask.findUnique({
+    where: { id },
+    include: { type: { select: { kind: true } } },
+  });
+  if (!t) return null;
+  const { type, ...task } = t;
+  return { task, kind: type.kind };
+}
+
+export interface TaskForSend {
+  id: string; status: WorkflowStatus; kind: WorkflowKind; outputPath: string | null;
+  recipients: string[] | null; defaultRecipients: string[] | null;
+}
+
+export async function findTaskForSend(id: string): Promise<TaskForSend | null> {
+  const t = await prisma.workflowTask.findUnique({
+    where: { id },
+    select: {
+      id: true, status: true, outputPath: true, recipients: true,
+      type: { select: { kind: true, defaultRecipients: true } },
+    },
+  });
+  if (!t) return null;
+  return {
+    id: t.id, status: t.status, kind: t.type.kind, outputPath: t.outputPath,
+    recipients: Array.isArray(t.recipients) ? (t.recipients as string[]) : null,
+    defaultRecipients: Array.isArray(t.type.defaultRecipients) ? (t.type.defaultRecipients as string[]) : null,
+  };
+}
+
+// 짧은 최종 commit tx(spec §8.2 step 4): status CAS(PENDING→GENERATED) + 파일 기록 + 이벤트
+// + (billing) round-date create-if-missing(I3, 기존 행 덮어쓰기 금지). FS I/O는 이 tx 밖에서 끝난 상태.
+export interface GeneratedFileForDownload {
+  id: string; taskId: string; path: string; displayName: string; mimeType: string | null; kind: WorkflowKind;
+}
+export async function findGeneratedFileForDownload(fileId: string): Promise<GeneratedFileForDownload | null> {
+  const f = await prisma.generatedFile.findUnique({
+    where: { id: fileId },
+    select: { id: true, taskId: true, path: true, displayName: true, mimeType: true, task: { select: { type: { select: { kind: true } } } } },
+  });
+  if (!f) return null;
+  return { id: f.id, taskId: f.taskId, path: f.path, displayName: f.displayName, mimeType: f.mimeType, kind: f.task.type.kind };
+}
+
+export interface TaskForDownload { outputPath: string | null; kind: WorkflowKind; }
+export async function findTaskForDownload(id: string): Promise<TaskForDownload | null> {
+  const t = await prisma.workflowTask.findUnique({
+    where: { id },
+    select: { outputPath: true, type: { select: { kind: true } } },
+  });
+  if (!t) return null;
+  return { outputPath: t.outputPath, kind: t.type.kind };
+}
+
+export async function commitGeneratedTransition(args: {
+  taskId: string; actorId: string; outputPath: string; holder: string;
+  files: GeneratorResult["files"];
+  roundDate?: { year: number; round: number; submitDate: Date };
+}): Promise<void> {
+  await prisma.$transaction(async (tx: PrismaTx) => {
+    // lease 소유권 권위 가드: 생성 도중 lease가 steal당했으면(holder 불일치/소멸) 이 요청의 산출물은
+    // 더 이상 권위가 아니므로 commit 금지(승자만 GeneratedFile/이벤트를 쓴다 — disk≠DB 분기 차단).
+    // FOR UPDATE로 lock 행을 잠가 동시 acquire(steal)와 직렬화한다.
+    const lockRows = await tx.$queryRaw<Array<{ holder: string }>>`
+      SELECT "holder" FROM workflows."GenerationLock" WHERE "taskId" = ${args.taskId} FOR UPDATE`;
+    if (lockRows.length === 0 || lockRows[0].holder !== args.holder) {
+      throw new ConflictError("생성 lease를 더 이상 보유하지 않습니다.");
+    }
+    const res = await tx.workflowTask.updateMany({
+      where: { id: args.taskId, status: "PENDING" },
+      data: { status: "GENERATED", generatedAt: new Date(), outputPath: args.outputPath },
+    });
+    if (res.count === 0) throw new ConflictError("상태가 이미 변경되었습니다.");
+
+    if (args.files.length > 0) {
+      await tx.generatedFile.createMany({
+        data: args.files.map((f) => ({
+          taskId: args.taskId,
+          path: f.path,
+          displayName: f.displayName,
+          mimeType: f.mimeType ?? null,
+          sizeBytes: f.sizeBytes != null ? BigInt(f.sizeBytes) : null,
+        })),
+      });
+    }
+
+    await tx.workflowTaskEvent.create({
+      data: { taskId: args.taskId, fromStatus: "PENDING", toStatus: "GENERATED", actorId: args.actorId },
+    });
+
+    if (args.roundDate) {
+      // I3: 성공 commit 경로에서만 create-if-missing. ON CONFLICT DO NOTHING(skipDuplicates)으로 멱등·경합안전화 —
+      // 기존 행(수동 보정 회차일)은 덮어쓰지 않고, 같은 year_round를 병렬 commit하는 다른 task가 있어도
+      // P2002로 tx가 깨지지 않는다(check-then-create의 race 제거).
+      await tx.billingRoundDate.createMany({
+        data: [{ year: args.roundDate.year, round: args.roundDate.round, submitDate: args.roundDate.submitDate }],
+        skipDuplicates: true,
+      });
+    }
+  });
 }

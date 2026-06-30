@@ -1,0 +1,45 @@
+import type { UpgradeClient } from "./teams-upgrade"; // 동일한 최소 client 표면 재사용
+
+export const BILLING_UPGRADE_FLAG = "migration.billing.upgrade.applied";
+export const BILLING_GRANT_KEYS = [
+  "workflows.billing:configure",
+  "workflows.billing:generate",
+  "workflows.billing:send",
+  "workflows.billing:view",
+] as const;
+// H3/D1 신뢰경계: pm만. 위임 admin은 workflows 권한 0 유지. OWNER는 systemRole 자동(행 불필요).
+// fresh install은 pm:"*"로 grant하므로 upgrade도 pm만 reconcile → fresh/existing 패리티.
+export const BILLING_TARGET_ROLE_KEYS = ["pm"] as const;
+
+// pm에 billing 4권한 멱등 grant. 이미 적용(플래그 존재)이면 no-op.
+// F-K fail-closed: 대상 역할·권한 중 하나라도 없으면 throw(플래그 미설정) → 다음 seed 재시도.
+// 플래그는 모든 upsert 성공 후에만 set.
+export async function applyBillingPermissionUpgrade(
+  db: UpgradeClient,
+  roleIdByKey: Map<string, string>,
+  permissionIdByKey: Map<string, string>,
+): Promise<{ applied: boolean }> {
+  const already = await db.systemSetting.findUnique({ where: { key: BILLING_UPGRADE_FLAG } });
+  if (already) return { applied: false };
+  const roleIds = BILLING_TARGET_ROLE_KEYS.map((key) => {
+    const id = roleIdByKey.get(key);
+    if (!id) throw new Error(`billing-upgrade: '${key}' 역할 미존재(seed 순서/드리프트) — 플래그 미설정, 재시도`);
+    return id;
+  });
+  const grants = BILLING_GRANT_KEYS.map((key) => {
+    const pid = permissionIdByKey.get(key);
+    if (!pid) throw new Error(`billing-upgrade: 권한 '${key}' 미존재 — 플래그 미설정, 재시도`);
+    return pid;
+  });
+  for (const roleId of roleIds) {
+    for (const pid of grants) {
+      await db.rolePermission.upsert({
+        where: { roleId_permissionId_scope: { roleId, permissionId: pid, scope: "all" } },
+        update: {},
+        create: { roleId, permissionId: pid, effect: "ALLOW", scope: "all" },
+      });
+    }
+  }
+  await db.systemSetting.create({ data: { key: BILLING_UPGRADE_FLAG, value: { appliedAt: "bootstrap" } } });
+  return { applied: true };
+}
