@@ -2,8 +2,10 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
+import { useCan } from "@/lib/auth/permissions-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CreateTaskModal } from "./create-task-modal";
 import { KIND_LABEL, STATUS_LABEL, STATUS_VARIANT, type WfStatus } from "./labels";
 
 interface TaskItem { id: string; kind: string; typeName: string; scheduledAt: string; status: WfStatus; }
@@ -23,18 +25,23 @@ async function fetchList(statuses?: string): Promise<TaskItem[]> {
 
 export function WorkflowsList() {
   const [filter, setFilter] = useState("all");
+  const [creating, setCreating] = useState(false);
+  const canCreateBilling = useCan("workflows.billing", "create");
   const statuses = FILTERS.find((f) => f.key === filter)?.statuses;
   const query = useQuery({ queryKey: ["workflows", filter], queryFn: () => fetchList(statuses) });
   const items = query.data ?? [];
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-1">
+      <div className="flex items-center gap-1">
         {FILTERS.map((f) => (
           <Button key={f.key} size="sm" variant={f.key === filter ? "default" : "ghost"} onClick={() => setFilter(f.key)}>
             {f.label}
           </Button>
         ))}
+        {canCreateBilling && (
+          <Button className="ml-auto" size="sm" onClick={() => setCreating(true)}>새 대금청구 작업</Button>
+        )}
       </div>
 
       {query.isError && <p className="text-sm text-destructive">목록을 불러오지 못했습니다.</p>}
@@ -55,6 +62,8 @@ export function WorkflowsList() {
           ))}
         </ul>
       )}
+
+      {creating && <CreateTaskModal onClose={() => setCreating(false)} />}
     </div>
   );
 }
