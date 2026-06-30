@@ -16,6 +16,7 @@ export interface EventRow { id: string; fromStatus: WorkflowStatus | null; toSta
 export interface TaskDetailRow {
   id: string; kind: WorkflowKind; typeName: string; scheduledAt: Date; status: WorkflowStatus;
   createdById: string | null; outputPath: string | null;
+  recipients: string[] | null; defaultRecipients: string[] | null;
   files: FileRow[]; mailDeliveries: MailRow[]; events: EventRow[];
 }
 export interface TaskForTransition { id: string; status: WorkflowStatus; createdById: string | null; kind: WorkflowKind; }
@@ -40,8 +41,8 @@ export async function findTaskDetail(id: string): Promise<TaskDetailRow | null> 
   const t = await prisma.workflowTask.findUnique({
     where: { id },
     select: {
-      id: true, scheduledAt: true, status: true, createdById: true, outputPath: true,
-      type: { select: { kind: true, name: true } },
+      id: true, scheduledAt: true, status: true, createdById: true, outputPath: true, recipients: true,
+      type: { select: { kind: true, name: true, defaultRecipients: true } },
       files: { select: { id: true, path: true, displayName: true, mimeType: true, sizeBytes: true, createdAt: true }, orderBy: { createdAt: "asc" } },
       mailDeliveries: {
         select: { id: true, step: true, recipients: true, subject: true, status: true, errorMessage: true, providerMessageId: true, sentAt: true },
@@ -54,6 +55,8 @@ export async function findTaskDetail(id: string): Promise<TaskDetailRow | null> 
   return {
     id: t.id, kind: t.type.kind, typeName: t.type.name, scheduledAt: t.scheduledAt, status: t.status,
     createdById: t.createdById, outputPath: t.outputPath,
+    recipients: Array.isArray(t.recipients) ? (t.recipients as string[]) : null,
+    defaultRecipients: Array.isArray(t.type.defaultRecipients) ? (t.type.defaultRecipients as string[]) : null,
     files: t.files, mailDeliveries: t.mailDeliveries, events: t.events,
   };
 }

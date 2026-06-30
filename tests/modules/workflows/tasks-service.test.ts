@@ -44,7 +44,7 @@ describe("getTaskList", () => {
 describe("getTaskDetailView", () => {
   const detail = {
     id: "t1", kind: "WEEKLY_REPORT", typeName: "주간보고", scheduledAt: new Date("2026-06-12T00:00:00Z"), status: "GENERATED",
-    createdById: "u1", outputPath: null,
+    createdById: "u1", outputPath: null, recipients: null, defaultRecipients: null,
     files: [{ id: "f1", path: "/o/a.xlsx", displayName: "a.xlsx", mimeType: null, sizeBytes: 123n, createdAt: new Date("2026-06-12T00:00:00Z") }],
     mailDeliveries: [{ id: "m1", step: "send", recipients: ["a@x"], subject: "s", status: "FAILED", errorMessage: "boom", providerMessageId: null, sentAt: null }],
     events: [{ id: "e1", fromStatus: null, toStatus: "PENDING", actorId: "u1", note: null, occurredAt: new Date("2026-06-12T00:00:00Z") }],
@@ -67,6 +67,30 @@ describe("getTaskDetailView", () => {
     expect(out!.files[0]).toEqual({ id: "f1", displayName: "a.xlsx", mimeType: null, sizeBytes: 123, createdAt: "2026-06-12T00:00:00.000Z" });
     expect(out!.mailDeliveries[0]).toEqual({ id: "m1", step: "send", recipients: ["a@x"], subject: "s", status: "FAILED", errorMessage: "boom", sentAt: null });
     expect(out!.timeline[0]).toEqual({ id: "e1", fromStatus: null, toStatus: "PENDING", actorId: "u1", note: null, occurredAt: "2026-06-12T00:00:00.000Z" });
+  });
+
+  it(":send 없으면 effectiveRecipients 미포함(:view-only 비노출, F3)", async () => {
+    m.findTaskDetail.mockResolvedValue({ ...detail, recipients: ["a@x"], defaultRecipients: ["b@x"] });
+    const out = await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.weekly:view"]) });
+    expect(out!.effectiveRecipients).toBeUndefined();
+  });
+
+  it(":send 있으면 task.recipients 우선", async () => {
+    m.findTaskDetail.mockResolvedValue({ ...detail, recipients: ["a@x"], defaultRecipients: ["b@x"] });
+    const out = await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.weekly:view", "workflows.weekly:send"]) });
+    expect(out!.effectiveRecipients).toEqual(["a@x"]);
+  });
+
+  it(":send 있고 task.recipients 비면(null) type.defaultRecipients", async () => {
+    m.findTaskDetail.mockResolvedValue({ ...detail, recipients: null, defaultRecipients: ["b@x"] });
+    const out = await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.weekly:view", "workflows.weekly:send"]) });
+    expect(out!.effectiveRecipients).toEqual(["b@x"]);
+  });
+
+  it(":send 있고 둘 다 없으면 []", async () => {
+    m.findTaskDetail.mockResolvedValue({ ...detail, recipients: null, defaultRecipients: null });
+    const out = await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.weekly:view", "workflows.weekly:send"]) });
+    expect(out!.effectiveRecipients).toEqual([]);
   });
 });
 
