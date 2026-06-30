@@ -110,7 +110,7 @@ interface RoundDateDto { round: number; submitDate: string /* UTC ISO ...Z */ }
 export interface BillingMailContext { scheduledAt: Date; projectName: string }
 export function buildSubject(step: 1 | 2, ctx: BillingMailContext): string;
 export function buildBody(step: 1 | 2, ctx: BillingMailContext): string;
-export function plainToHtml(plain: string): string; // 줄바꿈 보존 HTML(deliver html용)
+export function plainToHtml(plain: string): string; // HTML escape 후 줄바꿈 보존(deliver html용 — 주입 차단 F-A1)
 // round = computeBillingPeriod(scheduledAt).round(전월,KST); projectYear = .projectYear;
 // billingM/billingD = toKstFields(scheduledAt).month/.day; weekday = KST 요일("일"~"토").
 ```

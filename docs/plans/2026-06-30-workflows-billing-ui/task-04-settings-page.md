@@ -235,6 +235,7 @@ function ConfigForm({ year, config, canConfigure }: { year: number; config: Conf
       : { ...emptyConfigForm, year },
   );
   const [saving, setSaving] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const exists = config != null;
   const set = (k: keyof ConfigForm, v: string) => setForm((s) => ({ ...s, [k]: v }));
 
@@ -263,7 +264,7 @@ function ConfigForm({ year, config, canConfigure }: { year: number; config: Conf
       // 목록만 갱신한다. 삭제 후에도 selectedYear는 유지되지만 configs.find가 못 찾아 selectedConfig=null →
       // 해당 연도 폼이 빈 상태(=신규 작성)로 바뀐다. 부모 selectedYear를 강제 리셋할 필요 없음.
       await qc.invalidateQueries({ queryKey: ["billing-config"] });
-    } finally { setSaving(false); }
+    } finally { setSaving(false); setConfirmingDelete(false); }
   }
 
   return (
@@ -276,9 +277,21 @@ function ConfigForm({ year, config, canConfigure }: { year: number; config: Conf
       <Field label="월 청구액(원)"><Input type="number" value={form.monthlyAmount} disabled={!canConfigure} onChange={(e) => set("monthlyAmount", e.target.value)} /></Field>
       <Field label="월 청구액(한글)"><Input value={form.monthlyAmountKor} disabled={!canConfigure} onChange={(e) => set("monthlyAmountKor", e.target.value)} /></Field>
       {canConfigure && (
-        <div className="flex gap-2">
-          <Button size="sm" aria-label="계약 정보 저장" disabled={saving} onClick={save}>{saving ? "저장 중…" : "저장"}</Button>
-          {exists && <Button size="sm" variant="destructive" aria-label="계약 정보 삭제" disabled={saving} onClick={remove}>삭제</Button>}
+        <div className="grid gap-2">
+          <div className="flex gap-2">
+            <Button size="sm" aria-label="계약 정보 저장" disabled={saving} onClick={save}>{saving ? "저장 중…" : "저장"}</Button>
+            {exists && !confirmingDelete && (
+              <Button size="sm" variant="destructive" aria-label="계약 정보 삭제" disabled={saving} onClick={() => setConfirmingDelete(true)}>삭제</Button>
+            )}
+          </div>
+          {exists && confirmingDelete && (
+            // 파괴적 삭제(연도 설정 + 회차 제출일 연쇄 삭제, SC-1)는 확인 후에만 실행(F-A3).
+            <div className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-2 text-sm">
+              <span>{year}년 계약 정보와 등록된 회차 제출일이 모두 삭제됩니다. 계속하시겠습니까?</span>
+              <Button size="sm" variant="destructive" aria-label="삭제 확정" disabled={saving} onClick={remove}>삭제 확정</Button>
+              <Button size="sm" variant="ghost" disabled={saving} onClick={() => setConfirmingDelete(false)}>취소</Button>
+            </div>
+          )}
         </div>
       )}
     </section>
@@ -447,6 +460,22 @@ describe("회차 저장", () => {
     expect(JSON.parse(init.body as string)).toEqual({ submitDate: dateInputToSubmitDateIso("2026-02-10") });
   });
 });
+
+describe("계약 정보 삭제 확인(F-A3)", () => {
+  it("삭제 클릭만으로는 DELETE 미호출 — 확인 후에만 실행(회차 연쇄 손실 방지)", () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<BillingSettings canConfigure />);
+    selectYear("2026");
+    fireEvent.click(screen.getByLabelText("계약 정보 삭제"));
+    expect(fetchMock).not.toHaveBeenCalled(); // 확인 단계만 노출, 아직 삭제 안 함
+    fireEvent.click(screen.getByLabelText("삭제 확정"));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/workflows/billing/config/2026");
+    expect(init.method).toBe("DELETE");
+  });
+});
 ```
 
 Run: `npm test -- tests/app/workflows/billing-settings.test.tsx` → **PASS**.
@@ -463,3 +492,4 @@ Run: `npm test -- tests/app/workflows/billing-settings.test.tsx` → **PASS**.
 - **Don't** date input을 그대로 PUT하지 말 것 — `dateInputToSubmitDateIso`로 변환(D11).
 - **Don't** `:configure` 없는 사용자에게 저장/삭제 컨트롤을 렌더하지 말 것. 페이지 진입은 `:view`(서버 가드), 쓰기 컨트롤은 `canConfigure` prop으로 게이트(서버 API도 fail-closed).
 - 선택 연도 config는 `GET config` 목록에서 파생한다(별도 `GET config/[year]` 불필요). 회차만 `GET .../rounds`.
+- **Don't** 삭제를 확인 없이 즉시 실행하지 말 것(F-A3) — `DELETE config/[year]`는 회차 제출일까지 연쇄 삭제하는 비가역 계약(SC-1)이다. 삭제 클릭은 확인 단계만 띄우고, **확인(삭제 확정) 후에만** DELETE를 호출한다. 서버측 `updatedAt` 충돌 검사는 백엔드 DELETE 계약(머지済) 범위라 이 UI 슬라이스 밖(OUT_OF_SCOPE) — 필요 시 별도 백엔드 follow-up.

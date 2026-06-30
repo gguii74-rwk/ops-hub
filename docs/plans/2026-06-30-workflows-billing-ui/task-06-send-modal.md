@@ -32,15 +32,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const invalidate = vi.hoisted(() => vi.fn());
 const toastErr = vi.hoisted(() => vi.fn());
 const toastOk = vi.hoisted(() => vi.fn());
+// config GET 상태를 케이스별로 토글(F-A2: 404 공백 / 일시오류 차단).
+const cfgState = vi.hoisted(() => ({ data: { projectName: "테스트사업" } as { projectName: string } | undefined, isLoading: false, isError: false }));
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({ data: { projectName: "테스트사업" }, isLoading: false, isError: false }),
+  useQuery: () => cfgState,
   useQueryClient: () => ({ invalidateQueries: invalidate }),
 }));
 vi.mock("sonner", () => ({ toast: { error: toastErr, success: toastOk } }));
 
 import { SendModal } from "@/app/(app)/workflows/[id]/send-modal";
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); invalidate.mockClear(); toastErr.mockClear(); toastOk.mockClear(); });
+afterEach(() => {
+  cleanup(); vi.unstubAllGlobals(); invalidate.mockClear(); toastErr.mockClear(); toastOk.mockClear();
+  cfgState.data = { projectName: "테스트사업" }; cfgState.isLoading = false; cfgState.isError = false;
+});
 
 // 2026-02-09T15:00Z = KST 2026-02-10 → 전월=1월, projectYear=2026
 const SCHEDULED = "2026-02-09T15:00:00.000Z";
@@ -97,6 +102,24 @@ describe("SendModal fail-closed (D6)", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 });
+
+describe("SendModal config 로드 (F-A2)", () => {
+  it("일시 오류(404 아님) → 발송 폼 미렌더(fail-closed) + 발송 버튼 없음", () => {
+    cfgState.isError = true; cfgState.data = undefined;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={["a@x.com"]} onClose={() => {}} />);
+    expect(screen.queryByRole("button", { name: "발송" })).toBeNull();
+    expect(screen.getByText(/설정을 불러오지 못했습니다/)).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("404(설정 없음, 사업명 공백) → 경고 노출하되 발송 가능(D5 편집 경로 보존)", () => {
+    cfgState.isError = false; cfgState.data = { projectName: "" };
+    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={["a@x.com"]} onClose={() => {}} />);
+    expect(screen.getByText(/설정\(사업명\)이 없습니다/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "발송" })).toBeTruthy();
+  });
+});
 ```
 
 Run: `npm test -- tests/app/workflows/send-modal.test.tsx` → **FAIL**(파일 없음).
@@ -115,7 +138,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Modal } from "@/components/ui/modal";
-import { LoadingState } from "@/components/ui/states";
+import { LoadingState, ErrorState } from "@/components/ui/states";
 import { buildSubject, buildBody, plainToHtml } from "../mail-templates";
 
 const SEND_ERROR: Record<number, string> = {
@@ -144,13 +167,23 @@ export function SendModal({
   if (cfg.isLoading) {
     return <Modal title={`${step}단계 발송`} onClose={onClose}><LoadingState /></Modal>;
   }
+  // 일시 장애(404 아님)는 fail-closed: 사업명·제목·본문 템플릿을 신뢰할 수 없으므로 발송 폼을 띄우지 않는다(F-A2).
+  // 404는 cfg.queryFn이 { projectName: "" }로 정상 처리 → isError=false(설정 없음=편집 경로, D5 보존).
+  if (cfg.isError) {
+    return (
+      <Modal title={`${step}단계 발송`} onClose={onClose}>
+        <ErrorState message="대금청구 설정을 불러오지 못했습니다. 잠시 후 다시 시도하세요." />
+      </Modal>
+    );
+  }
+  const projectName = cfg.data?.projectName ?? "";
   return (
     <SendForm
       taskId={taskId}
       step={step}
       scheduledAt={scheduledAt}
-      projectName={cfg.data?.projectName ?? ""}
-      configError={cfg.isError}
+      projectName={projectName}
+      projectNameMissing={projectName.trim() === ""}
       effectiveRecipients={effectiveRecipients}
       onClose={onClose}
     />
@@ -158,9 +191,9 @@ export function SendModal({
 }
 
 function SendForm({
-  taskId, step, scheduledAt, projectName, configError, effectiveRecipients, onClose,
+  taskId, step, scheduledAt, projectName, projectNameMissing, effectiveRecipients, onClose,
 }: {
-  taskId: string; step: 1 | 2; scheduledAt: string; projectName: string; configError: boolean;
+  taskId: string; step: 1 | 2; scheduledAt: string; projectName: string; projectNameMissing: boolean;
   effectiveRecipients?: string[]; onClose: () => void;
 }) {
   const qc = useQueryClient();
@@ -197,8 +230,8 @@ function SendForm({
   return (
     <Modal title={`${step}단계 발송`} onClose={guardedClose}>
       <div className="space-y-3">
-        {configError && (
-          <p className="text-sm text-amber-600">사업명을 불러오지 못했습니다 — 제목·본문을 확인하세요.</p>
+        {projectNameMissing && (
+          <p className="text-sm text-amber-600">이 연도의 대금청구 설정(사업명)이 없습니다 — 제목·본문의 사업명을 직접 확인·입력하세요.</p>
         )}
         <label className="grid gap-1 text-sm">
           <span className="text-muted-foreground">수신자 (쉼표 구분)</span>
@@ -238,4 +271,5 @@ Run: `npm test -- tests/app/workflows/send-modal.test.tsx` → **PASS**.
 - **Don't** `recipients`를 생략하지 말 것 — 항상 화면 표시 목록을 명시 포함(생략 시 백엔드 폴백 의존 = D6 위반).
 - **Don't** body를 plain text로 보내지 말 것 — `plainToHtml`로 변환(deliver가 html로 사용, 줄바꿈 보존).
 - **Don't** 제출 중 닫기 허용하지 말 것(guardedClose).
-- config 404는 오류가 아니다 — projectName "" 로 폼을 띄우고 사용자가 채운다(발송 차단 아님). 발송 차단은 **빈 수신자**에만.
+- config 404는 오류가 아니다 — projectName "" 로 폼을 띄우고 사용자가 채운다(발송 차단 아님, D5 편집 경로). **단 사업명 공백을 명시 경고로 띄운다**(F-A2 — 공식 메일이 빈 사업명으로 무심코 발송되지 않게).
+- **Don't** config **일시 장애(404 아님)**에 발송 폼을 그대로 띄우지 말 것(F-A2 fail-closed) — 제목·본문 템플릿이 신뢰 불가(빈 사업명)다. `cfg.isError`면 `ErrorState`로 차단하고 발송 버튼 자체를 렌더하지 않는다. 차단 경계: **404=편집 가능 / 일시오류=차단 / 빈 수신자=차단**.

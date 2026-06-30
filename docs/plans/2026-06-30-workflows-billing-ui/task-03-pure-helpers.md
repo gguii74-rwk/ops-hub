@@ -66,6 +66,10 @@ describe("plainToHtml", () => {
   it("줄은 <p>, 빈 줄은 <br>", () => {
     expect(plainToHtml("a\n\nb")).toBe("<p>a</p>\n<br>\n<p>b</p>");
   });
+  it("HTML 특수문자·태그를 escape(외부 발송 본문 주입 차단, F-A1)", () => {
+    expect(plainToHtml("<img src=x onerror=alert(1)>")).toBe("<p>&lt;img src=x onerror=alert(1)&gt;</p>");
+    expect(plainToHtml("A&B <b>회사</b>")).toBe("<p>A&amp;B &lt;b&gt;회사&lt;/b&gt;</p>");
+  });
 });
 ```
 
@@ -123,13 +127,24 @@ export function buildBody(step: 1 | 2, ctx: BillingMailContext): string {
   ].join("\n");
 }
 
-// plain text → HTML(줄바꿈 보존, 선두 공백 &nbsp;). deliver가 msg.html로 사용(SC-5). day-sync 변환 포팅.
+// HTML escape — 본문·projectName이 escape 없이 msg.html로 외부 발송되면 임의 HTML 주입(F-A1).
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// plain text → HTML(줄바꿈 보존, 선두 공백 &nbsp;). deliver가 msg.html로 사용(SC-5). day-sync 변환 포팅 + escape.
 export function plainToHtml(plain: string): string {
   return plain
     .split("\n")
     .map((line) => {
       if (!line.trim()) return "<br>";
-      const preserved = line.replace(/^ +/, (spaces) => "&nbsp;".repeat(spaces.length));
+      // escape 먼저(입력의 &<>"' 무력화) → 선두 공백을 &nbsp;로(이때 삽입되는 &는 재escape 안 함).
+      const preserved = escapeHtml(line).replace(/^ +/, (spaces) => "&nbsp;".repeat(spaces.length));
       return `<p>${preserved}</p>`;
     })
     .join("\n");
@@ -200,4 +215,5 @@ Run: `npm test -- tests/app/workflows/round-date.test.ts` → **PASS**.
 - **Don't** 로컬 `Date.getMonth()/getFullYear()`로 전월·회차를 계산하지 말 것(D4). 운영 서버 TZ가 KST가 아니면 월 경계가 어긋나 오청구된다. `computeBillingPeriod`/`toKstFields`만 사용.
 - **Don't** date-only `YYYY-MM-DD`를 회차 PUT에 직송하지 말 것(D11) — 백엔드 `z.string().datetime()`가 400을 낸다. 반드시 `dateInputToSubmitDateIso`로 변환.
 - **Don't** mail body를 HTML로 직접 만들지 말 것 — plain text로 만들고(편집·테스트 용이) 전송 직전 `plainToHtml`로 변환한다(send-modal에서).
+- **Don't** `plainToHtml`에서 escape를 빼지 말 것(F-A1) — 본문·projectName은 사용자 편집/설정값이고 백엔드가 `msg.html`로 외부 발송한다. escape 없으면 `<`,`>`,`&` 포함 사업명이 메일에서 깨지고(정합성) 임의 HTML/링크 주입 경로가 열린다(보안). escape를 선두 공백 `&nbsp;` 치환보다 **먼저** 적용한다.
 - 텍스트 문구는 day-sync 원문 + projectName/KST 치환이다. **최종 문구·서명은 3층 수동 게이트(한컴/메일 눈 대조)로 확정**한다(spec §8) — 본 태스크는 위 표준 문자열을 구현 대상으로 고정.
