@@ -197,25 +197,25 @@ export async function findTaskForSend(id: string): Promise<TaskForSend | null> {
 // 짧은 최종 commit tx(spec §8.2 step 4): status CAS(PENDING→GENERATED) + 파일 기록 + 이벤트
 // + (billing) round-date create-if-missing(I3, 기존 행 덮어쓰기 금지). FS I/O는 이 tx 밖에서 끝난 상태.
 export interface GeneratedFileForDownload {
-  id: string; taskId: string; path: string; displayName: string; mimeType: string | null; kind: WorkflowKind;
+  id: string; taskId: string; path: string; displayName: string; mimeType: string | null; kind: WorkflowKind; status: WorkflowStatus;
 }
 export async function findGeneratedFileForDownload(fileId: string): Promise<GeneratedFileForDownload | null> {
   const f = await prisma.generatedFile.findUnique({
     where: { id: fileId },
-    select: { id: true, taskId: true, path: true, displayName: true, mimeType: true, task: { select: { type: { select: { kind: true } } } } },
+    select: { id: true, taskId: true, path: true, displayName: true, mimeType: true, task: { select: { status: true, type: { select: { kind: true } } } } },
   });
   if (!f) return null;
-  return { id: f.id, taskId: f.taskId, path: f.path, displayName: f.displayName, mimeType: f.mimeType, kind: f.task.type.kind };
+  return { id: f.id, taskId: f.taskId, path: f.path, displayName: f.displayName, mimeType: f.mimeType, kind: f.task.type.kind, status: f.task.status };
 }
 
-export interface TaskForDownload { outputPath: string | null; kind: WorkflowKind; }
+export interface TaskForDownload { outputPath: string | null; kind: WorkflowKind; status: WorkflowStatus; }
 export async function findTaskForDownload(id: string): Promise<TaskForDownload | null> {
   const t = await prisma.workflowTask.findUnique({
     where: { id },
-    select: { outputPath: true, type: { select: { kind: true } } },
+    select: { outputPath: true, status: true, type: { select: { kind: true } } },
   });
   if (!t) return null;
-  return { outputPath: t.outputPath, kind: t.type.kind };
+  return { outputPath: t.outputPath, kind: t.type.kind, status: t.status };
 }
 
 export async function commitGeneratedTransition(args: {
