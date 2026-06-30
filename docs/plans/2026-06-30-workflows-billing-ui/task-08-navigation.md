@@ -84,3 +84,14 @@ Run: `npm test -- tests/kernel/access/nav-catalog.test.ts tests/app/nav/compute-
 - **Don't** `workflows-billing-settings` permission을 `:view`로 두지 말 것 — D8은 `workflows.billing:configure`. (configure 보유 role은 :view도 보유 — pm `["*"]`, 설정 페이지 진입 GET 통과.)
 - **Don't** 새 top-level 메뉴를 만들지 말 것 — workflows 하위. `navigation-catalog.test.ts`의 top-level 5개 불변식 유지.
 - **Don't** seed.ts를 손대지 말 것 — `NAV_CATALOG` 소비라 catalog 변경만으로 충분. 기존 `workflows` row는 편집 보존(skip).
+
+## nav 권한 모델 메모 (F-B2 — ACCEPTED + OUT_OF_SCOPE)
+
+적대검증이 "부모/업무목록=`workflows.weekly:view`·설정=`workflows.billing:configure`가 SC-9의 `billing:view` 계약과 어긋난다"고 지적했으나, **모든 configured role에서 일관**함을 확인해 수용한다(`prisma/seed-roles.ts`):
+
+- `regular-developer` = `weekly:view` **+** `billing:view` (둘 다) → 업무 nav·목록 보임.
+- `contractor-*` = `weekly:view`만 → 업무 nav·목록 보임(목록은 kind 게이트로 billing 작업 비표시).
+- `pm` = `["*"]` → weekly:view·billing:view·billing:configure 전부 → nav·목록·설정 메뉴·설정 페이지 모두 동작.
+- **`billing:view` 보유·`weekly:view` 미보유 role 없음. `configure` 보유·`view` 미보유 role 없음.**
+
+따라서 적대검증이 든 두 시나리오(billing-only 사용자가 업무 nav에서 배제 / configure-only가 설정 링크는 보이나 page GET 실패)는 **configured role과 대응하지 않는 이론적 custom-override 케이스**이며, 그 경우 `settings/page.tsx`의 `:view` 가드가 fail-closed redirect(`/workflows`)한다(데이터 노출·크래시 없음). 설정 nav=`configure`는 spec D8의 의도된 결정(설정은 관리 기능). 공용 `workflows:view` 도입 / nav any-of 권한은 **기존 단일권한 nav 모델 전반의 변경**이라 이 UI 슬라이스 밖(OUT_OF_SCOPE) — 필요 시 별도 access-control follow-up.

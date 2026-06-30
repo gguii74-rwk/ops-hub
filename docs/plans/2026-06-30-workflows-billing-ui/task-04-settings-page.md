@@ -211,7 +211,7 @@ export function BillingSettings({ canConfigure }: { canConfigure: boolean }) {
 
       {selectedYear != null && (
         <>
-          <ConfigForm key={selectedYear} year={selectedYear} config={selectedConfig} canConfigure={canConfigure} />
+          <ConfigForm key={selectedYear} year={selectedYear} config={selectedConfig} canConfigure={canConfigure} onDeleted={() => setSelectedYear(null)} />
           <RoundsTable year={selectedYear} canConfigure={canConfigure} />
         </>
       )}
@@ -223,7 +223,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   return <label className="grid gap-1 text-sm"><span className="text-muted-foreground">{label}</span>{children}</label>;
 }
 
-function ConfigForm({ year, config, canConfigure }: { year: number; config: ConfigDto | null; canConfigure: boolean }) {
+function ConfigForm({ year, config, canConfigure, onDeleted }: { year: number; config: ConfigDto | null; canConfigure: boolean; onDeleted: () => void }) {
   const qc = useQueryClient();
   const [form, setForm] = useState<ConfigForm>(
     config
@@ -261,8 +261,10 @@ function ConfigForm({ year, config, canConfigure }: { year: number; config: Conf
       const res = await fetch(`/api/workflows/billing/config/${year}`, { method: "DELETE" });
       if (!res.ok) { toast.error("삭제에 실패했습니다."); return; }
       toast.success("삭제되었습니다.");
-      // 목록만 갱신한다. 삭제 후에도 selectedYear는 유지되지만 configs.find가 못 찾아 selectedConfig=null →
-      // 해당 연도 폼이 빈 상태(=신규 작성)로 바뀐다. 부모 selectedYear를 강제 리셋할 필요 없음.
+      // 선택 해제(F-B1): ConfigForm은 key=selectedYear로 계속 mounted라 useState 초기값이 재적용되지 않는다.
+      // 그대로 두면 form이 삭제 전 계약값을 유지(exists만 false) → 사용자가 저장을 누르면 방금 삭제한 연도를
+      // stale 값으로 POST 재생성한다. 부모가 selectedYear=null로 폼을 unmount → 다음 선택/생성 시 깨끗한 상태.
+      onDeleted();
       await qc.invalidateQueries({ queryKey: ["billing-config"] });
     } finally { setSaving(false); setConfirmingDelete(false); }
   }
@@ -391,7 +393,7 @@ function RoundRow({
 
 ```tsx
 // @vitest-environment jsdom
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const invalidate = vi.hoisted(() => vi.fn());
@@ -475,6 +477,18 @@ describe("계약 정보 삭제 확인(F-A3)", () => {
     expect(url).toBe("/api/workflows/billing/config/2026");
     expect(init.method).toBe("DELETE");
   });
+
+  it("삭제 확정 후 선택 해제 — 폼 unmount(stale 값 재생성 차단, F-B1)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<BillingSettings canConfigure />);
+    selectYear("2026");
+    expect(screen.getByLabelText("계약 정보 저장")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("계약 정보 삭제"));
+    fireEvent.click(screen.getByLabelText("삭제 확정"));
+    // onDeleted → 부모 selectedYear=null → ConfigForm/RoundsTable unmount(저장 버튼 사라짐). stale form 유지 안 함.
+    await waitFor(() => expect(screen.queryByLabelText("계약 정보 저장")).toBeNull());
+  });
 });
 ```
 
@@ -493,3 +507,4 @@ Run: `npm test -- tests/app/workflows/billing-settings.test.tsx` → **PASS**.
 - **Don't** `:configure` 없는 사용자에게 저장/삭제 컨트롤을 렌더하지 말 것. 페이지 진입은 `:view`(서버 가드), 쓰기 컨트롤은 `canConfigure` prop으로 게이트(서버 API도 fail-closed).
 - 선택 연도 config는 `GET config` 목록에서 파생한다(별도 `GET config/[year]` 불필요). 회차만 `GET .../rounds`.
 - **Don't** 삭제를 확인 없이 즉시 실행하지 말 것(F-A3) — `DELETE config/[year]`는 회차 제출일까지 연쇄 삭제하는 비가역 계약(SC-1)이다. 삭제 클릭은 확인 단계만 띄우고, **확인(삭제 확정) 후에만** DELETE를 호출한다. 서버측 `updatedAt` 충돌 검사는 백엔드 DELETE 계약(머지済) 범위라 이 UI 슬라이스 밖(OUT_OF_SCOPE) — 필요 시 별도 백엔드 follow-up.
+- **Don't** 삭제 성공 후 `selectedYear`를 그대로 두지 말 것(F-B1) — `ConfigForm`은 `key={selectedYear}`로 mounted 유지라 `useState` 초기값이 재적용되지 않는다. 삭제 후 form이 삭제 전 계약값을 유지(`exists`만 false)해, 저장 시 방금 삭제한 연도를 stale 값으로 재생성한다. `onDeleted`로 부모가 `selectedYear=null`로 폼을 unmount한다.

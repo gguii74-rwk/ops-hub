@@ -190,3 +190,20 @@ UI 클라이언트 게이트: `useCan(resource, action)`(`@/lib/auth/permissions
 | 08 | 네비게이션 "대금청구 설정" 등록 | [ ] | [task-08](2026-06-30-workflows-billing-ui/task-08-navigation.md) | — | |
 
 실행 순서 권장: 01·02·03·08(독립) → 04 → 05 → 06 → 07. 각 태스크는 게이트(`npm run typecheck`/`lint`/`test`)를 통과해야 다음으로 넘어간다.
+
+---
+
+## 적대검증 ledger (plan 단계 — 구현 전 판정 종결)
+
+plan diff 적대검증(2회) 결과. 모든 blocking finding을 판정으로 닫음(미판정 0). impl 단계에서 아래 FIXED가 테스트로 보장되는지 확인한다.
+
+| # | severity | finding | disposition | 반영 위치 |
+|---|---|---|---|---|
+| F-A1 | high | `plainToHtml`이 본문·projectName을 escape 없이 `msg.html`로 외부 발송(주입·정합성) | **FIXED** | task-03 `escapeHtml`+escape-우선 + 회귀 테스트 |
+| F-A2 | high | config 조회 실패가 빈 projectName fail-open 발송 | **FIXED** | task-06 일시오류(404 아님) `ErrorState` 차단 + 404 사업명 공백 명시 경고. D5 편집 경로(404=편집 가능)는 보존 |
+| F-A3 | high | 연도 설정 삭제가 확인 없이 즉시 실행(회차 연쇄 손실) | **FIXED** | task-04 삭제 확인 단계(확인 후에만 DELETE) + 테스트 |
+| F-B1 | high | 삭제 후 `key={selectedYear}` 폼이 remount 안 돼 stale 값으로 재생성 | **FIXED** | task-04 `onDeleted`→부모 `selectedYear=null` 폼 unmount + 회귀 테스트 |
+| F-B2 | medium | nav 권한(부모=`weekly:view`, 설정=`billing:configure`)이 SC-9 `billing:view`와 불일치 | **ACCEPTED**(D8·모든 configured role 일관: billing:view⊇weekly:view, configure⊇view; 이론적 override는 page `:view` 가드로 fail-closed) **+ OUT_OF_SCOPE**(공용 `workflows:view`/any-of nav=기존 nav 모델 변경, access-control follow-up) | task-08 §"nav 권한 모델 메모" |
+| F-A3-b | — | 서버측 `updatedAt` 충돌 검사(삭제 동시성) | **OUT_OF_SCOPE** | 백엔드 DELETE 계약(머지済) 범위. UI 슬라이스 밖, 필요 시 백엔드 follow-up |
+
+blocking score 추세: R1 = 9(high 3) → R2 = 0(미판정 blocking 0; F-A* 모두 FIXED 확인, 신규 F-B1 FIXED·F-B2 ACCEPTED).
