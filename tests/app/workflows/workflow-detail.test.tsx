@@ -68,11 +68,36 @@ describe("WorkflowDetail 액션 슬롯(BILLING)", () => {
     expect(screen.queryByRole("button", { name: "1단계 발송" })).toBeNull();
   });
 
-  it("SENT + send → 2단계 발송", () => {
+  it("SENT + send → 2단계 발송·ZIP·개별 다운로드", () => {
     can.send = true;
-    detailData.current = baseDetail({ status: "SENT" });
+    detailData.current = baseDetail({
+      status: "SENT",
+      files: [{ id: "f1", displayName: "a.hwpx", mimeType: null, sizeBytes: 2048, createdAt: "2026-02-09T15:00:00.000Z" }],
+    });
     render(<WorkflowDetail taskId="t1" isAdmin={false} />);
     expect(screen.getByRole("button", { name: "2단계 발송" })).toBeTruthy();
+    expect(screen.getByText("전체 다운로드(ZIP)").closest("a")!.getAttribute("href")).toBe("/api/workflows/t1/download");
+    expect(screen.getByText("a.hwpx").closest("a")!.getAttribute("href")).toBe("/api/workflows/t1/files/f1");
+  });
+
+  it("PENDING은 파일이 있어도 개별·ZIP 다운로드 없음(plain text)", () => {
+    detailData.current = baseDetail({
+      status: "PENDING",
+      files: [{ id: "f1", displayName: "a.hwpx", mimeType: null, sizeBytes: 2048, createdAt: "2026-02-09T15:00:00.000Z" }],
+    });
+    render(<WorkflowDetail taskId="t1" isAdmin={false} />);
+    expect(screen.queryByText("전체 다운로드(ZIP)")).toBeNull();
+    expect(screen.getByText("a.hwpx").closest("a")).toBeNull(); // plain text, 링크 아님
+  });
+
+  it("CANCELLED은 파일이 있어도 개별 다운로드 링크 없음(SC-10 회귀가드)", () => {
+    detailData.current = baseDetail({
+      status: "CANCELLED",
+      files: [{ id: "f1", displayName: "a.hwpx", mimeType: null, sizeBytes: 2048, createdAt: "2026-02-09T15:00:00.000Z" }],
+    });
+    render(<WorkflowDetail taskId="t1" isAdmin={false} />);
+    expect(screen.queryByText("전체 다운로드(ZIP)")).toBeNull();
+    expect(screen.getByText("a.hwpx").closest("a")).toBeNull(); // plain text, 링크 아님
   });
 
   it("HQ_REQUESTED → 후속 단계 안내, 발송 버튼 없음", () => {

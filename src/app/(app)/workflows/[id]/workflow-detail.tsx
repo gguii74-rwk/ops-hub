@@ -127,7 +127,7 @@ export function WorkflowDetail({ taskId, isAdmin }: { taskId: string; isAdmin: b
           <ul className="space-y-1">
             {detail.files.map((f) => (
               <li key={f.id} className="text-sm">
-                {isBilling ? (
+                {downloadable ? (
                   <a className="text-primary underline-offset-4 hover:underline" href={`/api/workflows/${taskId}/files/${f.id}`}>
                     {f.displayName}
                   </a>
