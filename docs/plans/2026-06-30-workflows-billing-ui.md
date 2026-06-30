@@ -204,6 +204,9 @@ plan diff 적대검증(2회) 결과. 모든 blocking finding을 판정으로 닫
 | F-A3 | high | 연도 설정 삭제가 확인 없이 즉시 실행(회차 연쇄 손실) | **FIXED** | task-04 삭제 확인 단계(확인 후에만 DELETE) + 테스트 |
 | F-B1 | high | 삭제 후 `key={selectedYear}` 폼이 remount 안 돼 stale 값으로 재생성 | **FIXED** | task-04 `onDeleted`→부모 `selectedYear=null` 폼 unmount + 회귀 테스트 |
 | F-B2 | medium | nav 권한(부모=`weekly:view`, 설정=`billing:configure`)이 SC-9 `billing:view`와 불일치 | **ACCEPTED**(D8·모든 configured role 일관: billing:view⊇weekly:view, configure⊇view; 이론적 override는 page `:view` 가드로 fail-closed) **+ OUT_OF_SCOPE**(공용 `workflows:view`/any-of nav=기존 nav 모델 변경, access-control follow-up) | task-08 §"nav 권한 모델 메모" |
-| F-A3-b | — | 서버측 `updatedAt` 충돌 검사(삭제 동시성) | **OUT_OF_SCOPE** | 백엔드 DELETE 계약(머지済) 범위. UI 슬라이스 밖, 필요 시 백엔드 follow-up |
+| F-C1 | high | config 저장/삭제가 stale `updatedAt` 충돌(동시 편집 덮어쓰기/삭제)을 막지 못함 | **OUT_OF_SCOPE**(사용자 결정: last-write-wins 유지) — billing-config는 연 1회·소수 관리자가 세팅하는 저동시성 admin 설정이고 usedDays 같은 캐시 불변식이 없어 PR #28에서 의도적으로 optimistic lock 없이 머지·검증됨. `expectedUpdatedAt`/409는 선언된 백엔드 변경 2건(D1) 외 3번째 변경이라 범위 초과. 필요 시 별도 백엔드 follow-up | (변경 없음) |
+| F-C2 | medium | `POST /api/workflows`의 `typeId`→`kind` 교체가 기존 `typeId` 계약 파손 | **ACCEPTED** — `typeId`로 POST하는 기존 호출자 없음(`route.ts` 자신 + task-01이 교체하는 테스트뿐, UI create 경로는 이 슬라이스에서 신설). spec D12의 의도된 교체이고 엔드포인트는 3개 kind 수용으로 범용성 유지 → 깨질 외부 계약 없음 | task-01(D12) |
 
-blocking score 추세: R1 = 9(high 3) → R2 = 0(미판정 blocking 0; F-A* 모두 FIXED 확인, 신규 F-B1 FIXED·F-B2 ACCEPTED).
+F-A3-b(서버측 `updatedAt` 삭제 동시성)는 F-C1로 통합(같은 fingerprint, 사용자 결정 last-write-wins).
+
+blocking score 추세: R1 = 9(high 3) → R2 = 0(F-A* FIXED 확인, F-B1 FIXED·F-B2 ACCEPTED) → R3 = 0(F-B1 FIXED 확인; 신규 F-C1 OUT_OF_SCOPE[사용자 결정]·F-C2 ACCEPTED[검증]). **미판정 blocking 0 — plan 종결.**
