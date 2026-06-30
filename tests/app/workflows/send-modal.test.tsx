@@ -116,3 +116,21 @@ describe("SendModal F-A1 escape-chain (end-to-end)", () => {
     expect(payload.body).toContain("A&amp;B");
   });
 });
+
+describe("SendModal stale config prefill (refetch resync)", () => {
+  it("config refetch로 projectName이 바뀌면 제목·본문이 최신 사업명으로 재prefill", () => {
+    // React Query가 캐시된(이전/404) 설정을 즉시 반환한 뒤 최신 설정으로 갱신되는 상황을 모사.
+    cfgState.data = { projectName: "이전사업" };
+    const { rerender } = render(
+      <SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={["a@x.com"]} onClose={() => {}} />,
+    );
+    expect((screen.getByLabelText("제목") as HTMLInputElement).value).toContain("이전사업");
+    cfgState.data = { projectName: "최신사업" };
+    rerender(
+      <SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={["a@x.com"]} onClose={() => {}} />,
+    );
+    const subject = (screen.getByLabelText("제목") as HTMLInputElement).value;
+    expect(subject).toContain("최신사업");
+    expect(subject).not.toContain("이전사업");
+  });
+});

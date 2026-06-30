@@ -47,7 +47,9 @@ export function SendModal({
   }
   const projectName = cfg.data?.projectName ?? "";
   return (
+    // 해소된 사업명이 바뀌면(캐시된 값 → refetch 최신값) remount해 제목·본문을 재prefill — stale 사업명 발송 방지.
     <SendForm
+      key={projectName}
       taskId={taskId}
       step={step}
       scheduledAt={scheduledAt}
