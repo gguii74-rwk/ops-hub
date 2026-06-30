@@ -108,6 +108,12 @@ describe("WorkflowDetail 액션 슬롯(BILLING)", () => {
     expect(screen.queryByRole("button", { name: /발송/ })).toBeNull();
   });
 
+  it("FINAL_SENT + files → ZIP 다운로드 노출(서버 다운로드 게이트와 동일 불변식)", () => {
+    detailData.current = baseDetail({ status: "FINAL_SENT", files: [{ id: "f1", displayName: "a.hwpx", mimeType: null, sizeBytes: 1, createdAt: "x" }] });
+    render(<WorkflowDetail taskId="t1" isAdmin={false} />);
+    expect(screen.getByText("전체 다운로드(ZIP)").closest("a")!.getAttribute("href")).toBe("/api/workflows/t1/download");
+  });
+
   it("BILLING 아닌 kind는 액션 슬롯 비노출", () => {
     can.send = true; can.generate = true;
     detailData.current = baseDetail({ kind: "WEEKLY_REPORT", status: "PENDING" });

@@ -2,7 +2,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { KIND_RESOURCE } from "@/modules/workflows/policy";
+import { KIND_RESOURCE, isDownloadableStatus } from "@/modules/workflows/policy";
 import { useCan } from "@/lib/auth/permissions-client";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -68,7 +68,8 @@ export function WorkflowDetail({ taskId, isAdmin }: { taskId: string; isAdmin: b
   const cancellable = CANCELLABLE.includes(detail.status);
   const isBilling = detail.kind === "BILLING";
   const hasFiles = detail.files.length > 0;
-  const downloadable = isBilling && hasFiles && ["GENERATED", "SENT", "HQ_REQUESTED"].includes(detail.status);
+  // 다운로드 링크 노출 = 서버 다운로드 게이트와 동일 불변식(policy.isDownloadableStatus) 공유 — 서버↔UI 분기 방지.
+  const downloadable = isBilling && hasFiles && isDownloadableStatus(detail.status);
 
   return (
     <section className="space-y-6">

@@ -24,6 +24,15 @@ export const KIND_RESOURCE: Record<WorkflowKind, string> = {
   NOTIFICATION_BILLING: "workflows.notification",
 };
 
+// 다운로드 가능 상태 = 산출물 생성 이후·미취소 상태(PENDING 미생성·CANCELLED 취소 제외).
+// 서버 다운로드 게이트(services/download.ts)와 UI 다운로드 링크 노출(workflow-detail.tsx)이 동일 불변식을 공유한다(드리프트 방지).
+export const DOWNLOADABLE_STATUSES = new Set<WorkflowStatus>([
+  "GENERATED", "REVIEWED", "SENT", "HQ_REQUESTED", "FINAL_SENT",
+]);
+export function isDownloadableStatus(status: string): boolean {
+  return (DOWNLOADABLE_STATUSES as Set<string>).has(status);
+}
+
 // 전이 대상 → 요구 권한 액션.
 export const ACTION_FOR_STATUS: Partial<Record<WorkflowStatus, string>> = {
   GENERATED: "generate",
