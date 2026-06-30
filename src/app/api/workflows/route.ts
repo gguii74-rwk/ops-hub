@@ -51,7 +51,7 @@ export async function POST(req: Request) {
   try {
     const summary = await getPermissionSummary(session.user.id);
     const { id } = await createTask(
-      { typeId: parsed.data.typeId, scheduledAt },
+      { kind: parsed.data.kind, scheduledAt },
       buildTransitionCtx(session.user, summary),
     );
     return NextResponse.json({ id }, { status: 201 });

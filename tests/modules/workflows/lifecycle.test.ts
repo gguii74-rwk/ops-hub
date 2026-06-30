@@ -4,6 +4,7 @@ vi.mock("@/kernel/access", () => ({ ForbiddenError: class ForbiddenError extends
 vi.mock("@/modules/workflows/repositories", () => ({
   findTaskForTransition: vi.fn(),
   findWorkflowTypeKind: vi.fn(),
+  findWorkflowTypeByKind: vi.fn(),
   createTaskWithInitialEvent: vi.fn(),
   applyTransitionAtomic: vi.fn(),
   hasActiveSending: vi.fn(),
@@ -88,22 +89,37 @@ describe("transitionTask", () => {
 });
 
 describe("createTask", () => {
-  it("알 수 없는 typeId → ForbiddenError", async () => {
-    m.findWorkflowTypeKind.mockResolvedValue(null);
-    await expect(createTask({ typeId: "x", scheduledAt: new Date() }, baseCtx({ keys: ["workflows.weekly:create"] }))).rejects.toBeInstanceOf(ForbiddenError);
+  it("create 권한 없음 → ForbiddenError (타입 해석 전에 차단)", async () => {
+    await expect(
+      createTask({ kind: "BILLING", scheduledAt: new Date() }, baseCtx({ keys: [] })),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    expect(m.findWorkflowTypeByKind).not.toHaveBeenCalled();
   });
 
-  it("create 권한 없음 → ForbiddenError", async () => {
-    m.findWorkflowTypeKind.mockResolvedValue("WEEKLY_REPORT");
-    await expect(createTask({ typeId: "wf-weekly", scheduledAt: new Date() }, baseCtx({ keys: [] }))).rejects.toBeInstanceOf(ForbiddenError);
+  it("kind 해석 실패(타입 행 없음) → ForbiddenError", async () => {
+    m.findWorkflowTypeByKind.mockResolvedValue(null);
+    await expect(
+      createTask({ kind: "BILLING", scheduledAt: new Date() }, baseCtx({ keys: ["workflows.billing:create"] })),
+    ).rejects.toBeInstanceOf(ForbiddenError);
   });
 
-  it("권한 보유 → createTaskWithInitialEvent 호출", async () => {
-    m.findWorkflowTypeKind.mockResolvedValue("WEEKLY_REPORT");
+  it("권한 보유 → kind→typeId 해석 후 createTaskWithInitialEvent 호출", async () => {
+    m.findWorkflowTypeByKind.mockResolvedValue({ id: "billing" });
     m.createTaskWithInitialEvent.mockResolvedValue({ id: "new" });
-    const out = await createTask({ typeId: "wf-weekly", scheduledAt: new Date("2026-06-20") }, baseCtx({ keys: ["workflows.weekly:create"] }));
+    const out = await createTask(
+      { kind: "BILLING", scheduledAt: new Date("2026-06-20") },
+      baseCtx({ keys: ["workflows.billing:create"] }),
+    );
     expect(out).toEqual({ id: "new" });
-    expect(m.createTaskWithInitialEvent).toHaveBeenCalledWith({ typeId: "wf-weekly", scheduledAt: new Date("2026-06-20"), createdById: "u1" });
+    expect(m.findWorkflowTypeByKind).toHaveBeenCalledWith("BILLING");
+    expect(m.createTaskWithInitialEvent).toHaveBeenCalledWith({ typeId: "billing", scheduledAt: new Date("2026-06-20"), createdById: "u1" });
+  });
+
+  it("OWNER는 권한 키 없이도 통과", async () => {
+    m.findWorkflowTypeByKind.mockResolvedValue({ id: "billing" });
+    m.createTaskWithInitialEvent.mockResolvedValue({ id: "new" });
+    await createTask({ kind: "BILLING", scheduledAt: new Date("2026-06-20") }, baseCtx({ isOwner: true }));
+    expect(m.createTaskWithInitialEvent).toHaveBeenCalled();
   });
 });
 

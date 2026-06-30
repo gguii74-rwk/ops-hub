@@ -67,29 +67,31 @@ describe("GET /api/workflows", () => {
 });
 
 describe("POST /api/workflows", () => {
-  it("잘못된 입력 → 400", async () => {
-    expect((await createPOST(req("/api/workflows", { typeId: "" }))).status).toBe(400);
+  it("잘못된 입력(kind 누락) → 400", async () => {
+    expect((await createPOST(req("/api/workflows", { scheduledAt: "2026-06-20T00:00:00.000Z" }))).status).toBe(400);
+  });
+  it("잘못된 kind enum → 400", async () => {
+    expect((await createPOST(req("/api/workflows", { kind: "NOPE", scheduledAt: "2026-06-20T00:00:00.000Z" }))).status).toBe(400);
   });
   it("summary.isOwner=true면 ctx.isOwner=true로 createTask 호출, 201 (권위는 getPermissionSummary)", async () => {
     h.getPermissionSummary.mockResolvedValue({ keys: [], isOwner: true, isAdmin: true });
     h.setSession({ user: { id: "u1", systemRole: "OWNER", email: "o@x", name: "O", employmentType: "REGULAR", jobFunction: "PM" } });
-    const res = await createPOST(req("/api/workflows", { typeId: "wf-weekly", scheduledAt: "2026-06-20T00:00:00.000Z" }));
+    const res = await createPOST(req("/api/workflows", { kind: "BILLING", scheduledAt: "2026-06-20T00:00:00.000Z" }));
     expect(res.status).toBe(201);
     const ctxArg = (h.createTask.mock.calls[0] as unknown as [unknown, { isOwner: boolean }])[1];
     expect(ctxArg.isOwner).toBe(true);
   });
   it("must-change OWNER(summary.isOwner=false)면 session.systemRole=OWNER여도 ctx.isOwner=false — D17 우회 차단", async () => {
-    // getPermissionSummary가 must-change면 빈 keys·isOwner=false 반환(중앙 게이트). ctx는 session.systemRole이 아닌 이 권위를 따라야 한다.
     h.getPermissionSummary.mockResolvedValue({ keys: [], isOwner: false, isAdmin: false });
     h.setSession({ user: { id: "u1", systemRole: "OWNER", email: "o@x", name: "O", employmentType: "REGULAR", jobFunction: "PM" } });
-    const res = await createPOST(req("/api/workflows", { typeId: "wf-weekly", scheduledAt: "2026-06-20T00:00:00.000Z" }));
+    const res = await createPOST(req("/api/workflows", { kind: "BILLING", scheduledAt: "2026-06-20T00:00:00.000Z" }));
     expect(res.status).toBe(201);
     const ctxArg = (h.createTask.mock.calls[0] as unknown as [unknown, { isOwner: boolean }])[1];
     expect(ctxArg.isOwner).toBe(false);
   });
   it("createTask ForbiddenError → 403", async () => {
     h.createTask.mockRejectedValue(new h.FakeForbidden("denied"));
-    expect((await createPOST(req("/api/workflows", { typeId: "x", scheduledAt: "2026-06-20T00:00:00.000Z" }))).status).toBe(403);
+    expect((await createPOST(req("/api/workflows", { kind: "BILLING", scheduledAt: "2026-06-20T00:00:00.000Z" }))).status).toBe(403);
   });
 });
 

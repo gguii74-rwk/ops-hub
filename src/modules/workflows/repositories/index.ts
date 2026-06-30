@@ -71,6 +71,11 @@ export async function findWorkflowTypeKind(typeId: string): Promise<WorkflowKind
   return t?.kind ?? null;
 }
 
+// kind → typeId 해석(D12). WorkflowType.kind는 @unique라 1:1.
+export async function findWorkflowTypeByKind(kind: WorkflowKind): Promise<{ id: string } | null> {
+  return prisma.workflowType.findUnique({ where: { kind }, select: { id: true } });
+}
+
 export async function createTaskWithInitialEvent(input: {
   typeId: string; scheduledAt: Date; createdById: string;
 }): Promise<{ id: string }> {
