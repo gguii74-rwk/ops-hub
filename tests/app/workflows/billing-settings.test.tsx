@@ -40,6 +40,17 @@ describe("BillingSettings 권한 게이트", () => {
   });
 });
 
+describe("새 연도 추가 — 중복 연도 가드", () => {
+  it("이미 존재하는 연도를 추가하면 toast 오류 + 선택 미변경(폼 미노출)", () => {
+    render(<BillingSettings canConfigure />);
+    fireEvent.change(screen.getByLabelText("새 연도"), { target: { value: "2026" } });
+    fireEvent.click(screen.getByText("추가"));
+    expect(toastErr).toHaveBeenCalled();
+    // 중복 연도는 setSelectedYear가 실행되지 않아 계약 정보 폼이 열리지 않는다.
+    expect(screen.queryByLabelText("계약 정보 저장")).toBeNull();
+  });
+});
+
 describe("계약 정보 저장 검증", () => {
   it("금액이 0이면 toast 오류 + fetch 미호출", () => {
     const fetchMock = vi.fn();

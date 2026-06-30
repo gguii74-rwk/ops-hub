@@ -38,7 +38,7 @@ export function BillingSettings({ canConfigure }: { canConfigure: boolean }) {
   function addYear() {
     const y = Number(newYear);
     if (!Number.isInteger(y) || y < 2020 || y > 2100) { toast.error("연도는 2020~2100 정수입니다."); return; }
-    if (years.includes(y)) { toast.error("이미 존재하는 연도입니다."); }
+    if (years.includes(y)) { toast.error("이미 존재하는 연도입니다."); return; }
     setSelectedYear(y);
     setNewYear("");
   }
@@ -190,6 +190,7 @@ function RoundsTable({ year, canConfigure }: { year: number; canConfigure: boole
   }
 
   if (rounds.isLoading) return <LoadingState />;
+  if (rounds.isError) return <ErrorState message="회차 제출일을 불러오지 못했습니다." />;
   const byRound = new Map((rounds.data ?? []).map((r) => [r.round, r.submitDate]));
 
   return (
