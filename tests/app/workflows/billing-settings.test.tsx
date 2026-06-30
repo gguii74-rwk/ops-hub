@@ -51,6 +51,18 @@ describe("새 연도 추가 — 중복 연도 가드", () => {
   });
 });
 
+describe("새 연도 — config 저장 전 회차표 미노출 (orphan 회차일 차단)", () => {
+  it("config 없는 새 연도는 ConfigForm만 열리고 RoundsTable은 미렌더", () => {
+    render(<BillingSettings canConfigure />);
+    fireEvent.change(screen.getByLabelText("새 연도"), { target: { value: "2027" } });
+    fireEvent.click(screen.getByText("추가"));
+    // 신규 config 입력 폼은 열리되, 회차표는 config가 저장돼야 노출(FK 없는 orphan 회차일 생성 차단).
+    expect(screen.getByLabelText("계약 정보 저장")).toBeTruthy();
+    expect(screen.queryByLabelText("1회차 제출일")).toBeNull();
+    expect(screen.queryByLabelText("1회차 저장")).toBeNull();
+  });
+});
+
 describe("계약 정보 저장 검증", () => {
   it("금액이 0이면 toast 오류 + fetch 미호출", () => {
     const fetchMock = vi.fn();

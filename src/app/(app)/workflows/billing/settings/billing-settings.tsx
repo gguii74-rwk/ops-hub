@@ -72,7 +72,8 @@ export function BillingSettings({ canConfigure }: { canConfigure: boolean }) {
       {selectedYear != null && (
         <>
           <ConfigForm key={selectedYear} year={selectedYear} config={selectedConfig} canConfigure={canConfigure} onDeleted={() => setSelectedYear(null)} />
-          <RoundsTable year={selectedYear} canConfigure={canConfigure} />
+          {/* 회차표는 config가 저장된 연도에만 노출 — config 없는 연도에 회차일을 저장하면 FK 없는 orphan 회차일이 되어 추후 생성에 소리없이 반영됨. */}
+          {selectedConfig != null && <RoundsTable year={selectedYear} canConfigure={canConfigure} />}
         </>
       )}
     </div>
