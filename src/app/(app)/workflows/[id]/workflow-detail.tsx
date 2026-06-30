@@ -5,7 +5,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { KIND_RESOURCE } from "@/modules/workflows/policy";
 import { useCan } from "@/lib/auth/permissions-client";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { SendModal } from "./send-modal";
 import {
   CANCELLABLE, KIND_LABEL, MAIL_LABEL, MAIL_VARIANT, STATUS_LABEL, STATUS_VARIANT,
   type MailStatus, type WfStatus,
@@ -14,7 +15,11 @@ import {
 interface TimelineEntry { id: string; fromStatus: WfStatus | null; toStatus: WfStatus; actorId: string | null; note: string | null; occurredAt: string; }
 interface MailView { id: string; step: string | null; recipients: string[]; subject: string; status: MailStatus; errorMessage: string | null; sentAt: string | null; }
 interface FileView { id: string; displayName: string; mimeType: string | null; sizeBytes: number | null; createdAt: string; }
-interface Detail { id: string; kind: string; typeName: string; scheduledAt: string; status: WfStatus; files: FileView[]; mailDeliveries: MailView[]; timeline: TimelineEntry[]; }
+interface Detail {
+  id: string; kind: string; typeName: string; scheduledAt: string; status: WfStatus;
+  files: FileView[]; mailDeliveries: MailView[]; timeline: TimelineEntry[];
+  effectiveRecipients?: string[]; // :send 권한자에게만 백엔드가 포함(SC-4)
+}
 
 async function fetchDetail(id: string): Promise<Detail | null> {
   const res = await fetch(`/api/workflows/${id}`, { headers: { Accept: "application/json" } });
@@ -30,10 +35,13 @@ function fmt(iso: string): string {
 export function WorkflowDetail({ taskId, isAdmin }: { taskId: string; isAdmin: boolean }) {
   const qc = useQueryClient();
   const [busy, setBusy] = useState(false);
+  const [sendStep, setSendStep] = useState<1 | 2 | null>(null);
   const query = useQuery({ queryKey: ["workflow", taskId], queryFn: () => fetchDetail(taskId) });
   const detail = query.data;
   // useCan은 무조건 호출(훅 규칙) — detail 전엔 임의 리소스로 false.
-  const canSend = useCan(detail ? (KIND_RESOURCE as Record<string, string>)[detail.kind] ?? "workflows.weekly" : "workflows.weekly", "send");
+  const resource = detail ? (KIND_RESOURCE as Record<string, string>)[detail.kind] ?? "workflows.weekly" : "workflows.weekly";
+  const canSend = useCan(resource, "send");
+  const canGenerate = useCan(resource, "generate");
 
   async function act(path: string, body?: unknown) {
     setBusy(true);
@@ -58,6 +66,9 @@ export function WorkflowDetail({ taskId, isAdmin }: { taskId: string; isAdmin: b
   if (!detail) return <p className="text-sm text-muted-foreground">작업을 찾을 수 없습니다.</p>;
 
   const cancellable = CANCELLABLE.includes(detail.status);
+  const isBilling = detail.kind === "BILLING";
+  const hasFiles = detail.files.length > 0;
+  const downloadable = isBilling && hasFiles && ["GENERATED", "SENT", "HQ_REQUESTED"].includes(detail.status);
 
   return (
     <section className="space-y-6">
@@ -74,7 +85,28 @@ export function WorkflowDetail({ taskId, isAdmin }: { taskId: string; isAdmin: b
         )}
       </div>
 
-      {/* 생성/발송/미리보기 버튼 slot — 후속 워크플로 sub-project가 채운다. */}
+      {/* 액션 슬롯 — BILLING 한정 상태머신(§SC-10, 재생성 없음 D10). 타 kind는 빈 슬롯(별도 sub-project). */}
+      {isBilling && (
+        <div className="flex flex-wrap items-center gap-2">
+          {detail.status === "PENDING" && canGenerate && (
+            <Button size="sm" disabled={busy} onClick={() => act(`/api/workflows/${taskId}/generate`)}>문서 생성</Button>
+          )}
+          {downloadable && (
+            <a className={buttonVariants({ variant: "outline", size: "sm" })} href={`/api/workflows/${taskId}/download`}>
+              전체 다운로드(ZIP)
+            </a>
+          )}
+          {detail.status === "GENERATED" && canSend && (
+            <Button size="sm" disabled={busy} onClick={() => setSendStep(1)}>1단계 발송</Button>
+          )}
+          {detail.status === "SENT" && canSend && (
+            <Button size="sm" disabled={busy} onClick={() => setSendStep(2)}>2단계 발송</Button>
+          )}
+          {detail.status === "HQ_REQUESTED" && (
+            <span className="text-sm text-muted-foreground">최종발송(3단계)은 후속 단계에서 지원합니다.</span>
+          )}
+        </div>
+      )}
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-muted-foreground">진행 이력</h2>
@@ -89,13 +121,19 @@ export function WorkflowDetail({ taskId, isAdmin }: { taskId: string; isAdmin: b
         </ol>
       </div>
 
-      {detail.files.length > 0 && (
+      {hasFiles && (
         <div>
           <h2 className="mb-2 text-sm font-semibold text-muted-foreground">생성 파일</h2>
           <ul className="space-y-1">
             {detail.files.map((f) => (
               <li key={f.id} className="text-sm">
-                {f.displayName}
+                {isBilling ? (
+                  <a className="text-primary underline-offset-4 hover:underline" href={`/api/workflows/${taskId}/files/${f.id}`}>
+                    {f.displayName}
+                  </a>
+                ) : (
+                  f.displayName
+                )}
                 {f.sizeBytes != null && <span className="text-muted-foreground"> · {Math.round(f.sizeBytes / 1024)} KB</span>}
               </li>
             ))}
@@ -131,6 +169,16 @@ export function WorkflowDetail({ taskId, isAdmin }: { taskId: string; isAdmin: b
           </ul>
         )}
       </div>
+
+      {sendStep != null && (
+        <SendModal
+          taskId={taskId}
+          step={sendStep}
+          scheduledAt={detail.scheduledAt}
+          effectiveRecipients={detail.effectiveRecipients}
+          onClose={() => setSendStep(null)}
+        />
+      )}
     </section>
   );
 }
