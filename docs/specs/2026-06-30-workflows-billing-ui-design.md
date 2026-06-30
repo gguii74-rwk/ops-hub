@@ -36,7 +36,7 @@
 | D3 | **메일 제목/본문 = 단계별 기본 템플릿 자동 생성 + 발송 화면 편집.** 텍스트는 UI(caller)가 구성해 `send`에 전달 | 백엔드 `send`가 `subject`/`body`를 caller 제공으로 받음(백엔드 D7). day-sync도 동일 패턴(자동생성 후 편집) |
 | D4 | **전월·회차·연도 = 클라이언트 KST 계산**(`Intl.DateTimeFormat`, `timeZone: "Asia/Seoul"`). 로컬 `Date` 월/연 메서드 금지 | 백엔드 `computeBillingPeriod`(KST 전월=회차, 전월 연도=projectYear) 규칙을 UI에서 재현. 서버 TZ 비KST 무관하게 동작. 클라 로컬 메서드는 월 경계 오산 위험 |
 | D5 | **사업명 = 발송 모달 open 시 `GET config/[projectYear]` 재사용** | `BillingConfig.projectName`이 템플릿 재료. 기존 config GET으로 충분(백엔드 추가 0) |
-| D6 | **수신자 = To 단일 목록(쉼표 분리).** 발송 모달은 detail의 `effectiveRecipients`(작업.recipients ?? 유형.defaultRecipients)로 prefill, 편집 가능. 비워 보내면 백엔드가 동일 폴백 | 백엔드 `send` 계약 그대로(미지정 시 폴백). prefill 재료는 detail read-only 노출. CC/BCC 없음 |
+| D6 | **수신자 = To 단일 목록(쉼표 분리), fail-closed.** 발송 모달은 detail의 `effectiveRecipients`(작업.recipients ?? 유형.defaultRecipients)로 prefill·편집 가능. **제출 시 최소 1명 필수(빈 To = 검증 오류, 발송 차단), POST에는 화면에 표시된 정확한 수신자 목록을 항상 명시 전달** — 빈 채로 보내 백엔드 폴백에 의존하지 않는다 | 발송 모달은 메일 발송 전 **마지막 신뢰 경계** — 빈 To로 보내 기본(오래·의도치 않은) 수신자에게 대금청구 문서가 무음 발송되는 위험 차단. 백엔드 `send`의 폴백은 수신자를 생략한 **비-UI 호출자용으로 보존**(UI는 항상 명시 전달). prefill 재료는 detail read-only 노출. CC/BCC 없음 |
 | D7 | **권한 = `useCan("workflows.billing", generate\|send\|configure)`.** 메뉴 숨김은 UX, API도 동일 키 검사(fail-closed) | 접근제어 규칙①②. 기존 detail의 `canSend` 패턴 재사용 |
 | D8 | **네비 = 사이드바 `workflows` 하위 "대금청구 설정"**(`NavigationItem.requiredPermissionId = workflows.billing:configure`). seed에 등록 | 네비 CMS·권한 매트릭스 패턴 계승 |
 | D9 | **테스트 = 컴포넌트/단위(vitest+RTL) + 수동 통합.** 구현 중 로컬 docker PostgreSQL + dev, 머지 후 kgs-dev 배포 smoke | 화면 흐름은 사람 확인이 최종(백엔드 골든처럼). playwright 자동화는 이번 범위 과함 |
@@ -101,8 +101,8 @@ prisma/seed.ts                # 변경 — NavigationItem "대금청구 설정" 
 
 - props: `taskId`, `step`(1|2), `scheduledAt`, `kind`.
 - open 시: ① `scheduledAt`으로 KST 전월·회차·projectYear 계산(D4) → ② `GET config/[projectYear]`로 사업명(D5) → ③ `mail-templates.ts`의 `buildSubject(step,…)`·`buildBody(step,…)`로 제목·본문 prefill → ④ 수신자는 detail의 `effectiveRecipients`로 prefill(D6).
-- 필드: 수신자(To, 쉼표 분리, `effectiveRecipients` prefill·편집 가능), 제목(text), 본문(textarea). 2단계는 "첨부 없음" 안내.
-- 제출 → `POST .../send { step, subject, body, recipients? }`. 성공 시 모달 닫고 상세 refetch(React Query invalidate).
+- 필드: 수신자(To, 쉼표 분리, `effectiveRecipients` prefill·편집 가능, **최소 1명 필수**), 제목(text), 본문(textarea). 2단계는 "첨부 없음" 안내.
+- **제출 전 검증(fail-closed, D6): To를 파싱해 빈 목록이면 검증 오류로 발송을 차단**(백엔드 폴백에 의존하지 않음). 제출 → `POST .../send { step, subject, body, recipients }` — `recipients`에 **화면에 표시된 정확한 목록을 항상 명시 포함**(생략하지 않음). 성공 시 모달 닫고 상세 refetch(React Query invalidate).
 - 에러: 400(검증)·403(권한)·409(상태 충돌, 예: 이미 발송)·422(미지원 단계)·500을 sonner 토스트로 구분.
 
 ## 5. 메일 템플릿 (`mail-templates.ts`) — D3·D4
@@ -121,7 +121,7 @@ day-sync 템플릿을 포팅. `BillingConfig.projectName`·전월·회차로 치
 백엔드 `send`는 수신자 미지정 시 `작업.recipients → 유형.defaultRecipients`로 폴백하지만, 현재 `GET /api/workflows/[id]`(detail) 응답에는 수신자 필드가 없어 UI가 기본 수신자를 미리 보여줄 수 없다. 발송 모달이 기본 수신자를 prefill하도록, detail 조회 경로를 read-only로 보강한다:
 
 - `getTaskDetailView`(`services/tasks.ts`)가 `effectiveRecipients: string[]`을 계산해 응답에 포함한다 — `WorkflowTask.recipients`가 비어있지 않으면 그것을, 아니면 `WorkflowType.defaultRecipients`, 둘 다 없으면 빈 배열(`[]`).
-- 발송 모달은 이 값으로 수신자란을 prefill하고, 사용자가 편집할 수 있다. 비워서 보내면 백엔드가 동일 폴백을 적용하므로 결과는 일관된다.
+- 발송 모달은 이 값으로 수신자란을 prefill하고, 사용자가 편집할 수 있다. 단 **발송 모달은 항상 화면에 표시된 수신자 목록을 명시 전달하며(D6 fail-closed), To가 비면 발송을 차단한다 — 백엔드 폴백에 의존하지 않는다.** 백엔드 폴백은 수신자를 생략한 비-UI 호출자에게만 적용된다(detail read-only 노출은 prefill 재료일 뿐, 발송 시점의 신뢰 경계는 모달의 명시 목록이다).
 - **read-only 노출**일 뿐 전이·쓰기 로직은 없다(D1). detail 라우트(`[id]/route.ts`)는 `getTaskDetailView` 결과를 그대로 전달하므로 변경 없음.
 
 ## 7. 권한·접근 제어
@@ -133,7 +133,7 @@ day-sync 템플릿을 포팅. `BillingConfig.projectName`·전월·회차로 치
 ## 8. 테스트 전략 — D9
 
 - **단위(순수함수)**: `mail-templates.ts` — 단계별 제목/본문, KST 전월·회차(서버 TZ 비KST 환경 시뮬레이션), 사업명 치환. + `getTaskDetailView`의 `effectiveRecipients` 폴백(작업 우선 → 유형 → 빈 배열).
-- **컴포넌트(vitest + @testing-library/react)**: 상태별 액션 버튼 노출(상태머신 매핑), 권한 게이트(useCan mock), 설정 폼 검증(금액 경계), 발송 모달 prefill·제출 페이로드. fetch는 mock.
+- **컴포넌트(vitest + @testing-library/react)**: 상태별 액션 버튼 노출(상태머신 매핑), 권한 게이트(useCan mock), 설정 폼 검증(금액 경계), 발송 모달 prefill·제출 페이로드. fetch는 mock. **수신자 fail-closed(D6) 회귀 테스트**: ① 빈 To는 제출을 차단하고 검증 오류를 띄운다(send 요청이 발생하지 않음), ② 제출 시 `POST .../send` 페이로드의 `recipients`가 화면에 표시된 목록과 정확히 일치하고 생략되지 않는다.
 - **통합(수동)**: 구현 중 로컬 docker PostgreSQL(`migrate deploy`·`db:seed`·`db:seed:demo`) + `STORAGE_ROOT`+`Template/대금청구` 배치 + `npm run dev`로 설정→생성→다운로드→1·2단계 클릭 검증. 머지 후 kgs-dev 배포 smoke(실데이터·SMTP·휴대폰 Tailscale).
 - 기존 1568 테스트 그대로 통과(회귀 없음). `npm test`는 `.env` 주입 필요(`DATABASE_URL`).
 
