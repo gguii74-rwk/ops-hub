@@ -1,8 +1,135 @@
+# Task 07 — 상세 액션 슬롯 (생성·다운로드·발송)
+
+`workflow-detail.tsx`의 빈 액션 슬롯을 상태머신 기반 BILLING 액션으로 채운다(생성·개별/ZIP 다운로드·1·2단계 발송 모달). 재생성 없음(D10). BILLING 아닌 kind는 기존대로 빈 슬롯.
+
+## Files
+
+- Modify: `src/app/(app)/workflows/[id]/workflow-detail.tsx`
+- Create (test): `tests/app/workflows/workflow-detail.test.tsx`
+
+## Prep
+
+- 엔트리포인트 §SC-4(Detail·effectiveRecipients)·§SC-10(상태→액션·step)·§SC-9(권한)·§SC-11 숙지.
+- send-modal은 task-06(`./send-modal`). `effectiveRecipients`는 task-02가 detail에 `:send` 게이트로 노출 → prop으로 전달.
+- 기존 진행이력·생성파일·메일 목록·취소·재시도/확정은 그대로 유지. 액션 슬롯은 `detail.kind === "BILLING"`일 때만.
+
+## Deps
+
+task-06 (send-modal). (런타임 prefill은 task-02 effectiveRecipients에 의존하나, prop이 undefined여도 동작 — 빈 수신자로 시작.)
+
+## TDD steps
+
+### Step 1 — workflow-detail 테스트 (RED)
+
+`tests/app/workflows/workflow-detail.test.tsx`:
+
+```tsx
+// @vitest-environment jsdom
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const detailData = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
+const can = vi.hoisted(() => ({ generate: false, send: false }));
+const invalidate = vi.hoisted(() => vi.fn());
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: () => ({ data: detailData.current, isLoading: false, isError: false }),
+  useQueryClient: () => ({ invalidateQueries: invalidate }),
+}));
+vi.mock("@/lib/auth/permissions-client", () => ({
+  useCan: (_r: string, a: string) => (a === "generate" ? can.generate : a === "send" ? can.send : false),
+}));
+vi.mock("@/app/(app)/workflows/[id]/send-modal", () => ({
+  SendModal: (p: { step: number }) => <div data-testid="send-modal">step {p.step}</div>,
+}));
+
+import { WorkflowDetail } from "@/app/(app)/workflows/[id]/workflow-detail";
+
+function baseDetail(over: Record<string, unknown> = {}) {
+  return { id: "t1", kind: "BILLING", typeName: "대금청구", scheduledAt: "2026-02-09T15:00:00.000Z", status: "PENDING", files: [], mailDeliveries: [], timeline: [], ...over };
+}
+
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); can.generate = false; can.send = false; invalidate.mockClear(); });
+
+describe("WorkflowDetail 액션 슬롯(BILLING)", () => {
+  it("PENDING + generate 권한 → '문서 생성' click 시 generate POST", async () => {
+    can.generate = true;
+    detailData.current = baseDetail({ status: "PENDING" });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorkflowDetail taskId="t1" isAdmin={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "문서 생성" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/workflows/t1/generate", expect.objectContaining({ method: "POST" })));
+  });
+
+  it("generate 권한 없으면 '문서 생성' 미노출", () => {
+    detailData.current = baseDetail({ status: "PENDING" });
+    render(<WorkflowDetail taskId="t1" isAdmin={false} />);
+    expect(screen.queryByRole("button", { name: "문서 생성" })).toBeNull();
+  });
+
+  it("GENERATED + send → 1단계 발송·ZIP·개별 다운로드, 재생성 없음(D10)", () => {
+    can.send = true;
+    detailData.current = baseDetail({
+      status: "GENERATED",
+      files: [{ id: "f1", displayName: "a.hwpx", mimeType: null, sizeBytes: 2048, createdAt: "2026-02-09T15:00:00.000Z" }],
+    });
+    render(<WorkflowDetail taskId="t1" isAdmin={false} />);
+    expect(screen.getByRole("button", { name: "1단계 발송" })).toBeTruthy();
+    expect(screen.getByText("전체 다운로드(ZIP)").closest("a")!.getAttribute("href")).toBe("/api/workflows/t1/download");
+    expect(screen.queryByRole("button", { name: "문서 생성" })).toBeNull(); // 재생성 없음
+    expect(screen.getByText("a.hwpx").closest("a")!.getAttribute("href")).toBe("/api/workflows/t1/files/f1");
+  });
+
+  it("GENERATED + send → 1단계 발송 클릭 시 SendModal(step 1)", () => {
+    can.send = true;
+    detailData.current = baseDetail({ status: "GENERATED" });
+    render(<WorkflowDetail taskId="t1" isAdmin={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "1단계 발송" }));
+    expect(screen.getByTestId("send-modal").textContent).toContain("step 1");
+  });
+
+  it("GENERATED인데 send 권한 없으면 발송 버튼 미노출", () => {
+    detailData.current = baseDetail({ status: "GENERATED" });
+    render(<WorkflowDetail taskId="t1" isAdmin={false} />);
+    expect(screen.queryByRole("button", { name: "1단계 발송" })).toBeNull();
+  });
+
+  it("SENT + send → 2단계 발송", () => {
+    can.send = true;
+    detailData.current = baseDetail({ status: "SENT" });
+    render(<WorkflowDetail taskId="t1" isAdmin={false} />);
+    expect(screen.getByRole("button", { name: "2단계 발송" })).toBeTruthy();
+  });
+
+  it("HQ_REQUESTED → 후속 단계 안내, 발송 버튼 없음", () => {
+    can.send = true;
+    detailData.current = baseDetail({ status: "HQ_REQUESTED", files: [{ id: "f1", displayName: "a.hwpx", mimeType: null, sizeBytes: 1, createdAt: "x" }] });
+    render(<WorkflowDetail taskId="t1" isAdmin={false} />);
+    expect(screen.getByText(/최종발송.*후속/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /발송/ })).toBeNull();
+  });
+
+  it("BILLING 아닌 kind는 액션 슬롯 비노출", () => {
+    can.send = true; can.generate = true;
+    detailData.current = baseDetail({ kind: "WEEKLY_REPORT", status: "PENDING" });
+    render(<WorkflowDetail taskId="t1" isAdmin={false} />);
+    expect(screen.queryByRole("button", { name: "문서 생성" })).toBeNull();
+  });
+});
+```
+
+Run: `npm test -- tests/app/workflows/workflow-detail.test.tsx` → **FAIL**(액션 슬롯·effectiveRecipients 없음).
+
+### Step 2 — workflow-detail.tsx 전체 교체
+
+`src/app/(app)/workflows/[id]/workflow-detail.tsx`(전체 내용):
+
+```tsx
 "use client";
 import { useState } from "react";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { KIND_RESOURCE, isDownloadableStatus } from "@/modules/workflows/policy";
+import { KIND_RESOURCE } from "@/modules/workflows/policy";
 import { useCan } from "@/lib/auth/permissions-client";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -68,8 +195,7 @@ export function WorkflowDetail({ taskId, isAdmin }: { taskId: string; isAdmin: b
   const cancellable = CANCELLABLE.includes(detail.status);
   const isBilling = detail.kind === "BILLING";
   const hasFiles = detail.files.length > 0;
-  // 다운로드 링크 노출 = 서버 다운로드 게이트와 동일 불변식(policy.isDownloadableStatus) 공유 — 서버↔UI 분기 방지.
-  const downloadable = isBilling && hasFiles && isDownloadableStatus(detail.status);
+  const downloadable = isBilling && hasFiles && ["GENERATED", "SENT", "HQ_REQUESTED"].includes(detail.status);
 
   return (
     <section className="space-y-6">
@@ -128,7 +254,7 @@ export function WorkflowDetail({ taskId, isAdmin }: { taskId: string; isAdmin: b
           <ul className="space-y-1">
             {detail.files.map((f) => (
               <li key={f.id} className="text-sm">
-                {downloadable ? (
+                {isBilling ? (
                   <a className="text-primary underline-offset-4 hover:underline" href={`/api/workflows/${taskId}/files/${f.id}`}>
                     {f.displayName}
                   </a>
@@ -183,3 +309,20 @@ export function WorkflowDetail({ taskId, isAdmin }: { taskId: string; isAdmin: b
     </section>
   );
 }
+```
+
+Run: `npm test -- tests/app/workflows/workflow-detail.test.tsx` → **PASS**.
+
+## Acceptance Criteria
+
+- `npm test -- tests/app/workflows/workflow-detail.test.tsx` → PASS(8케이스).
+- `npm run typecheck` / `npm run lint` → green.
+- 전체 `npm test`·`npm run build` → green.
+
+## Cautions
+
+- **Don't** GENERATED에 재생성/문서 생성 액션을 두지 말 것(D10). `문서 생성`은 PENDING에서만.
+- **Don't** 액션 슬롯을 BILLING 외 kind에 렌더하지 말 것 — weekly/notification은 별도 sub-project(generate가 422). `isBilling` 가드 유지.
+- **Don't** 발송/생성 버튼을 권한 없이 노출하지 말 것 — `canSend`/`canGenerate` 게이트.
+- **Don't** 기존 진행이력·메일 재시도/확정·취소 로직을 바꾸지 말 것 — 빈 슬롯과 파일 링크만 추가.
+- `useCan`/`useState`는 early-return 이전에 무조건 호출(훅 규칙) — 위 배치 유지.

@@ -16,6 +16,7 @@ export interface EventRow { id: string; fromStatus: WorkflowStatus | null; toSta
 export interface TaskDetailRow {
   id: string; kind: WorkflowKind; typeName: string; scheduledAt: Date; status: WorkflowStatus;
   createdById: string | null; outputPath: string | null;
+  recipients: string[] | null; defaultRecipients: string[] | null;
   files: FileRow[]; mailDeliveries: MailRow[]; events: EventRow[];
 }
 export interface TaskForTransition { id: string; status: WorkflowStatus; createdById: string | null; kind: WorkflowKind; }
@@ -40,8 +41,8 @@ export async function findTaskDetail(id: string): Promise<TaskDetailRow | null> 
   const t = await prisma.workflowTask.findUnique({
     where: { id },
     select: {
-      id: true, scheduledAt: true, status: true, createdById: true, outputPath: true,
-      type: { select: { kind: true, name: true } },
+      id: true, scheduledAt: true, status: true, createdById: true, outputPath: true, recipients: true,
+      type: { select: { kind: true, name: true, defaultRecipients: true } },
       files: { select: { id: true, path: true, displayName: true, mimeType: true, sizeBytes: true, createdAt: true }, orderBy: { createdAt: "asc" } },
       mailDeliveries: {
         select: { id: true, step: true, recipients: true, subject: true, status: true, errorMessage: true, providerMessageId: true, sentAt: true },
@@ -54,6 +55,8 @@ export async function findTaskDetail(id: string): Promise<TaskDetailRow | null> 
   return {
     id: t.id, kind: t.type.kind, typeName: t.type.name, scheduledAt: t.scheduledAt, status: t.status,
     createdById: t.createdById, outputPath: t.outputPath,
+    recipients: Array.isArray(t.recipients) ? (t.recipients as string[]) : null,
+    defaultRecipients: Array.isArray(t.type.defaultRecipients) ? (t.type.defaultRecipients as string[]) : null,
     files: t.files, mailDeliveries: t.mailDeliveries, events: t.events,
   };
 }
@@ -69,6 +72,11 @@ export async function findTaskForTransition(id: string): Promise<TaskForTransiti
 export async function findWorkflowTypeKind(typeId: string): Promise<WorkflowKind | null> {
   const t = await prisma.workflowType.findUnique({ where: { id: typeId }, select: { kind: true } });
   return t?.kind ?? null;
+}
+
+// kind → typeId 해석(D12). WorkflowType.kind는 @unique라 1:1.
+export async function findWorkflowTypeByKind(kind: WorkflowKind): Promise<{ id: string } | null> {
+  return prisma.workflowType.findUnique({ where: { kind }, select: { id: true } });
 }
 
 export async function createTaskWithInitialEvent(input: {
@@ -189,25 +197,25 @@ export async function findTaskForSend(id: string): Promise<TaskForSend | null> {
 // 짧은 최종 commit tx(spec §8.2 step 4): status CAS(PENDING→GENERATED) + 파일 기록 + 이벤트
 // + (billing) round-date create-if-missing(I3, 기존 행 덮어쓰기 금지). FS I/O는 이 tx 밖에서 끝난 상태.
 export interface GeneratedFileForDownload {
-  id: string; taskId: string; path: string; displayName: string; mimeType: string | null; kind: WorkflowKind;
+  id: string; taskId: string; path: string; displayName: string; mimeType: string | null; kind: WorkflowKind; status: WorkflowStatus;
 }
 export async function findGeneratedFileForDownload(fileId: string): Promise<GeneratedFileForDownload | null> {
   const f = await prisma.generatedFile.findUnique({
     where: { id: fileId },
-    select: { id: true, taskId: true, path: true, displayName: true, mimeType: true, task: { select: { type: { select: { kind: true } } } } },
+    select: { id: true, taskId: true, path: true, displayName: true, mimeType: true, task: { select: { status: true, type: { select: { kind: true } } } } },
   });
   if (!f) return null;
-  return { id: f.id, taskId: f.taskId, path: f.path, displayName: f.displayName, mimeType: f.mimeType, kind: f.task.type.kind };
+  return { id: f.id, taskId: f.taskId, path: f.path, displayName: f.displayName, mimeType: f.mimeType, kind: f.task.type.kind, status: f.task.status };
 }
 
-export interface TaskForDownload { outputPath: string | null; kind: WorkflowKind; }
+export interface TaskForDownload { outputPath: string | null; kind: WorkflowKind; status: WorkflowStatus; }
 export async function findTaskForDownload(id: string): Promise<TaskForDownload | null> {
   const t = await prisma.workflowTask.findUnique({
     where: { id },
-    select: { outputPath: true, type: { select: { kind: true } } },
+    select: { outputPath: true, status: true, type: { select: { kind: true } } },
   });
   if (!t) return null;
-  return { outputPath: t.outputPath, kind: t.type.kind };
+  return { outputPath: t.outputPath, kind: t.type.kind, status: t.status };
 }
 
 export async function commitGeneratedTransition(args: {

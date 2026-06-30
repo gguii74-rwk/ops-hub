@@ -25,7 +25,7 @@ const statSync = fs.statSync as unknown as ReturnType<typeof vi.fn>;
 const readFileSync = fs.readFileSync as unknown as ReturnType<typeof vi.fn>;
 const readdirSync = fs.readdirSync as unknown as ReturnType<typeof vi.fn>;
 const ctx = (keys: string[]) => ({ isOwner: false, permissionKeys: new Set(keys) });
-const fileRow = { id: "f1", taskId: "t1", path: "out/workflows/t1/a.hwpx", displayName: "공문.hwpx", mimeType: "application/octet-stream", kind: "BILLING" };
+const fileRow = { id: "f1", taskId: "t1", path: "out/workflows/t1/a.hwpx", displayName: "공문.hwpx", mimeType: "application/octet-stream", kind: "BILLING", status: "GENERATED" };
 
 beforeEach(() => {
   [findFile, findTask, existsSync, statSync, readFileSync, readdirSync].forEach((f) => f.mockReset());
@@ -58,6 +58,20 @@ describe("getFileForDownload (D13·F4)", () => {
     expect(out?.mimeType).toBe("application/octet-stream");
     expect(out?.bytes).toBeInstanceOf(Uint8Array);
   });
+  it("CANCELLED 작업 → null(404, 서버 상태 게이트)", async () => {
+    findFile.mockResolvedValue({ ...fileRow, status: "CANCELLED" });
+    existsSync.mockReturnValue(true);
+    statSync.mockReturnValue({ isFile: () => true });
+    readFileSync.mockReturnValue(Buffer.from("hwpx-bytes"));
+    expect(await getFileForDownload(ctx(["workflows.billing:view"]), "t1", "f1")).toBeNull();
+  });
+  it("PENDING 작업 → null(404, 서버 상태 게이트)", async () => {
+    findFile.mockResolvedValue({ ...fileRow, status: "PENDING" });
+    existsSync.mockReturnValue(true);
+    statSync.mockReturnValue({ isFile: () => true });
+    readFileSync.mockReturnValue(Buffer.from("hwpx-bytes"));
+    expect(await getFileForDownload(ctx(["workflows.billing:view"]), "t1", "f1")).toBeNull();
+  });
 });
 
 describe("getDirectoryZip (D13·F4)", () => {
@@ -70,11 +84,19 @@ describe("getDirectoryZip (D13·F4)", () => {
     await expect(getDirectoryZip(ctx([]), "t1")).rejects.toBeInstanceOf(ForbiddenError);
   });
   it("절대경로 outputPath → 거부(null, F4)", async () => {
-    findTask.mockResolvedValue({ outputPath: "/srv/x", kind: "BILLING" });
+    findTask.mockResolvedValue({ outputPath: "/srv/x", kind: "BILLING", status: "GENERATED" });
+    expect(await getDirectoryZip(ctx(["workflows.billing:view"]), "t1")).toBeNull();
+  });
+  it("CANCELLED 작업 → null(404, 서버 상태 게이트)", async () => {
+    findTask.mockResolvedValue({ outputPath: "out/workflows/t1", kind: "BILLING", status: "CANCELLED" });
+    existsSync.mockReturnValue(true);
+    statSync.mockReturnValue({ isDirectory: () => true, isFile: () => true });
+    readdirSync.mockReturnValue(["a.hwpx"]);
+    readFileSync.mockReturnValue(Buffer.from("x"));
     expect(await getDirectoryZip(ctx(["workflows.billing:view"]), "t1")).toBeNull();
   });
   it("정상 → zip bytes", async () => {
-    findTask.mockResolvedValue({ outputPath: "out/workflows/t1", kind: "BILLING" });
+    findTask.mockResolvedValue({ outputPath: "out/workflows/t1", kind: "BILLING", status: "GENERATED" });
     existsSync.mockReturnValue(true);
     statSync.mockReturnValue({ isDirectory: () => true, isFile: () => true });
     readdirSync.mockReturnValue(["a.hwpx", "b.hwpx"]);

@@ -46,6 +46,16 @@ describe("NAV 카탈로그 트리 구조", () => {
     walk(NAV);
   });
 
+  it("업무(workflows) 자식 2개 — 업무 목록(index)·대금청구 설정", () => {
+    const wf = byKey(NAV, "workflows");
+    expect(wf.href).toBe("/workflows");
+    expect(wf.permission).toBe("workflows.weekly:view");
+    expect((wf.children ?? []).map((c) => [c.key, c.href, c.permission])).toEqual([
+      ["workflows-list", "/workflows", "workflows.weekly:view"],
+      ["workflows-billing-settings", "/workflows/billing/settings", "workflows.billing:configure"],
+    ]);
+  });
+
   it("깊이 2단 — 자식의 자식 없음", () => {
     for (const top of NAV) {
       for (const child of top.children ?? []) {

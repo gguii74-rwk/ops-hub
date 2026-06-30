@@ -1,11 +1,11 @@
 import "server-only";
-import type { WorkflowStatus } from "@prisma/client";
+import type { WorkflowStatus, WorkflowKind } from "@prisma/client";
 import { ForbiddenError } from "@/kernel/access";
 import { ConflictError, type TransitionCtx } from "../types";
 import { TRANSITIONS, KIND_RESOURCE, ACTION_FOR_STATUS, STAMP_FOR_STATUS } from "../policy";
 import {
   findTaskForTransition,
-  findWorkflowTypeKind,
+  findWorkflowTypeByKind,
   createTaskWithInitialEvent,
   applyTransitionAtomic,
   cancelTaskAtomic,
@@ -52,15 +52,15 @@ export async function transitionTask(taskId: string, to: WorkflowStatus, ctx: Tr
 }
 
 export async function createTask(
-  input: { typeId: string; scheduledAt: Date },
+  input: { kind: WorkflowKind; scheduledAt: Date },
   ctx: TransitionCtx,
 ): Promise<{ id: string }> {
-  const kind = await findWorkflowTypeKind(input.typeId);
-  if (!kind) throw new ForbiddenError("알 수 없는 워크플로 종류입니다.");
-  if (!can(ctx, KIND_RESOURCE[kind], "create")) {
-    throw new ForbiddenError(`${KIND_RESOURCE[kind]}:create 권한이 없습니다.`);
+  if (!can(ctx, KIND_RESOURCE[input.kind], "create")) {
+    throw new ForbiddenError(`${KIND_RESOURCE[input.kind]}:create 권한이 없습니다.`);
   }
-  return createTaskWithInitialEvent({ typeId: input.typeId, scheduledAt: input.scheduledAt, createdById: ctx.userId });
+  const type = await findWorkflowTypeByKind(input.kind);
+  if (!type) throw new ForbiddenError("알 수 없는 워크플로 종류입니다.");
+  return createTaskWithInitialEvent({ typeId: type.id, scheduledAt: input.scheduledAt, createdById: ctx.userId });
 }
 
 export async function cancelTask(taskId: string, ctx: TransitionCtx): Promise<void> {

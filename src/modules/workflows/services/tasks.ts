@@ -11,6 +11,7 @@ export interface FileView { id: string; displayName: string; mimeType: string | 
 export interface TaskDetailView {
   id: string; kind: WorkflowKind; typeName: string; scheduledAt: string; status: WorkflowStatus;
   files: FileView[]; mailDeliveries: MailView[]; timeline: TimelineEntry[];
+  effectiveRecipients?: string[]; // :send 권한자에게만(§6, F3). 없으면 필드 생략.
 }
 
 const ALL_KINDS: WorkflowKind[] = ["WEEKLY_REPORT", "BILLING", "NOTIFICATION_BILLING"];
@@ -42,7 +43,7 @@ export async function getTaskDetailView(
   const t = await findTaskDetail(id);
   if (!t) return null;
   if (!ctx.permissionKeys.has(`${KIND_RESOURCE[t.kind]}:view`)) throw new ForbiddenError("열람 권한이 없습니다.");
-  return {
+  const view: TaskDetailView = {
     id: t.id,
     kind: t.kind,
     typeName: t.typeName,
@@ -73,4 +74,9 @@ export async function getTaskDetailView(
       occurredAt: e.occurredAt.toISOString(),
     })),
   };
+  // :send 권한자에게만 prefill 재료를 노출(§6, F3). task.recipients(비어있지 않으면) → type.defaultRecipients → [].
+  if (ctx.permissionKeys.has(`${KIND_RESOURCE[t.kind]}:send`)) {
+    view.effectiveRecipients = t.recipients && t.recipients.length > 0 ? t.recipients : (t.defaultRecipients ?? []);
+  }
+  return view;
 }
