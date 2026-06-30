@@ -96,3 +96,15 @@ describe("computeNavRows — 형제 최장 매칭 우선(D8)", () => {
     expect(childActiveKeys("/dashboard")).toEqual([]);
   });
 });
+
+describe("computeNavRows — workflows index 자식 targetHref 회귀", () => {
+  it("업무: index 자식 '업무 목록'이 있어 부모 클릭은 /workflows(설정으로 점프 안 함)", () => {
+    const wf: NavItem[] = [
+      { key: "workflows", label: "업무", href: "/workflows", children: [
+        leaf("workflows-list", "/workflows"),
+        leaf("workflows-billing-settings", "/workflows/billing/settings"),
+      ] },
+    ];
+    expect(computeNavRows(wf, "/dashboard")[0].targetHref).toBe("/workflows");
+  });
+});
