@@ -13,7 +13,7 @@ export interface WorkflowsClientKindsUpgradeClient {
     create(a: { data: { key: string; value: unknown } }): Promise<unknown>;
   };
   rolePermission: {
-    findMany(a: { where: { permissionId: string; effect: "ALLOW" }; select: { roleId: true } }): Promise<Array<{ roleId: string }>>;
+    findMany(a: { where: { permissionId: string }; select: { roleId: true; effect: true; scope: true } }): Promise<Array<{ roleId: string; effect: "ALLOW" | "DENY"; scope: string }>>;
     upsert(a: {
       where: { roleId_permissionId_scope: { roleId: string; permissionId: string; scope: string } };
       update: Record<string, never>;
@@ -49,12 +49,21 @@ export async function applyWorkflowsClientKindsUpgrade(
   const viewIds = CLIENT_VIEW_KEYS.map(resolve);
   const createIds = CLIENT_CREATE_KEYS.map(resolve);
 
-  // (a) view: workflows.weekly:view 보유 role에 client :view 2종.
+  // (a) view: workflows.weekly:view를 **유효하게** 보유한 role에만 client :view 2종.
+  // getPermissionSummary와 동일 규칙: workflows.*는 non-scopeable이라 scope="all" ALLOW만 유효하고, 같은 role에 DENY가
+  // 있으면 role DENY가 우선(미유효). drift 행(scope=team/own, ALLOW+DENY 혼재)을 all-scope client 접근으로 과대승격하지 않는다(R4·F1).
   const viewRows = await db.rolePermission.findMany({
-    where: { permissionId: driverId, effect: "ALLOW" },
-    select: { roleId: true },
+    where: { permissionId: driverId },
+    select: { roleId: true, effect: true, scope: true },
   });
-  const viewRoleIds = [...new Set(viewRows.map((r) => r.roleId))];
+  const deniedRoleIds = new Set(viewRows.filter((r) => r.effect === "DENY").map((r) => r.roleId));
+  const viewRoleIds = [
+    ...new Set(
+      viewRows
+        .filter((r) => r.effect === "ALLOW" && r.scope === "all" && !deniedRoleIds.has(r.roleId))
+        .map((r) => r.roleId),
+    ),
+  ];
   for (const roleId of viewRoleIds) {
     for (const pid of viewIds) {
       await db.rolePermission.upsert({

@@ -18,7 +18,11 @@ function roleMap(withPm = true) {
   if (withPm) m.set("pm", "role-pm");
   return m;
 }
-function mkDb(flagExists: boolean, viewHolderRows: Array<{ roleId: string }>) {
+type WeeklyViewRow = { roleId: string; effect: "ALLOW" | "DENY"; scope: string };
+const allow = (roleId: string, scope = "all"): WeeklyViewRow => ({ roleId, effect: "ALLOW", scope });
+const deny = (roleId: string, scope = "all"): WeeklyViewRow => ({ roleId, effect: "DENY", scope });
+
+function mkDb(flagExists: boolean, viewHolderRows: WeeklyViewRow[]) {
   return {
     systemSetting: { findUnique: vi.fn(async () => (flagExists ? { key: "x" } : null)), create: vi.fn(async () => ({})) },
     rolePermission: {
@@ -30,7 +34,7 @@ function mkDb(flagExists: boolean, viewHolderRows: Array<{ roleId: string }>) {
 
 describe("applyWorkflowsClientKindsUpgrade (R3·F1 — 기존 DB client kind reconcile)", () => {
   it("weekly:view 보유 role에 client :view 2종, pm에 client :create 2종 grant + 플래그", async () => {
-    const db = mkDb(false, [{ roleId: "r1" }, { roleId: "r1" }, { roleId: "r2" }]);
+    const db = mkDb(false, [allow("r1"), allow("r1"), allow("r2")]);
     const r = await applyWorkflowsClientKindsUpgrade(db as never, roleMap(), permMap());
     expect(r.applied).toBe(true);
     expect(r.grantedViewRoleCount).toBe(2);
@@ -49,6 +53,16 @@ describe("applyWorkflowsClientKindsUpgrade (R3·F1 — 기존 DB client kind rec
     expect(db.systemSetting.create).toHaveBeenCalled();
   });
 
+  it("drift 행(scope=team/own, ALLOW+DENY 혼재)은 client view 제외 — effective 규칙(R4·F1)", async () => {
+    // rAll=유효(scope=all ALLOW), rTeam/rOwn=non-scopeable에서 비유효, rDenied=DENY 우선.
+    const db = mkDb(false, [allow("rAll"), allow("rTeam", "team"), allow("rOwn", "own"), allow("rDenied"), deny("rDenied")]);
+    const r = await applyWorkflowsClientKindsUpgrade(db as never, roleMap(), permMap());
+    expect(r.grantedViewRoleCount).toBe(1); // rAll만
+    const calls = db.rolePermission.upsert.mock.calls.map((c: any) => c[0]);
+    const viewGrants = calls.filter((c) => ["perm-view-0", "perm-view-1"].includes(c.create.permissionId));
+    expect(new Set(viewGrants.map((c) => c.create.roleId))).toEqual(new Set(["rAll"]));
+  });
+
   it("weekly:view 보유 role 없어도 pm에 client :create는 부여", async () => {
     const db = mkDb(false, []);
     const r = await applyWorkflowsClientKindsUpgrade(db as never, roleMap(), permMap());
@@ -60,7 +74,7 @@ describe("applyWorkflowsClientKindsUpgrade (R3·F1 — 기존 DB client kind rec
   });
 
   it("플래그 있으면 no-op(조회 안 함)", async () => {
-    const db = mkDb(true, [{ roleId: "r1" }]);
+    const db = mkDb(true, [allow("r1")]);
     const r = await applyWorkflowsClientKindsUpgrade(db as never, roleMap(), permMap());
     expect(r.applied).toBe(false);
     expect(db.rolePermission.findMany).not.toHaveBeenCalled();
@@ -68,14 +82,14 @@ describe("applyWorkflowsClientKindsUpgrade (R3·F1 — 기존 DB client kind rec
   });
 
   it("client 권한 미존재 → throw + 플래그 미설정", async () => {
-    const db = mkDb(false, [{ roleId: "r1" }]);
+    const db = mkDb(false, [allow("r1")]);
     const m = permMap(); m.delete(CLIENT_CREATE_KEYS[0]);
     await expect(applyWorkflowsClientKindsUpgrade(db as never, roleMap(), m)).rejects.toThrow(/미존재/);
     expect(db.systemSetting.create).not.toHaveBeenCalled();
   });
 
   it("pm 역할 미존재 → throw + 플래그 미설정", async () => {
-    const db = mkDb(false, [{ roleId: "r1" }]);
+    const db = mkDb(false, [allow("r1")]);
     await expect(applyWorkflowsClientKindsUpgrade(db as never, roleMap(false), permMap())).rejects.toThrow(/역할 미존재/);
     expect(db.systemSetting.create).not.toHaveBeenCalled();
   });
