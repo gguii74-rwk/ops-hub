@@ -1,6 +1,6 @@
 ---
 name: workflows-calendar-spec
-description: 업무 캘린더 화면(sub-project A) spec+split plan 완료 — 구현(SDD)은 새 세션에서. D5=전용 라우트, WorkflowType prod갭 확정
+description: 업무 캘린더 화면(sub-project A) spec+split plan+plan review-loop 완료(7태스크) — 구현(SDD)은 새 세션에서. D5=전용 라우트, WorkflowType prod갭 확정, SC-13 에러상태 통일
 metadata: 
   node_type: memory
   type: project
@@ -28,6 +28,12 @@ metadata:
 
 **plan 작성 중 발견(중요)**: 메인 `seed.ts`엔 `BILLING` WorkflowType만 있고 `WEEKLY_REPORT`/`NOTIFICATION_BILLING`은 **seed-demo(dev 전용)**에만 존재 → 일반화 모달이 offer하는 create가 prod에서 403. **task-06이 메인 seed에 생성가능 4종(weekly/notification/client 2종) WorkflowType upsert 추가**로 갭 폐쇄(placeholder templatePath).
 
-**split plan**: `docs/plans/2026-07-01-workflows-calendar.md`(엔트리포인트 §Shared Contracts) + `2026-07-01-workflows-calendar/task-01~06`. 01 도메인 스캐폴딩→02 UI색·라벨·어댑터→03 캘린더 조회 라우트·서비스→04 생성 모달→05 캘린더 화면+page교체+list제거→06 시드·권한·nav배포. 회귀 테스트 R1(조회커버리지·fetch URL)·R2(생성게이트)·R3(nav 가시성)·R4(exclusive end 경계) 포함.
+**split plan**: `docs/plans/2026-07-01-workflows-calendar.md`(엔트리포인트 §Shared Contracts SC-1~13 + §Plan 적대검증 ledger) + `2026-07-01-workflows-calendar/task-01~07`. 01 도메인 스캐폴딩→02 UI색·라벨·어댑터→03 캘린더 조회 라우트·서비스→04 생성 모달→05 캘린더 화면+page교체+list제거→06 시드·권한·nav배포→**07 기존 leave-calendar 에러상태 통일**. 회귀 테스트 R1(조회커버리지·fetch URL)·R2(생성게이트)·R3(nav 가시성)·R4(exclusive end 경계) 포함.
 
-**다음**: 단계 경계 → **새 세션에서 `superpowers:subagent-driven-development`**로 구현(01부터, 01 이후 02·03·06 병렬 가능). 표현계층+additive 스키마=표준 restart 배포. 관련: [[session-per-merge-workflow]] [[backend-minimal-data-principle]] [[billing-generation-storage-root-deploy-gap]]
+**plan 단계 review-loop 완료(3회, approve 종결, 미판정 blocking 0)** — ledger:
+- **FIXED**: task-05 `canCreateAny`가 `useCan()||useCan()` OR 체인이라 short-circuit으로 hook 호출 수 가변=Rules of Hooks 위반+lint 실패 → 5종 각각 const 무조건 호출 후 boolean OR로 교정(task-04는 Record 리터럴이라 원래 안전).
+- **FIXED(사용자 결정=전 캘린더 통일)**: 캘린더 조회 실패를 `data?.x ?? []`로 조용히 빈 화면 위장(silent failure). **SC-13** 신설(정본=`calendar-view.tsx` line 125 `{isError && …}`) → task-05 workflows-calendar + **task-07 신규**로 leave-calendar에 `isError` 배너 적용. calendar-view는 이미 준수(무변경).
+- **DUPLICATE**: rollback version-skew(신규 enum) 재지적 = spec R4·F1 ACCEPTED(수준 B, allow-list 차단 미채택, 수동 preflight+단일 pm2+cutover 2-phase 관리). **재수정 말 것**.
+- no-AI-trace 정리 커밋(도구명 제거, spec 176행 포함).
+
+**다음**: 단계 경계 → **새 세션에서 `superpowers:subagent-driven-development`**로 구현(01부터, 01 이후 02·03·06·07 병렬 가능→04→05). 표현계층+additive 스키마=표준 restart 배포. 관련: [[session-per-merge-workflow]] [[backend-minimal-data-principle]] [[billing-generation-storage-root-deploy-gap]] [[no-ai-trace-in-review-loop-output]]
