@@ -1,6 +1,6 @@
 ---
 name: workflows-calendar-spec
-description: 업무 캘린더 화면(sub-project A) spec 완료·review-loop 5R·수준 B 확정 — plan 단계는 새 세션에서
+description: 업무 캘린더 화면(sub-project A) spec+split plan 완료 — 구현(SDD)은 새 세션에서. D5=전용 라우트, WorkflowType prod갭 확정
 metadata: 
   node_type: memory
   type: project
@@ -21,6 +21,13 @@ metadata:
 - **수준 B**: 5종 모두 **예약(PENDING) 생성 가능**(문서 생성은 생성기 있는 대금청구만). client kind도 create 부여. 드롭다운=5종(Q2의 3종에서 확장). R4·F1(OWNER 생성 가능→rollback 노출)은 **ACCEPTED**(rollback preflight로 관리, 예약 편의 우선).
 - nav 게이팅 수정=이번 스코프 포함(사용자 승인).
 
-**DEFERRED_TO_IMPL(plan AC로)**: ① 서버 range 강제 메커니즘(기존 `/api/workflows` GET 검증 추가 vs 전용 `/api/workflows/calendar` 신설) — half-open exclusive end + 빈/역순/과대 span 거부, ② `workflows:view` upgrade-once reconcile 스크립트(기존 role, billing-ui migrate-helpers 패턴, nav flip 전 실행), ③ 조회 `ALL_KINDS`를 `Object.keys(KIND_RESOURCE)`로 단일화.
+**DEFERRED_TO_IMPL — plan에서 확정(재논의 말 것)**:
+- ① 서버 range 메커니즘 = **전용 `GET /api/workflows/calendar` 신설**(연차 패턴). 기존 `GET /api/workflows`는 불변(routes.test 보존). 서비스 `getCalendarTasks(ctx,{start:Date,end:Date})` 비-optional=타입 강제 range. 라우트가 누락·빈·역순·span>46일·운영창(±13개월) 밖 → 400. 클라는 `end=winEnd`(exclusive) 전송(half-open, `scheduledAt<end`가 마지막 셀 포함).
+- ② `applyWorkflowsViewUpgrade`(dynamic, 임의 kind view role reconcile) + `applyWorkflowsNavReconcile`(nav flip) 헬퍼 2종, seed 순서=grant→seedNavigation→flip.
+- ③ `ALL_KINDS`·page `KINDS` = `Object.keys(KIND_RESOURCE)` 단일화.
 
-**다음**: plan 단계 = 단계 경계 → **새 세션에서 `dev-workflow:writing-plans-split`**로 작성. 실행은 `superpowers:subagent-driven-development`. 표현계층+additive 스키마=표준 restart 배포. 관련: [[session-per-merge-workflow]] [[backend-minimal-data-principle]]
+**plan 작성 중 발견(중요)**: 메인 `seed.ts`엔 `BILLING` WorkflowType만 있고 `WEEKLY_REPORT`/`NOTIFICATION_BILLING`은 **seed-demo(dev 전용)**에만 존재 → 일반화 모달이 offer하는 create가 prod에서 403. **task-06이 메인 seed에 생성가능 4종(weekly/notification/client 2종) WorkflowType upsert 추가**로 갭 폐쇄(placeholder templatePath).
+
+**split plan**: `docs/plans/2026-07-01-workflows-calendar.md`(엔트리포인트 §Shared Contracts) + `2026-07-01-workflows-calendar/task-01~06`. 01 도메인 스캐폴딩→02 UI색·라벨·어댑터→03 캘린더 조회 라우트·서비스→04 생성 모달→05 캘린더 화면+page교체+list제거→06 시드·권한·nav배포. 회귀 테스트 R1(조회커버리지·fetch URL)·R2(생성게이트)·R3(nav 가시성)·R4(exclusive end 경계) 포함.
+
+**다음**: 단계 경계 → **새 세션에서 `superpowers:subagent-driven-development`**로 구현(01부터, 01 이후 02·03·06 병렬 가능). 표현계층+additive 스키마=표준 restart 배포. 관련: [[session-per-merge-workflow]] [[backend-minimal-data-principle]] [[billing-generation-storage-root-deploy-gap]]
