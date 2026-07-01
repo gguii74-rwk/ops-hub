@@ -36,6 +36,26 @@ export async function getTaskList(
   }));
 }
 
+// 캘린더 전용 조회(D5). start/end 비-optional = 타입-레벨 range 계약(서버가 무제한 조회를 구조적으로 차단).
+// 런타임 방어로 start<end 강제(RangeError). kind 필터는 응답을 받은 클라가 수행(kind는 민감정보 아님, D5).
+export async function getCalendarTasks(
+  ctx: { permissionKeys: Set<string> },
+  range: { start: Date; end: Date },
+): Promise<TaskListItem[]> {
+  if (!(range.start.getTime() < range.end.getTime())) {
+    throw new RangeError("조회 범위가 올바르지 않습니다(start<end).");
+  }
+  const kinds = allowedKinds(ctx.permissionKeys);
+  const rows = await findTaskList({ kinds, start: range.start, end: range.end });
+  return rows.map((r) => ({
+    id: r.id,
+    kind: r.kind,
+    typeName: r.typeName,
+    scheduledAt: r.scheduledAt.toISOString(),
+    status: r.status,
+  }));
+}
+
 // 없으면 null(라우트가 404), 권한 없으면 ForbiddenError(403). kind를 알아야 권한을 판정하므로 먼저 로드한다.
 export async function getTaskDetailView(
   id: string,

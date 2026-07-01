@@ -9,7 +9,7 @@ vi.mock("@/modules/workflows/repositories", () => ({
 
 import { ForbiddenError } from "@/kernel/access";
 import * as repo from "@/modules/workflows/repositories";
-import { getTaskList, getTaskDetailView } from "@/modules/workflows/services/tasks";
+import { getTaskList, getTaskDetailView, getCalendarTasks } from "@/modules/workflows/services/tasks";
 import { recordGeneratedFiles } from "@/modules/workflows/services/generator";
 
 const m = repo as unknown as Record<string, ReturnType<typeof vi.fn>>;
@@ -100,6 +100,29 @@ describe("getTaskDetailView", () => {
     m.findTaskDetail.mockResolvedValue({ ...detail, recipients: null, defaultRecipients: null });
     const out = await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.weekly:view", "workflows.weekly:send"]) });
     expect(out!.effectiveRecipients).toEqual([]);
+  });
+});
+
+describe("getCalendarTasks (서버 range 계약, D5)", () => {
+  it("start<end면 allowed kind + range를 repo에 전달·ISO 직렬화", async () => {
+    m.findTaskList.mockResolvedValue([{ id: "t1", kind: "BILLING", typeName: "대금청구", scheduledAt: new Date("2026-07-10T00:00:00Z"), status: "PENDING" }]);
+    const start = new Date("2026-07-01T00:00:00Z");
+    const end = new Date("2026-08-12T00:00:00Z");
+    const out = await getCalendarTasks({ permissionKeys: new Set(["workflows.billing:view"]) }, { start, end });
+    expect(m.findTaskList).toHaveBeenCalledWith(expect.objectContaining({ kinds: ["BILLING"], start, end }));
+    expect(out[0]).toEqual({ id: "t1", kind: "BILLING", typeName: "대금청구", scheduledAt: "2026-07-10T00:00:00.000Z", status: "PENDING" });
+  });
+
+  it("start>=end면 RangeError(방어 — 라우트가 먼저 400이지만 서비스도 강제)", async () => {
+    const d = new Date("2026-07-01T00:00:00Z");
+    await expect(
+      getCalendarTasks({ permissionKeys: new Set(["workflows.billing:view"]) }, { start: d, end: d }),
+    ).rejects.toBeInstanceOf(RangeError);
+  });
+
+  it("view 권한 없으면 kinds=[]", async () => {
+    await getCalendarTasks({ permissionKeys: new Set() }, { start: new Date("2026-07-01T00:00:00Z"), end: new Date("2026-07-02T00:00:00Z") });
+    expect(m.findTaskList).toHaveBeenCalledWith(expect.objectContaining({ kinds: [] }));
   });
 });
 
