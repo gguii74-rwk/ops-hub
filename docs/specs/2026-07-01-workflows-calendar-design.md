@@ -161,6 +161,8 @@ smoke: `/workflows` 캘린더 렌더, 생성 모달 유형 목록, `/api/workflo
 
 **rollback/backout(R2·F2 / R4·F1 ACCEPTED)**: additive enum은 **forward-safe**이나 **rollback은 자동 안전하지 않음** — 구버전 코드는 신규 enum 값에 대해 `KIND_RESOURCE`/`TRANSITIONS`가 미정의라, 신규 kind task가 존재하면 상세/전이에서 실패(version-skew). **수준 B에선 client kind task가 실제로 생길 수 있으므로**(예약 허용) 이 리스크를 **ACCEPTED**하고 절차로 관리: (1) ops-hub dev는 **단일 pm2 인스턴스**(rolling 아님)라 동시 version-skew 없음, (2) **rollback preflight = 신규 kind(`WEEKLY_REPORT_CLIENT`/`MONTHLY_REPORT_CLIENT`) task 부재 확인** — 존재 시 정리/보류 후 되돌림, (3) 운영 cutover 다중 인스턴스 시 "신규 enum 허용 코드 선배포 → 이후 노출" 2-phase. 근거: 사용자가 수준 B(예약 허용)를 선택 — 예약 편의 > 드문 rollback의 수동 preflight 비용.
 
+**client kind view / user DENY override 배포 preflight(impl-R5 ACCEPTED)**: client kind reconcile(3b)은 role-level ALLOW만 부여하고 **사용자 레벨 `workflows.weekly:view` DENY override를 신규 client :view로 mirror하지 않는다**. 따라서 weekly:view role에 속하되 개인 DENY override로 weekly를 차단당한 사용자가 신규 client kind는 조회 가능(targeted deny 우회). 이 리스크를 **ACCEPTED**(사용자 결정)하는 근거: D5가 워크플로 kind를 **비민감정보**로 분류, 신규 kind는 배포 시점 데이터 0, 시나리오가 드물며(weekly-view role + 개인 weekly DENY), 코드베이스의 어떤 upgrade-helper도 user DENY를 mirror하지 않는다(per-key DENY가 신규 key를 안 덮는 건 유효한 모델 동작). **배포 preflight** = `workflows.weekly:view`에 활성 DENY `UserPermissionOverride`를 가진 사용자 존재 여부 확인 → 있으면 admin이 해당 사용자의 client kind 조회 허용/차단을 개별 판단. 엄격 effective-mirror가 필요해지면 헬퍼에 weekly:view DENY override → client :view DENY mirror를 후속 추가.
+
 ## 8. 적대검증 ledger (spec 단계 — 5회, max 도달로 종결)
 
 blocking score 추세: R1=2 → R2=5 → R3=4 → R4=4 → R5=3. 모든 critical/high/medium을 판정으로 닫음(미판정 blocking 0).
@@ -183,3 +185,16 @@ blocking score 추세: R1=2 → R2=5 → R3=4 → R4=4 → R5=3. 모든 critical
 - `workflows:view` upgrade-once 스크립트 구현(migrate-helpers 패턴) + 기존설치 nav 노출 smoke.
 
 **사용자 결정(해소) — 수준 B**: client kind(주간보고 고객사·월간보고 고객사)를 **예약(PENDING) 등록 가능**으로 확정(문서 생성은 생성기 구현 시). 이에 따라 드롭다운 = 5종 전체(권한 게이트), client kind에 `create` 부여, R4·F1은 ACCEPTED(rollback preflight 관리). Q2의 "드롭다운 3종"은 이 결정으로 5종으로 확장됨(supersede).
+
+## 9. 적대검증 ledger (impl 단계 — 5회, max 도달로 종결)
+
+base=`98c1d9a`(origin/main). blocking score 추세: R1=1 → R2=1 → R3=3 → R4=3 → R5=3. 각 라운드가 **동일 fingerprint churn이 아니라** 이력 접근→override 승격→기존DB 배포갭→drift 과대승격→user DENY로 이어지는 **마이그레이션 정합성의 점진적 심화**였고, 모든 critical/high/medium을 판정으로 닫음(미판정 blocking 0).
+
+| # | round | sev | finding | disposition |
+|---|---|---|---|---|
+| 1 | R1 | medium | 캘린더 완전교체로 운영창(±12개월) 밖 과거/미래 task를 UI에서 발견 불가(감사·재다운로드 차단) | **FIXED**(사용자 결정) — 캘린더/목록 토글 추가, 목록은 range 없이 `GET /api/workflows`로 전체 이력 브라우징(`workflows-view.tsx`·복구 `workflows-list.tsx`) |
+| 2 | R2 | medium | `workflows:view` 승격이 role만 reconcile, kind-view를 override로만 가진 사용자 누락 → nav flip 후 메뉴 상실 | **FIXED** — `applyWorkflowsViewUpgrade`가 scope="all" ALLOW override 보유 사용자도 집계 override로 승격 |
+| 3 | R3 | high | 기존 DB(RolePermission 존재)에 신규 client kind view/create 미배포 → OWNER 외 조회·예약 불가(fresh와 divergence) | **FIXED** — `applyWorkflowsClientKindsUpgrade` 신설(client :view→weekly:view 보유 role, client :create→pm), nav flip 전 실행(§7 3b) |
+| 4 | R4-A | high | client :view reconcile driver가 scope·DENY 무관 → drift 행(scope=team/own, ALLOW+DENY)을 all-scope 접근으로 과대승격 | **FIXED** — driver 쿼리를 scope="all" ALLOW ∧ role DENY 제외로 한정(getPermissionSummary 규칙 일치) + drift 회귀 테스트 |
+| 5 | R4-B | medium | 신규 enum 값이 rollback-safe 전에 쓰기 가능(version-skew) | **DUPLICATE/ACCEPTED** — spec R4·#8 + §7 rollback에서 이미 ACCEPTED(수준 B, preflight+단일인스턴스+cutover 2-phase). 재수정=사용자 결정 번복이라 미적용 |
+| 6 | R5 | high | client :view 승격이 사용자 레벨 `weekly:view` DENY override를 mirror 안 함 → targeted deny 우회(client kind 조회) | **ACCEPTED**(사용자 결정, §7 preflight) — D5 비민감·신규 empty·드문 시나리오·타 helper도 user DENY 미mirror. 배포 preflight로 weekly:view DENY override 보유자 점검, 필요 시 후속 mirror |
