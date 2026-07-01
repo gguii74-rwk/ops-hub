@@ -10,10 +10,11 @@
 - Test: `tests/app/workflows/workflows-calendar.test.tsx` (신규)
 
 ## Prep
-- 엔트리포인트 §Shared Contracts SC-5(라벨·순서), SC-6(색), SC-8(어댑터), SC-9(조회 계약·exclusive end).
+- 엔트리포인트 §Shared Contracts SC-5(라벨·순서), SC-6(색), SC-8(어댑터), SC-9(조회 계약·exclusive end), SC-13(조회 실패 에러상태 통일).
 - 참조 구현: `src/app/(app)/leave/_components/leave-calendar.tsx`(전체 구조·nav 경계·kstNow·팝오버), `tests/app/leave/leave-calendar.test.tsx`(테스트 관례·`open15th`).
+- 에러상태 정본: `src/app/(app)/calendar/calendar-view.tsx` line 125(`{query.isError && <p className="text-sm text-destructive">…</p>}`) — SC-13이 이걸 표준으로 지정.
 - `src/modules/calendar/ui/calendar-month.tsx`(`CalendarMonth` props: `anchor`·`events`·`intensity`·`onQuickAdd`·`renderDayDetail`).
-- D4·D6·D8·D9, R1(fetch start/end), R4·F2(exclusive end).
+- D4·D6·D8·D9, R1(fetch start/end), R4·F2(exclusive end), SC-13(silent failure 금지).
 
 ## Deps
 - Task 02(`toCalendarEvent`·`KIND_LABEL`·`WORKFLOW_KIND_ORDER`·kind 색), Task 03(`GET /api/workflows/calendar`), Task 04(`CreateTaskModal` `defaultDate` prop).
@@ -25,6 +26,7 @@
 - **Don't `CalendarMonth`의 토글 `legend` prop을 쓰지 마라.** 필터는 별도 버튼(D6). 정적 색 범례만 별도 렌더.
 - **Don't `workflows-list.tsx` 제거를 빠뜨리지 마라.** spec 비포함: 목록 뷰 완전 교체(내 변경이 만든 orphan). import 소비처(page.tsx)도 함께 전환.
 - **Don't ui 프리미티브를 `CalendarMonth`(module)에 넘기지 마라** — 팝오버는 CalendarMonth 내장(module→ui 금지). 페이지·모달에서만 `@/components/ui/*` 사용.
+- **Don't 조회 실패를 빈 캘린더로 위장하지 마라(SC-13).** `useQuery`의 `isError`를 구독해 실패 시 에러 배너를 노출한다. `data?.items ?? []` 빈 폴백만 두면 400/500/네트워크 실패가 "업무 없음"으로 보여 누락·중복 등록을 유발(silent failure). 정본=calendar-view line 125.
 
 ## TDD Steps
 
@@ -40,14 +42,14 @@ import { normalizeToGridWindow, toKstDateKey } from "@/modules/calendar/time";
 
 const push = vi.hoisted(() => vi.fn());
 const can = vi.hoisted(() => ({ create: false }));
-const q = vi.hoisted(() => ({ items: [] as any[], lastQueryFn: null as null | (() => Promise<unknown>) }));
+const q = vi.hoisted(() => ({ items: [] as any[], isError: false, lastQueryFn: null as null | (() => Promise<unknown>) }));
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 vi.mock("@/lib/auth/permissions-client", () => ({
   useCan: (_r: string, a: string) => a === "create" && can.create,
 }));
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: (opts: { queryFn: () => Promise<unknown> }) => { q.lastQueryFn = opts.queryFn; return { data: { items: q.items } }; },
+  useQuery: (opts: { queryFn: () => Promise<unknown> }) => { q.lastQueryFn = opts.queryFn; return { data: q.isError ? undefined : { items: q.items }, isError: q.isError }; },
 }));
 // 모달은 스텁(자체 useCan/useMutation 격리).
 vi.mock("@/app/(app)/workflows/create-task-modal", () => ({
@@ -69,7 +71,7 @@ function open15th() {
   fireEvent.click(target);
 }
 
-beforeEach(() => { q.items = []; q.lastQueryFn = null; can.create = false; push.mockClear(); });
+beforeEach(() => { q.items = []; q.isError = false; q.lastQueryFn = null; can.create = false; push.mockClear(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("WorkflowsCalendar — 필터(D6)", () => {
@@ -181,6 +183,19 @@ describe("WorkflowsCalendar — 범례(D8)", () => {
     expect(screen.getByText("취소됨")).toBeTruthy();
   });
 });
+
+describe("WorkflowsCalendar — 조회 실패 에러상태(SC-13)", () => {
+  it("조회 실패 시 에러 배너 노출(빈 캘린더로 위장 안 함)", () => {
+    q.isError = true;
+    render(<WorkflowsCalendar />);
+    expect(screen.getByText("업무 캘린더를 불러오지 못했습니다.")).toBeTruthy();
+  });
+
+  it("정상(비-에러) 시 에러 배너 없음", () => {
+    render(<WorkflowsCalendar />);
+    expect(screen.queryByText("업무 캘린더를 불러오지 못했습니다.")).toBeNull();
+  });
+});
 ```
 
 실행: `npm test -- tests/app/workflows/workflows-calendar.test.tsx` → **FAIL**(컴포넌트 없음).
@@ -243,7 +258,7 @@ export function WorkflowsCalendar() {
   const startIso = winStart.toISOString();
   const endIso = winEnd.toISOString();
 
-  const { data } = useQuery({
+  const { data, isError } = useQuery({
     queryKey: ["workflows", "calendar", startIso, endIso],
     queryFn: async (): Promise<CalendarResponse> => {
       const res = await fetch(
@@ -345,6 +360,11 @@ export function WorkflowsCalendar() {
         )}
       />
 
+      {/* 조회 실패 에러상태(SC-13) — 빈 캘린더 위장 금지. 정본=calendar-view line 125. */}
+      {isError && (
+        <p className="text-sm text-destructive">업무 캘린더를 불러오지 못했습니다.</p>
+      )}
+
       {creating !== null && (
         <CreateTaskModal defaultDate={creating || undefined} onClose={() => setCreating(null)} />
       )}
@@ -415,3 +435,4 @@ npm run typecheck && npm run lint && npm test
 - `npm test`(전체) → 통과(제거된 `workflows-list.test.tsx` 부재로 회귀 없음).
 - `grep -rn "workflows-list\|WorkflowsList" src tests` → 결과 없음.
 - 캘린더: 필터 6(전체+5)·단일선택·클라 필터, 팝오버 목록→상세 이동·생성 버튼(권한별), 셀 "+"(권한별), nav 운영창 경계, fetch URL에 start+exclusive end.
+- 조회 실패 에러상태(SC-13): `isError` 시 "업무 캘린더를 불러오지 못했습니다." 배너 노출(빈 캘린더 위장 안 함), 정상 시 미노출.

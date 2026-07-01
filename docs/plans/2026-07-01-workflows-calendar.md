@@ -156,6 +156,18 @@ MONTHLY_REPORT_CLIENT  → { id:"monthly-report-client",  name:"월간보고(고
   - `applyWorkflowsNavReconcile`: 기존 nav 행 2개 label+requiredPermissionId 교정. flag=`migration.workflows-nav.reconcile.applied`.
 - **seed.ts 실행 순서(중요, R5·F1)**: bootstrap → 기존 upgrade들 → **`applyWorkflowsViewUpgrade`**(grant) → WorkflowType upsert → `seedNavigation`(create-if-absent) → **`applyWorkflowsNavReconcile`**(flip). grant가 flip보다 **먼저**여야 기존 notification/billing-only role이 메뉴를 잃지 않는다.
 
+### SC-13. 캘린더 조회 실패 에러상태 (통일 — plan R2/F2, 사용자 결정=전 캘린더 통일)
+
+캘린더 월뷰는 조회 실패(`queryFn` throw = 400/500/네트워크)를 **조용히 빈 화면으로 위장하지 않는다** — 실제 업무/연차가 있어도 없는 것처럼 보여 누락·중복 등록을 유발(silent failure). 통합 캘린더 `src/app/(app)/calendar/calendar-view.tsx`가 이미 **정본 패턴**을 가진다(line 125):
+
+```tsx
+const { data, isError } = useQuery(...);        // isError 구독
+// …CalendarMonth 렌더 후…
+{isError && <p className="text-sm text-destructive">…를 불러오지 못했습니다.</p>}
+```
+
+이를 표준으로 `leave-calendar`(기존, task-07)·`workflows-calendar`(신규, task-05)에 동일 적용한다. `data?.x ?? []` 빈 폴백은 유지(로딩·부분 데이터 공존)하되 **실패 시 배너를 병행 노출**. 메시지는 도메인별("업무 캘린더를 불러오지 못했습니다."·"연차 캘린더를 불러오지 못했습니다."). `calendar-view`는 이미 준수 — **변경 없음**(정본 참조원).
+
 ---
 
 ## Task 목록
@@ -168,8 +180,9 @@ MONTHLY_REPORT_CLIENT  → { id:"monthly-report-client",  name:"월간보고(고
 | 04 | 생성 모달 일반화 — 작업유형 드롭다운(권한 게이트)·예정일 prefill | [ ] | [task-04](2026-07-01-workflows-calendar/task-04-create-task-modal.md) | 01, 02 | |
 | 05 | 캘린더 화면 + page 교체 + list 제거 | [ ] | [task-05](2026-07-01-workflows-calendar/task-05-calendar-screen.md) | 02, 03, 04 | |
 | 06 | 시드·권한·nav 배포 — RESOURCES/EXTRA/ROLE_ALLOW·WorkflowType·nav flip·upgrade 2종 | [ ] | [task-06](2026-07-01-workflows-calendar/task-06-seed-nav-deploy.md) | 01 | |
+| 07 | 기존 캘린더 에러상태 통일 — leave-calendar isError 배너(SC-13) | [ ] | [task-07](2026-07-01-workflows-calendar/task-07-leave-calendar-error-state.md) | — | |
 
-실행 순서 권장: 01 → (02, 03, 06 병렬 가능) → 04 → 05. 06은 01 이후 독립.
+실행 순서 권장: 01 → (02, 03, 06, 07 병렬 가능) → 04 → 05. 06·07은 다른 태스크와 독립(07은 기존 leave-calendar만 수정).
 
 ## 배포(요약 — 상세는 task-06 §배포)
 
