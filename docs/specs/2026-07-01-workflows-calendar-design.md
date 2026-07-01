@@ -152,7 +152,7 @@ onQuickAdd = canCreateAny ? (dateKey) => openCreate(dateKey) : undefined
 표준 restart(**forward-safe**, D12). **순서 중요**(R5·F1):
 1. `prisma migrate deploy`(additive enum) → `prisma generate`
 2. `db:seed`(WorkflowType 2행·신규 permission catalog[`workflows:view` 포함]·nav는 편집보존이라 기존 행 미갱신). **주의: `db:seed`의 `ROLE_ALLOW` bootstrap은 role 권한이 빈 경우에만 적용** → `seed-roles.ts` 편집만으로는 **기존 role에 `workflows:view`가 부여되지 않음**.
-3. **`workflows:view` upgrade-once 멱등 스크립트**(billing-ui N6·leave-notification-toggle 패턴): 기존 role 중 임의 `workflows.<kind>:view` 보유자에게 `workflows:view`를 **reconcile 부여**. **nav flip보다 먼저 실행**(안 그러면 기존 notification/billing-only role이 메뉴를 잃음).
+3. **`workflows:view` upgrade-once 멱등 스크립트**(billing-ui N6·leave-notification-toggle 패턴): 기존 role 중 임의 `workflows.<kind>:view` 보유자에게 `workflows:view`를 **reconcile 부여**. **role뿐 아니라 kind-view를 scope="all" ALLOW `UserPermissionOverride`로만 가진 사용자도 집계 override로 승격**(유효권한이 role+override라 override-only viewer가 nav flip 후 메뉴를 잃는 것 방지 — 접근제어 규칙①, R2·F1). **nav flip보다 먼저 실행**(안 그러면 기존 notification/billing-only role/override 보유자가 메뉴를 잃음).
 4. **nav 멱등 업데이트 1회**(D11·D13): `workflows`·`workflows-list` 행의 **label("업무 목록"→"캘린더") + requiredPermission(→`workflows:view`)** 교정.
 5. build → `pm2 restart`.
 
