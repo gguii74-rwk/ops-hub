@@ -34,7 +34,7 @@
 | --- | --- | --- |
 | D1 | **신규 kind 2종 enum 추가(additive 마이그레이션).** `WorkflowKind`에 `WEEKLY_REPORT_CLIENT`(주간보고 고객사)·`MONTHLY_REPORT_CLIENT`(월간보고 고객사) 추가. **타입상 강제되는** `KIND_RESOURCE`·`TRANSITIONS`(둘 다 `Record<WorkflowKind,…>` 완전매핑 — 누락 시 typecheck 실패)·`KIND_LABEL` 동반 갱신. **⚠ 조회 allow-list는 typecheck가 강제하지 못함**: `getTaskList`의 `ALL_KINDS`(`tasks.ts:17`)·`/workflows` page의 `KINDS`는 손수 작성한 `WorkflowKind[]` 배열이라, enum에만 추가하고 이 배열을 놓치면 **타입 오류 없이 API가 신규 kind를 영구 누락**(필터가 빈 카테고리). → **두 배열을 enum-파생 단일 출처(`Object.keys(KIND_RESOURCE) as WorkflowKind[]`)로 대체**(§4.5·F1) | 사용자 결정(브레인스토밍 Q1): UI-only 플레이스홀더 대신 실제 kind로 스캐폴딩 — 향후 생성기는 등록만으로 활성화. Record 파생으로 조회 경로도 enum과 자동 동기화(완전매핑 Record가 유일한 typecheck-강제 출처) |
 | D2 | **신규 kind 전이 = WEEKLY_REPORT 골격 재사용.** `PENDING→[GENERATED,CANCELLED]`, `GENERATED→[SENT,CANCELLED]` | 생성기가 없어 실제 GENERATED 진입은 불가하나, 상태머신은 정의돼야 타입·정책 일관. 예약(PENDING) + 취소만 실질 동작 |
-| D3 | **신규 kind 권한 = 리소스 2종 신설**(`workflows.weeklyClient`·`workflows.monthlyClient`), 1:1 kind↔resource 기존 패턴 유지. `RESOURCES`·`seed-roles`(PM 풀권한, 조회는 configured role) 갱신 | 독립 게이팅 + 향후 생성기 활성화 시 권한 재작업 불필요. 기존 3 kind의 1:1 매핑과 대칭 |
+| D3 | **신규 kind 권한 = 리소스 2종 신설**(`workflows.weeklyClient`·`workflows.monthlyClient`), 1:1 kind↔resource 기존 패턴 유지. **seed-roles는 신규 client kind에 `view`만 부여, `create`/`generate`/`send`는 미부여**(생성기 구현 시 부여). `RESOURCES`·`seed-roles`(PM/configured role view) 갱신 | 독립 게이팅 + 향후 생성기 활성화 시 등록·grant만 추가. **create 미부여가 곧 생성 차단 게이트**(F1): 서버 `createTask`가 `<kind>:create`를 검사하므로, client kind는 UI 드롭다운 숨김(권한 없음) + 서버 403이 **동일 키로 일관**(접근제어 규칙① 준수, 별도 allow-list 불필요). OWNER 전능은 by-design(placeholder PENDING만 생성, 무해) |
 | D4 | **캘린더 = `CalendarMonth` 재사용**(anchor·events·intensity·onQuickAdd·renderDayDetail). 운영창 ±`MAX_ANCHOR_MONTHS`·KST cursor·그리드 윈도우 패칭 | 연차 캘린더(PR #22)와 동일 컴포넌트·관례. 신규 캘린더 코드 최소화, module→ui 경계 준수(팝오버는 CalendarMonth 내장) |
 | D5 | **데이터 = 기존 `GET /api/workflows?start&end`**(이미 지원). kind 필터는 **클라이언트 필터**(응답 `kind` 사용) | 워크플로 kind는 민감정보 아님(연차의 서버측 직무필터와 다름). 새 API·백엔드 변경 0. 그리드 42칸 윈도우를 start/end로 패칭 |
 | D6 | **필터 = 단일선택 6개**(전체 + 5 kind), 연차 `전체/개발/민원/콘텐츠` UX 동일 | 익숙한 패턴. 다중선택은 YAGNI |
@@ -108,9 +108,9 @@ onQuickAdd = canCreateAny ? (dateKey) => openCreate(dateKey) : undefined
 - `KIND_RESOURCE`: `workflows.weeklyClient`, `workflows.monthlyClient`.
 - `TRANSITIONS`: WEEKLY_REPORT와 동일 골격(D2).
 - `KIND_LABEL`(필터·배지 공통 **단일 라벨 출처**): 5종을 사용자 명칭으로 통일 — `BILLING`="대금청구", `NOTIFICATION_BILLING`="알림톡청구"(기존 "알림톡"에서 명확화), `WEEKLY_REPORT`="주간보고(본부)"(기존 "주간보고"에서), `WEEKLY_REPORT_CLIENT`="주간보고(고객사)", `MONTHLY_REPORT_CLIENT`="월간보고(고객사)". enum 값 자체는 불변(라벨만 변경). 상세/배지 등 KIND_LABEL 소비처는 자동 반영.
-- `RESOURCES`(catalog) + `seed-roles` grant(PM view/create/…; 조회는 필요한 role).
+- `RESOURCES`(catalog) 2종 추가 + `seed-roles`: **신규 client kind는 `view`만 부여**(create/generate/send 미부여 — D3·F1). 조회는 PM/필요 role.
 - `WorkflowType` seed 2행: `name`(고객사 주간/월간보고), `templatePath` 플레이스홀더, `recurrence`.
-- `createTaskSchema`: 모든 kind 수용 확인(신규 2종은 드롭다운 미노출이라 UI 생성 불가하나 스키마는 enum 전체 허용 무해).
+- `createTaskSchema`: enum 전체를 수용해도 **서버 `createTask`의 `<kind>:create` 게이트가 실제 관문**(F1). 신규 client kind는 create 권한 미부여(D3)라 일반 role은 403 — 스키마가 파싱을 통과시켜도 서비스 계층에서 차단(UI 숨김만으로 의존하지 않음, 접근제어 규칙①). OWNER는 by-design 예외. 별도 `CREATABLE_WORKFLOW_KINDS` allow-list는 두지 않는다(권한 grant가 단일 출처 — 이중화 방지).
 - **조회 allow-list 단일화(F1, 필수)**: `getTaskList`의 `ALL_KINDS`(`tasks.ts:17`)와 `/workflows` page의 `KINDS` 하드코딩 배열을 **`Object.keys(KIND_RESOURCE) as WorkflowKind[]`** 로 대체(완전매핑 Record라 신규 kind가 자동 포함). 이렇게 해야 신규 kind가 `GET /api/workflows`에 반환되고 캘린더 필터가 빈 카테고리가 되지 않는다.
 
 ## 5. 권한 (접근제어 규칙 ①②)
@@ -123,15 +123,22 @@ onQuickAdd = canCreateAny ? (dateKey) => openCreate(dateKey) : undefined
 
 메뉴 숨김은 UX, API도 동일 키 검사(fail-closed). 신규 리소스 grant 없으면 OWNER만 보임(테스트는 OWNER로 즉시 가능, 정식 grant는 seed-roles).
 
+**client kind 생성 차단(F1)**: 신규 client kind는 `create` 미부여(D3)이므로 UI 드롭다운 숨김 + 서버 `createTask` 403이 동일 키로 일관. UI 숨김에만 의존하지 않는다(접근제어 규칙①).
+
+**나머지 판정 — nav 권한 모델(OUT_OF_SCOPE)**: 현재 nav `workflows` 부모·자식은 단일 `requiredPermissionId = workflows.weekly:view`로 게이트된다. `workflows.billing`만 보유한(weekly view 없는) 커스텀 role은 페이지/API로는 접근되나 메뉴가 안 보이는 **기존 mismatch**가 있다. 이번 rename은 key/href/permission을 **보존**하므로 신규 regression이 아니다. nav를 "임의 kind view(any-of)/집계 workflows:view"로 바꾸는 것은 **nav 단일-permission 모델 변경 = access-control follow-up**이며, billing-ui 리뷰(F-B2)에서 이미 OUT_OF_SCOPE로 판정된 사안이다(별도 후속). 이 spec 범위 밖.
+
 ## 6. 테스트
 
 - 어댑터 순수함수: WorkflowTask→CalendarEventInput(kind·title·CANCELLED 오버레이), kind→라벨·색.
 - `workflows-calendar`: 필터 단일선택 전환, kind 미스매치 숨김, 빈 상태, 팝오버 목록·생성 버튼 노출(권한별), 운영창 nav 비활성.
-- **F1 회귀**: 신규 kind(`WEEKLY_REPORT_CLIENT`/`MONTHLY_REPORT_CLIENT`)가 view 권한 보유 시 `getTaskList`(및 `GET /api/workflows`)에 반환되는지 — `ALL_KINDS`가 enum 전체를 커버함을 보장.
-- **F2 회귀**: 캘린더 `queryFn`이 만드는 요청 URL에 **`start`/`end` 값이 실제로 포함**되는지(빈 파라미터 아님).
+- **조회 kind 커버리지 회귀(R1)**: 신규 kind(`WEEKLY_REPORT_CLIENT`/`MONTHLY_REPORT_CLIENT`)가 view 권한 보유 시 `getTaskList`(및 `GET /api/workflows`)에 반환되는지 — `ALL_KINDS`가 `Object.keys(KIND_RESOURCE)`로 enum 전체를 커버함을 보장.
+- **range fetch 회귀(R1)**: 캘린더 `queryFn`이 만드는 요청 URL에 **`start`/`end` 값이 실제로 포함**되는지(빈 파라미터 아님).
+- **client kind 생성 차단 회귀(R2·F1)**: create 미부여 role(OWNER 아님)이 `POST /api/workflows {kind: WEEKLY_REPORT_CLIENT}` 직접 호출 시 **403**(UI 우회 차단) — `createTask`의 `<kind>:create` 게이트 검증.
 - `create-task-modal`: 유형 드롭다운 권한 게이트, defaultDate prefill, 제출 payload(`{kind,scheduledAt}`), guardedClose.
 - react-query·useCan·fetch·toast mock 관례(billing-ui와 동일). `npm test`는 `.env`(DATABASE_URL) 필요.
 
 ## 7. 배포
 
-표준 restart(비가역 아님, D12): `prisma migrate deploy`(additive enum) → `prisma generate` → `db:seed`(WorkflowType 2행·신규 권한·nav 라벨은 편집보존이라 미갱신) → **nav 라벨 멱등 업데이트 1회**(D11) → build → `pm2 restart`. smoke: `/workflows` 캘린더 렌더, 생성 모달 유형 목록, `/api/workflows?start&end` 200(인증).
+표준 restart(**forward-safe**, D12): `prisma migrate deploy`(additive enum) → `prisma generate` → `db:seed`(WorkflowType 2행·신규 권한·nav 라벨은 편집보존이라 미갱신) → **nav 라벨 멱등 업데이트 1회**(D11) → build → `pm2 restart`. smoke: `/workflows` 캘린더 렌더, 생성 모달 유형 목록, `/api/workflows?start=…&end=…` 200(인증).
+
+**rollback/backout(R2·F2)**: additive enum은 **forward-safe**이나 **rollback은 자동 안전하지 않음** — 구버전 코드는 신규 enum 값에 대해 `KIND_RESOURCE`/`TRANSITIONS`가 미정의라, 신규 kind task가 이미 존재하면 상세/전이에서 실패(version-skew). 완화: (1) 신규 client kind는 **create 미부여**(D3·F1)라 일반 경로로 생성 불가 → 노출 최소, (2) ops-hub dev는 **단일 pm2 인스턴스**(rolling 아님)라 동시 version-skew 없음, (3) rollback 필요 시 **신규 kind task 부재 확인 후** 구버전 배포(존재 시 정리/비활성 선행). 운영 cutover 다중 인스턴스 시엔 "신규 enum 허용 코드 선배포 → 이후 grant/생성 노출" 2-phase 적용.
