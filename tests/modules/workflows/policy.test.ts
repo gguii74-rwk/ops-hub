@@ -3,8 +3,10 @@ import { TRANSITIONS, KIND_RESOURCE, ACTION_FOR_STATUS, STAMP_FOR_STATUS } from 
 import { ConflictError } from "@/modules/workflows/types";
 
 describe("TRANSITIONS (fail-closed)", () => {
-  it("3개 kind를 모두 정의한다", () => {
-    expect(Object.keys(TRANSITIONS).sort()).toEqual(["BILLING", "NOTIFICATION_BILLING", "WEEKLY_REPORT"]);
+  it("5개 kind를 모두 정의한다(신규 client 2종 포함)", () => {
+    expect(Object.keys(TRANSITIONS).sort()).toEqual(
+      ["BILLING", "MONTHLY_REPORT_CLIENT", "NOTIFICATION_BILLING", "WEEKLY_REPORT", "WEEKLY_REPORT_CLIENT"],
+    );
   });
 
   it("WEEKLY_REPORT은 PENDING→GENERATED/CANCELLED만 허용(직접 SENT 불가)", () => {
@@ -27,6 +29,13 @@ describe("TRANSITIONS (fail-closed)", () => {
     expect(TRANSITIONS.BILLING.SENT).toEqual(["HQ_REQUESTED"]);
     expect(TRANSITIONS.BILLING.HQ_REQUESTED).toEqual(["FINAL_SENT"]);
   });
+
+  it("신규 client 2종은 WEEKLY_REPORT 골격(PENDING→GENERATED/CANCELLED, GENERATED→SENT/CANCELLED)", () => {
+    for (const kind of ["WEEKLY_REPORT_CLIENT", "MONTHLY_REPORT_CLIENT"] as const) {
+      expect(TRANSITIONS[kind].PENDING).toEqual(["GENERATED", "CANCELLED"]);
+      expect(TRANSITIONS[kind].GENERATED).toEqual(["SENT", "CANCELLED"]);
+    }
+  });
 });
 
 describe("권한·stamp 매핑", () => {
@@ -34,6 +43,8 @@ describe("권한·stamp 매핑", () => {
     expect(KIND_RESOURCE.WEEKLY_REPORT).toBe("workflows.weekly");
     expect(KIND_RESOURCE.BILLING).toBe("workflows.billing");
     expect(KIND_RESOURCE.NOTIFICATION_BILLING).toBe("workflows.notification");
+    expect(KIND_RESOURCE.WEEKLY_REPORT_CLIENT).toBe("workflows.weeklyClient");
+    expect(KIND_RESOURCE.MONTHLY_REPORT_CLIENT).toBe("workflows.monthlyClient");
   });
 
   it("ACTION_FOR_STATUS", () => {

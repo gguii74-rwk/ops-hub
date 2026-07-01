@@ -4,7 +4,7 @@ import type { WorkflowStatus } from "@prisma/client";
 const STATUS_VALUES = ["PENDING", "GENERATED", "REVIEWED", "SENT", "HQ_REQUESTED", "FINAL_SENT", "CANCELLED"] as const;
 
 // 작업 생성은 비결정적 typeId(seed별 billing/wf-billing) 대신 안정적 kind enum을 받는다(D12).
-const WORKFLOW_KINDS = ["WEEKLY_REPORT", "BILLING", "NOTIFICATION_BILLING"] as const;
+const WORKFLOW_KINDS = ["WEEKLY_REPORT", "BILLING", "NOTIFICATION_BILLING", "WEEKLY_REPORT_CLIENT", "MONTHLY_REPORT_CLIENT"] as const;
 export const createTaskSchema = z.object({
   kind: z.enum(WORKFLOW_KINDS),
   scheduledAt: z.string().min(1), // ISO 또는 YYYY-MM-DD. Date 변환·유효성은 라우트에서.

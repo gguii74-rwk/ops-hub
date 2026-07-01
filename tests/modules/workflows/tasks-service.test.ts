@@ -39,6 +39,15 @@ describe("getTaskList", () => {
     expect(arg.kinds.sort()).toEqual(["BILLING", "WEEKLY_REPORT"]);
     expect(arg.statuses).toEqual(["SENT"]);
   });
+
+  it("신규 client kind도 view 보유 시 repo에 전달된다(R1 — ALL_KINDS enum 커버리지)", async () => {
+    await getTaskList(
+      { permissionKeys: new Set(["workflows.weeklyClient:view", "workflows.monthlyClient:view"]) },
+      {},
+    );
+    const arg = m.findTaskList.mock.calls[0][0];
+    expect(arg.kinds.sort()).toEqual(["MONTHLY_REPORT_CLIENT", "WEEKLY_REPORT_CLIENT"]);
+  });
 });
 
 describe("getTaskDetailView", () => {

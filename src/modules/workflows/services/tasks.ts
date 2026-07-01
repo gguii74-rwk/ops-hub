@@ -14,7 +14,8 @@ export interface TaskDetailView {
   effectiveRecipients?: string[]; // :send 권한자에게만(§6, F3). 없으면 필드 생략.
 }
 
-const ALL_KINDS: WorkflowKind[] = ["WEEKLY_REPORT", "BILLING", "NOTIFICATION_BILLING"];
+// 조회 allow-list 단일 출처(F1): 완전매핑 Record에서 파생 → 신규 kind가 typecheck 없이 자동 포함.
+const ALL_KINDS = Object.keys(KIND_RESOURCE) as WorkflowKind[];
 
 function allowedKinds(keys: Set<string>): WorkflowKind[] {
   return ALL_KINDS.filter((k) => keys.has(`${KIND_RESOURCE[k]}:view`));
