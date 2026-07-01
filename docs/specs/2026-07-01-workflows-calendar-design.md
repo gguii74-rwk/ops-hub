@@ -44,6 +44,7 @@
 | D10 | **생성 모달 일반화** — `create-task-modal.tsx` 확장: 작업유형 드롭다운(`Select`, 권한 있는 유형만: 대금청구·알림톡청구·주간보고 본부) + 예정일. `POST /api/workflows {kind, scheduledAt}`(기존 계약, billing-ui D12). `guardedClose` 유지 | 사용자 결정(Q2). 신규 고객사 kind는 드롭다운 미포함(구현예정). 권한 유형 1개뿐이면 고정 표시. `createTaskSchema`가 모든 생성가능 kind 수용해야(검증) |
 | D11 | **네비 rename** — `catalog.ts` `workflows-list` 라벨 "업무 목록"→"캘린더". seed는 편집보존(기존 DB 행 미갱신) → **배포 시 멱등 DB 업데이트 1회**로 라벨 교정. href(`/workflows`)·key 불변 | 신규 설치는 카탈로그 반영, 기존 환경은 CMS/DB 갱신. 부모 "업무" 클릭→첫 자식(캘린더) 이동 accordion 동작 유지 |
 | D12 | **범위 = 표현계층 + additive 스키마.** 마이그레이션은 additive(enum 값·`WorkflowType` 행) → **표준 restart 배포**(비가역 아님). 기존 상태머신·BILLING 경로 무변경 | 위험 낮음. 신규 kind seed는 `templatePath` 플레이스홀더(생성기 없어 미판독) |
+| D13 | **nav Workflows 게이팅 = 집계 `workflows:view` 권한**(R3·F2, 사용자 결정=이번 스코프 수정). `workflows` 부모·`workflows-list`(→"캘린더") 자식의 requiredPermission을 per-kind `workflows.weekly:view` → **신규 집계 `workflows:view`**로 교체. `RESOURCES`에 `workflows` 리소스 추가. **seed-roles에서 임의 `workflows.<kind>:view` 보유 role에 `workflows:view`를 동반 부여**(drift 방지 — 조회 가능 kind가 하나라도 있으면 메뉴 노출). page shell은 기존 per-kind EmptyState 유지(집계 grant와 동기 보장) | 캘린더가 다수 kind를 포괄하므로 weekly-only 게이팅은 notification/billing/client-only viewer(`contractor-civil-response`=민원 외주, cutover 주 사용자 — seed 확인)를 부당 배제. nav 커널(`selectVisibleNav`)은 단일 `resource:action`만 검사하는 **도메인-무관** 구조라, 집계를 실제 permission으로 표현해 any-of 하드코딩을 피한다 |
 
 ## 3. 모듈 구조와 경계
 
@@ -60,10 +61,10 @@ src/app/api/workflows/…         # 변경 — 캘린더 range 계약 강제(sta
 src/modules/workflows/services/tasks.ts  # 변경 — ALL_KINDS를 Object.keys(KIND_RESOURCE)로 단일화(F1), range 강제 서비스 계약
 src/modules/workflows/policy.ts   # 변경 — KIND_RESOURCE·TRANSITIONS 신규 2종
 src/modules/calendar/ui/kind-styles.ts  # 변경 — 워크플로 5 kind 색 additive
-src/kernel/access/catalog.ts      # 변경 — RESOURCES 2종 추가, nav "업무 목록"→"캘린더"
+src/kernel/access/catalog.ts      # 변경 — RESOURCES에 client kind 2종 + 집계 `workflows`(D13) 추가, nav "업무 목록"→"캘린더" 라벨·workflows/workflows-list requiredPermission→workflows:view
 prisma/schema.prisma              # 변경 — WorkflowKind enum 2값
 prisma/migrations/<ts>_workflow_client_kinds/  # 신규 — additive enum 마이그레이션
-prisma/seed.ts / seed-roles.ts    # 변경 — WorkflowType 2행, 신규 리소스 view grant(client kind create 미부여)
+prisma/seed.ts / seed-roles.ts    # 변경 — WorkflowType 2행, client kind view grant(create 미부여), 임의 kind view role에 workflows:view 동반 부여(D13)
 scripts/                          # 신규(선택) — nav 라벨 멱등 업데이트 스크립트(배포용)
 ```
 
@@ -127,7 +128,11 @@ onQuickAdd = canCreateAny ? (dateKey) => openCreate(dateKey) : undefined
 
 **client kind 생성 차단(F1)**: 신규 client kind는 `create` 미부여(D3)이므로 UI 드롭다운 숨김 + 서버 `createTask` 403이 동일 키로 일관. UI 숨김에만 의존하지 않는다(접근제어 규칙①).
 
-**나머지 판정 — nav 권한 모델(OUT_OF_SCOPE)**: 현재 nav `workflows` 부모·자식은 단일 `requiredPermissionId = workflows.weekly:view`로 게이트된다. `workflows.billing`만 보유한(weekly view 없는) 커스텀 role은 페이지/API로는 접근되나 메뉴가 안 보이는 **기존 mismatch**가 있다. 이번 rename은 key/href/permission을 **보존**하므로 신규 regression이 아니다. nav를 "임의 kind view(any-of)/집계 workflows:view"로 바꾸는 것은 **nav 단일-permission 모델 변경 = access-control follow-up**이며, billing-ui 리뷰(F-B2)에서 이미 OUT_OF_SCOPE로 판정된 사안이다(별도 후속). 이 spec 범위 밖.
+**nav Workflows 게이팅 수정(D13, R3·F2)**: 현재 nav `workflows` 부모·`workflows-list` 자식은 단일 `workflows.weekly:view`로 게이트돼, `workflows.notification:view`만 보유한 `contractor-civil-response`(민원 외주 — seed 확인) 등은 페이지/API 접근은 되나 메뉴가 안 보인다. → **집계 `workflows:view` 권한을 신설**해 두 nav 항목의 requiredPermission으로 사용하고, seed-roles에서 **임의 `workflows.<kind>:view` 보유 role에 `workflows:view`를 동반 부여**한다. nav 커널(`selectVisibleNav`)은 단일 `resource:action`만 보는 도메인-무관 구조를 유지(집계를 permission으로 표현). billing-settings 자식은 `workflows.billing:configure` 유지.
+
+| 화면/동작 | permission key |
+| --- | --- |
+| Workflows 메뉴 노출 | `workflows:view`(집계, 신규) — 임의 kind view 보유 시 부여 |
 
 ## 6. 테스트
 
@@ -137,11 +142,12 @@ onQuickAdd = canCreateAny ? (dateKey) => openCreate(dateKey) : undefined
 - **range fetch 회귀(R1)**: 캘린더 `queryFn`이 만드는 요청 URL에 **`start`/`end` 값이 실제로 포함**되는지(빈 파라미터 아님).
 - **서버 range 계약(R3·F1, DEFERRED_TO_IMPL→AC)**: 캘린더 조회 라우트/서비스가 **`start`·`end` 누락·빈값·역순·과대 span**을 각각 거부/cap하는지(route/service 테스트). 빈 범위로 전체 task를 반환하지 않음을 보장.
 - **client kind 생성 차단 회귀(R2·F1)**: create 미부여 role(OWNER 아님)이 `POST /api/workflows {kind: WEEKLY_REPORT_CLIENT}` 직접 호출 시 **403**(UI 우회 차단) — `createTask`의 `<kind>:create` 게이트 검증.
+- **nav 가시성 회귀(R3·F2·D13)**: `workflows.notification:view`만(또는 billing-only·client-only) 보유한 role이 `workflows:view` 동반 부여로 **Workflows 메뉴를 본다**(`selectVisibleNav`). weekly:view 없는 role 배제 안 됨. seed-roles가 임의 kind view role에 `workflows:view`를 부여했는지 seed 검증.
 - `create-task-modal`: 유형 드롭다운 권한 게이트, defaultDate prefill, 제출 payload(`{kind,scheduledAt}`), guardedClose.
 - react-query·useCan·fetch·toast mock 관례(billing-ui와 동일). `npm test`는 `.env`(DATABASE_URL) 필요.
 
 ## 7. 배포
 
-표준 restart(**forward-safe**, D12): `prisma migrate deploy`(additive enum) → `prisma generate` → `db:seed`(WorkflowType 2행·신규 권한·nav 라벨은 편집보존이라 미갱신) → **nav 라벨 멱등 업데이트 1회**(D11) → build → `pm2 restart`. smoke: `/workflows` 캘린더 렌더, 생성 모달 유형 목록, `/api/workflows?start=…&end=…` 200(인증).
+표준 restart(**forward-safe**, D12): `prisma migrate deploy`(additive enum) → `prisma generate` → `db:seed`(WorkflowType 2행·신규 권한[`workflows:view` 포함]·nav는 편집보존이라 기존 행 미갱신) → **nav 멱등 업데이트 1회**(D11·D13): `workflows`·`workflows-list` 행의 **label("업무 목록"→"캘린더") + requiredPermission(→`workflows:view`)** 교정 → build → `pm2 restart`. smoke: `/workflows` 캘린더 렌더, 생성 모달 유형 목록, `/api/workflows?start=…&end=…` 200(인증), notification-only role 로그인 시 Workflows 메뉴 노출.
 
 **rollback/backout(R2·F2)**: additive enum은 **forward-safe**이나 **rollback은 자동 안전하지 않음** — 구버전 코드는 신규 enum 값에 대해 `KIND_RESOURCE`/`TRANSITIONS`가 미정의라, 신규 kind task가 이미 존재하면 상세/전이에서 실패(version-skew). 완화: (1) 신규 client kind는 **create 미부여**(D3·F1)라 일반 경로로 생성 불가 → 노출 최소, (2) ops-hub dev는 **단일 pm2 인스턴스**(rolling 아님)라 동시 version-skew 없음, (3) rollback 필요 시 **신규 kind task 부재 확인 후** 구버전 배포(존재 시 정리/비활성 선행). 운영 cutover 다중 인스턴스 시엔 "신규 enum 허용 코드 선배포 → 이후 grant/생성 노출" 2-phase 적용.
