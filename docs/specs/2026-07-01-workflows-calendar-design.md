@@ -173,7 +173,7 @@ blocking score 추세: R1=2 → R2=5 → R3=4 → R4=4 → R5=3. 모든 critical
 | 5 | R2 | medium | nav weekly:view 게이팅 mismatch | **ESCALATE→FIXED** — 사용자 결정=이번 스코프 수정(D13) |
 | 6 | R3 | high | 서버가 여전히 무제한 조회 허용(클라 규율 의존) | **FIXED** — 서버 range 계약 강제; 엔드포인트 메커니즘 **DEFERRED_TO_IMPL**(D5) |
 | 7 | R3 | medium | nav 게이팅 실재 defect(민원 외주 role 확인) | **FIXED**(D13, #5와 동일 계열 — 사용자 결정으로 종결) |
-| 8 | R4 | high | OWNER가 `isOwner` short-circuit로 미준비 client kind 생성 가능(rollback 노출) | **ACCEPTED**(사용자 결정=수준 B) — client kind **예약 생성을 의도적으로 허용**. codex가 제안한 allow-list 차단은 채택 안 함. rollback version-skew는 §7 preflight(신규 kind task 부재 확인)+단일 인스턴스+cutover 2-phase로 관리. 근거: 예약 편의 > 드문 rollback 수동 비용 |
+| 8 | R4 | high | OWNER가 `isOwner` short-circuit로 미준비 client kind 생성 가능(rollback 노출) | **ACCEPTED**(사용자 결정=수준 B) — client kind **예약 생성을 의도적으로 허용**. 제안된 allow-list 차단은 채택 안 함. rollback version-skew는 §7 preflight(신규 kind task 부재 확인)+단일 인스턴스+cutover 2-phase로 관리. 근거: 예약 편의 > 드문 rollback 수동 비용 |
 | 9 | R4 | medium | half-open `[start,end)` + `scheduledAt<end`인데 endKey=마지막일 → 마지막 그리드일 누락 | **FIXED** — exclusive end 전달(D5·§4.1) + 경계 테스트 |
 | 10 | R5 | high | `db:seed` bootstrap이 빈 role만 채움 → 기존 role에 `workflows:view` 미부여, nav flip 시 메뉴 상실 | **FIXED** — upgrade-once reconcile을 nav flip 전 실행(§7) + 기존설치 검증. **max 도달로 확인 라운드 없음**(billing-ui N6 검증된 패턴이라 위험 낮음) |
 
