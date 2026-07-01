@@ -153,10 +153,11 @@ onQuickAdd = canCreateAny ? (dateKey) => openCreate(dateKey) : undefined
 1. `prisma migrate deploy`(additive enum) → `prisma generate`
 2. `db:seed`(WorkflowType 2행·신규 permission catalog[`workflows:view` 포함]·nav는 편집보존이라 기존 행 미갱신). **주의: `db:seed`의 `ROLE_ALLOW` bootstrap은 role 권한이 빈 경우에만 적용** → `seed-roles.ts` 편집만으로는 **기존 role에 `workflows:view`가 부여되지 않음**.
 3. **`workflows:view` upgrade-once 멱등 스크립트**(billing-ui N6·leave-notification-toggle 패턴): 기존 role 중 임의 `workflows.<kind>:view` 보유자에게 `workflows:view`를 **reconcile 부여**. **role뿐 아니라 kind-view를 scope="all" ALLOW `UserPermissionOverride`로만 가진 사용자도 집계 override로 승격**(유효권한이 role+override라 override-only viewer가 nav flip 후 메뉴를 잃는 것 방지 — 접근제어 규칙①, R2·F1). **nav flip보다 먼저 실행**(안 그러면 기존 notification/billing-only role/override 보유자가 메뉴를 잃음).
+3b. **client kind 권한 upgrade-once 멱등 스크립트**(R3·F1, billing-create-upgrade 패턴): `bootstrap`이 기존 role을 스킵하므로 `ROLE_ALLOW`에 추가한 client kind 권한이 기존 DB에 안 닿는다 → **client `:view`(`weeklyClient`/`monthlyClient`)를 `workflows.weekly:view` 보유 role에**, **client `:create`를 `pm`에** reconcile(fresh install과 동일 결과). 안 하면 기존 설치에서 client kind가 OWNER 외엔 보이지도 예약되지도 않음.
 4. **nav 멱등 업데이트 1회**(D11·D13): `workflows`·`workflows-list` 행의 **label("업무 목록"→"캘린더") + requiredPermission(→`workflows:view`)** 교정.
 5. build → `pm2 restart`.
 
-smoke: `/workflows` 캘린더 렌더, 생성 모달 유형 목록, `/api/workflows?start=…&end=…` 200(인증), **notification-only role(예: 민원 외주) 로그인 시 Workflows 메뉴 노출**(기존 설치 검증 — fresh seed만으론 불충분).
+smoke: `/workflows` 캘린더 렌더, 생성 모달 유형 목록, `/api/workflows?start=…&end=…` 200(인증), **notification-only role(예: 민원 외주) 로그인 시 Workflows 메뉴 노출**(기존 설치 검증 — fresh seed만으론 불충분), **기존 설치의 developer/pm role이 캘린더에서 client kind(주간/월간보고 고객사)를 조회·예약**(3b reconcile 검증).
 
 **rollback/backout(R2·F2 / R4·F1 ACCEPTED)**: additive enum은 **forward-safe**이나 **rollback은 자동 안전하지 않음** — 구버전 코드는 신규 enum 값에 대해 `KIND_RESOURCE`/`TRANSITIONS`가 미정의라, 신규 kind task가 존재하면 상세/전이에서 실패(version-skew). **수준 B에선 client kind task가 실제로 생길 수 있으므로**(예약 허용) 이 리스크를 **ACCEPTED**하고 절차로 관리: (1) ops-hub dev는 **단일 pm2 인스턴스**(rolling 아님)라 동시 version-skew 없음, (2) **rollback preflight = 신규 kind(`WEEKLY_REPORT_CLIENT`/`MONTHLY_REPORT_CLIENT`) task 부재 확인** — 존재 시 정리/보류 후 되돌림, (3) 운영 cutover 다중 인스턴스 시 "신규 enum 허용 코드 선배포 → 이후 노출" 2-phase. 근거: 사용자가 수준 B(예약 허용)를 선택 — 예약 편의 > 드문 rollback의 수동 preflight 비용.
 

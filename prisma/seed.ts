@@ -10,6 +10,7 @@ import { applyLeaveNotificationsPermissionUpgrade } from "./migrate-helpers/leav
 import { applyBillingPermissionUpgrade } from "./migrate-helpers/billing-upgrade";
 import { applyBillingCreatePermissionUpgrade } from "./migrate-helpers/billing-create-upgrade";
 import { applyWorkflowsViewUpgrade } from "./migrate-helpers/workflows-view-upgrade";
+import { applyWorkflowsClientKindsUpgrade } from "./migrate-helpers/workflows-client-kinds-upgrade";
 import { applyWorkflowsNavReconcile } from "./migrate-helpers/workflows-nav-reconcile";
 import { bootstrapRolePermissions } from "./migrate-helpers/roles-bootstrap";
 import { planGoogleSources } from "./seed-google";
@@ -81,6 +82,10 @@ async function main() {
   //     nav flip(5b)보다 **먼저** 실행(안 그러면 기존 notification/billing-only role이 메뉴 상실, R5·F1).
   const workflowsKindViewKeys = Object.values(KIND_RESOURCE).map((r) => `${r}:view`);
   await prisma.$transaction((tx) => applyWorkflowsViewUpgrade(tx, permissionIdByKey, workflowsKindViewKeys));
+
+  // 3f-2. 업그레이드-once(R3·F1) — 기존 DB에 신규 client kind view/create를 reconcile(fresh ROLE_ALLOW와 동일 결과).
+  //       bootstrap이 기존 role을 스킵하므로 client kind가 OWNER 외엔 보이지도 예약되지도 않는 divergence 해소.
+  await prisma.$transaction((tx) => applyWorkflowsClientKindsUpgrade(tx, roleIdByKey, permissionIdByKey));
 
   // 3e. WorkflowType(BILLING) — kind 기준 upsert(J3). seed-demo가 id="wf-billing"으로 만든 행과 kind 충돌 없이
   //     templatePath/name/recurrence를 신규 저장소 규약(Template/대금청구)으로 정규화한다.
