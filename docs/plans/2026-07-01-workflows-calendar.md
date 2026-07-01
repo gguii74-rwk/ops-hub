@@ -189,3 +189,15 @@ const { data, isError } = useQuery(...);        // isError 구독
 표준 restart(forward-safe, D12). 순서: `prisma migrate deploy`(additive enum) → `prisma generate` → `db:seed`(WorkflowType·신규 permission catalog[`workflows:view`]·**`applyWorkflowsViewUpgrade` grant → seedNavigation → `applyWorkflowsNavReconcile` flip** 순) → build → `pm2 restart`. smoke: `/workflows` 캘린더 렌더, 생성 모달 유형 목록, `/api/workflows/calendar?start=…&end=…` 200(인증), **notification-only role(민원 외주) 로그인 시 Workflows 메뉴 노출**(기존 설치 검증 — fresh seed만으론 불충분).
 
 rollback preflight(R4·F1 ACCEPTED): 신규 kind(`WEEKLY_REPORT_CLIENT`/`MONTHLY_REPORT_CLIENT`) task 부재 확인 후 되돌림(구버전 코드는 신규 enum에 `KIND_RESOURCE`/`TRANSITIONS` 미정의 → version-skew). ops-hub dev=단일 pm2라 동시 skew 없음.
+
+## Plan 적대검증 ledger (plan 단계 — 3회, approve로 종결)
+
+blocking score 추세: iter1=3(high 1) → iter2=0(미판정) → iter3=0. verdict: needs-attention → needs-attention → **approve**(No material findings). 미판정 blocking 0.
+
+| # | round | sev | finding | disposition |
+|---|---|---|---|---|
+| 1 | iter1 | high | task-05 `canCreateAny`가 `useCan() \|\| useCan()…` OR 체인 → short-circuit으로 렌더마다 hook(`useContext`) 호출 수 가변 = Rules of Hooks 위반 + `react-hooks/rules-of-hooks` lint 실패(AC "lint 통과"와 모순) | **FIXED** — 5종 각각 const 무조건 호출 후 boolean OR(task-05). iter2에서 사라짐 확인 |
+| 2 | iter2 | high | 신규 enum task 생성 후 main rollback 시 구버전 코드가 `KIND_RESOURCE`/`TRANSITIONS` 미정의로 상세/전이 실패(version-skew) | **DUPLICATE** — spec §7 + spec ledger #8(R2·F2/R4·F1)에서 이미 **ACCEPTED**(사용자 결정=수준 B, codex의 feature-flag/allow-list 제안 거부, 수동 preflight+단일 pm2+cutover 2-phase로 관리). 재수정 금지 |
+| 3 | iter2 | medium | 캘린더 조회 실패(400/500/네트워크)를 `data?.items ?? []`로 조용히 빈 캘린더 위장(silent failure — 누락·중복 등록 위험) | **FIXED** — 사용자 결정=**전 캘린더 통일**. SC-13(정본=`calendar-view` line 125) + task-05 `workflows-calendar` `isError` 배너 + task-07 `leave-calendar` `isError` 배너. iter3에서 사라짐 확인 |
+
+**DEFERRED_TO_IMPL / OUT_OF_SCOPE**: 없음(에러상태 통일을 deferral이 아닌 task-07로 편입 — plan 내 해소). impl 진입 전 미해소 blocking 0.
