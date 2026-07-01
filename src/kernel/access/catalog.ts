@@ -38,10 +38,10 @@ export const NAV: readonly NavEntry[] = [
   { key: "dashboard", label: "대시보드", href: "/dashboard", permission: "dashboard:view" },
   { key: "calendar", label: "캘린더", href: "/calendar", permission: "calendar.work:view" },
   {
-    key: "workflows", label: "업무", href: "/workflows", permission: "workflows.weekly:view",
+    key: "workflows", label: "업무", href: "/workflows", permission: "workflows:view",
     children: [
-      // index 자식: 부모(업무) 클릭 시 업무 목록으로(leave-dashboard 패턴). 자식 추가로 부모가 accordion이 되어도 목록 도달 보존.
-      { key: "workflows-list", label: "업무 목록", href: "/workflows", permission: "workflows.weekly:view" },
+      // index 자식: 부모(업무) 클릭 시 캘린더로. label rename(D11)·게이팅=집계 workflows:view(D13).
+      { key: "workflows-list", label: "캘린더", href: "/workflows", permission: "workflows:view" },
       { key: "workflows-billing-settings", label: "대금청구 설정", href: "/workflows/billing/settings", permission: "workflows.billing:configure" },
     ],
   },

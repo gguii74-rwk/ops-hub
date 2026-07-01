@@ -222,6 +222,8 @@ const knownProtected = new Set<string>([
   // download API (task-11) — auth()→getPermissionSummary→workflows.billing:view 게이트(service 내부)
   "/api/workflows/[id]/download",
   "/api/workflows/[id]/files/[fileId]",
+  // calendar API (workflows-calendar task-03) — auth()→getPermissionSummary 게이트, allowedKinds로 필터
+  "/api/workflows/calendar",
 ]);
 
 beforeEach(() => {

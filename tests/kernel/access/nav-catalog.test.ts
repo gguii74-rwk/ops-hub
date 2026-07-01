@@ -46,12 +46,12 @@ describe("NAV 카탈로그 트리 구조", () => {
     walk(NAV);
   });
 
-  it("업무(workflows) 자식 2개 — 업무 목록(index)·대금청구 설정", () => {
+  it("업무(workflows) 자식 2개 — 캘린더(index)·대금청구 설정, 게이팅=집계 workflows:view", () => {
     const wf = byKey(NAV, "workflows");
     expect(wf.href).toBe("/workflows");
-    expect(wf.permission).toBe("workflows.weekly:view");
+    expect(wf.permission).toBe("workflows:view");
     expect((wf.children ?? []).map((c) => [c.key, c.href, c.permission])).toEqual([
-      ["workflows-list", "/workflows", "workflows.weekly:view"],
+      ["workflows-list", "/workflows", "workflows:view"],
       ["workflows-billing-settings", "/workflows/billing/settings", "workflows.billing:configure"],
     ]);
   });

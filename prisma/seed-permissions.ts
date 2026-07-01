@@ -5,6 +5,7 @@ export const EXTRA_PERMISSIONS: Array<[string, string]> = [
   ["workflows.billing", "create"], ["workflows.billing", "generate"], ["workflows.billing", "send"],
   ["workflows.billing", "configure"],
   ["workflows.notification", "create"], ["workflows.notification", "send"],
+  ["workflows.weeklyClient", "create"], ["workflows.monthlyClient", "create"],
   ["leave.request", "create"],
   ["leave.request", "cancel"],
   ["leave.request", "update"],
