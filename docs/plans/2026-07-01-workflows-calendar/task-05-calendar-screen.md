@@ -21,7 +21,7 @@
 ## Cautions
 - **Don't `selectedKind`를 queryKey/서버에 넣지 마라.** kind 필터는 **클라 필터**(응답 `kind` 사용). 서버 재조회 없음(D5).
 - **Don't `winEnd-1`을 보내지 마라.** `end = winEnd`(exclusive) 그대로 — `scheduledAt<end`가 마지막 그리드 셀 포함(R4·F2). 연차의 inclusive-key(`winEnd-1`) 방식과 **다름**.
-- **Don't `useCan`을 조건/루프에서 호출하지 마라.** `canCreateAny`는 5종 고정 호출의 OR.
+- **Don't `useCan`을 조건/루프/`||`·`&&` 체인 우변에서 호출하지 마라.** `useCan`은 `useContext`를 부르는 hook이라 `useCan()||useCan()`은 short-circuit으로 렌더마다 hook 호출 수가 달라져 Rules of Hooks 위반(+`react-hooks/rules-of-hooks` lint 실패). 5종을 **각각 const로 무조건 호출**한 뒤 그 boolean들을 OR해 `canCreateAny`를 만든다(테스트 mock은 `useCan`을 일반 함수로 대체해 이 실패를 못 잡으므로 lint로 방어).
 - **Don't `CalendarMonth`의 토글 `legend` prop을 쓰지 마라.** 필터는 별도 버튼(D6). 정적 색 범례만 별도 렌더.
 - **Don't `workflows-list.tsx` 제거를 빠뜨리지 마라.** spec 비포함: 목록 뷰 완전 교체(내 변경이 만든 orphan). import 소비처(page.tsx)도 함께 전환.
 - **Don't ui 프리미티브를 `CalendarMonth`(module)에 넘기지 마라** — 팝오버는 CalendarMonth 내장(module→ui 금지). 페이지·모달에서만 `@/components/ui/*` 사용.
@@ -226,13 +226,16 @@ export function WorkflowsCalendar() {
   const [selectedKind, setSelectedKind] = useState<"ALL" | WorkflowKind>("ALL"); // 클라 필터(재조회 없음)
   const [creating, setCreating] = useState<string | null>(null); // 생성 모달 defaultDate(null=닫힘)
 
-  // 5종 중 하나라도 create면 빠른추가/새작업 노출. useCan 고정 호출(react-hooks 규칙).
+  // 5종 create 권한을 각각 무조건 호출(hook 순서 고정 — react-hooks 규칙). OR는 boolean 값끼리 결합.
+  // 주의: `useCan(...) || useCan(...)`처럼 hook을 || 체인 우변에 두면 short-circuit으로 렌더마다
+  // hook(useContext) 호출 수가 달라져 Rules of Hooks 위반 + react-hooks/rules-of-hooks lint 실패.
+  const canCreateBilling = useCan("workflows.billing", "create");
+  const canCreateNotification = useCan("workflows.notification", "create");
+  const canCreateWeekly = useCan("workflows.weekly", "create");
+  const canCreateWeeklyClient = useCan("workflows.weeklyClient", "create");
+  const canCreateMonthlyClient = useCan("workflows.monthlyClient", "create");
   const canCreateAny =
-    useCan("workflows.billing", "create") ||
-    useCan("workflows.notification", "create") ||
-    useCan("workflows.weekly", "create") ||
-    useCan("workflows.weeklyClient", "create") ||
-    useCan("workflows.monthlyClient", "create");
+    canCreateBilling || canCreateNotification || canCreateWeekly || canCreateWeeklyClient || canCreateMonthlyClient;
 
   const anchor = new Date(Date.UTC(cursor.y, cursor.m, 15, 3, 0, 0));
   // 표시 42칸 그리드 전체를 패칭. end=winEnd(exclusive, 마지막 셀 다음날) — scheduledAt<end가 마지막 셀 포함(R4·F2).
@@ -407,7 +410,7 @@ npm run typecheck && npm run lint && npm test
 
 ## Acceptance Criteria
 - `npm run typecheck` → 통과.
-- `npm run lint` → 통과(boundaries — 캘린더가 `CalendarMonth`만 소비, 페이지/모달만 ui).
+- `npm run lint` → 통과(boundaries — 캘린더가 `CalendarMonth`만 소비, 페이지/모달만 ui; **react-hooks/rules-of-hooks — `useCan`을 `||` 체인에 직접 두지 않고 5종 각각 const 호출 후 boolean OR로 `canCreateAny` 구성**).
 - `npm test -- tests/app/workflows/workflows-calendar.test.tsx` → 통과.
 - `npm test`(전체) → 통과(제거된 `workflows-list.test.tsx` 부재로 회귀 없음).
 - `grep -rn "workflows-list\|WorkflowsList" src tests` → 결과 없음.
