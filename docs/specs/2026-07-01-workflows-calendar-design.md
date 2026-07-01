@@ -159,3 +159,26 @@ onQuickAdd = canCreateAny ? (dateKey) => openCreate(dateKey) : undefined
 smoke: `/workflows` 캘린더 렌더, 생성 모달 유형 목록, `/api/workflows?start=…&end=…` 200(인증), **notification-only role(예: 민원 외주) 로그인 시 Workflows 메뉴 노출**(기존 설치 검증 — fresh seed만으론 불충분).
 
 **rollback/backout(R2·F2)**: additive enum은 **forward-safe**이나 **rollback은 자동 안전하지 않음** — 구버전 코드는 신규 enum 값에 대해 `KIND_RESOURCE`/`TRANSITIONS`가 미정의라, 신규 kind task가 이미 존재하면 상세/전이에서 실패(version-skew). 완화: (1) client kind는 `CREATABLE_WORKFLOW_KINDS` allow-list 제외로 **OWNER 포함 전원 생성 불가**(R4·F1) → 신규 kind task가 **아예 생성되지 않음**(rollback 노출 원천 차단), (2) ops-hub dev는 **단일 pm2 인스턴스**(rolling 아님)라 동시 version-skew 없음, (3) 그래도 rollback preflight로 **신규 kind task 부재 확인**(방어적). 운영 cutover 다중 인스턴스 시엔 "신규 enum 허용 코드 선배포 → 이후 grant/생성 노출" 2-phase 적용.
+
+## 8. 적대검증 ledger (spec 단계 — 5회, max 도달로 종결)
+
+blocking score 추세: R1=2 → R2=5 → R3=4 → R4=4 → R5=3. 모든 critical/high/medium을 판정으로 닫음(미판정 blocking 0).
+
+| # | round | sev | finding | disposition |
+|---|---|---|---|---|
+| 1 | R1 | medium | 조회 allow-list(`ALL_KINDS`·page `KINDS`)가 typecheck 미보호 → 신규 kind 누락 | **FIXED** — `Object.keys(KIND_RESOURCE)` 단일 출처(§4.5) + 회귀 테스트 |
+| 2 | R1 | medium | 캘린더 fetch가 빈 `?start&end` → 무제한 조회 | **FIXED** — 값 명시 + (R3에서 서버 강제로 격상) |
+| 3 | R2 | high | client kind UI만 숨기고 서버 create 미차단(규칙① 위반) | **FIXED** — view-only grant → (R4에서 allow-list로 완결) |
+| 4 | R2 | medium | enum additive를 rollback-safe로 오기재 | **FIXED** — §7 backout 노트(R4에서 강화) |
+| 5 | R2 | medium | nav weekly:view 게이팅 mismatch | **ESCALATE→FIXED** — 사용자 결정=이번 스코프 수정(D13) |
+| 6 | R3 | high | 서버가 여전히 무제한 조회 허용(클라 규율 의존) | **FIXED** — 서버 range 계약 강제; 엔드포인트 메커니즘 **DEFERRED_TO_IMPL**(D5) |
+| 7 | R3 | medium | nav 게이팅 실재 defect(민원 외주 role 확인) | **FIXED**(D13, #5와 동일 계열 — 사용자 결정으로 종결) |
+| 8 | R4 | high | OWNER가 `isOwner` short-circuit로 미준비 client kind 생성 가능(rollback 노출) | **FIXED** — `CREATABLE_WORKFLOW_KINDS` allow-list(OWNER 포함 전원 차단, §4.5) + OWNER 회귀 테스트 |
+| 9 | R4 | medium | half-open `[start,end)` + `scheduledAt<end`인데 endKey=마지막일 → 마지막 그리드일 누락 | **FIXED** — exclusive end 전달(D5·§4.1) + 경계 테스트 |
+| 10 | R5 | high | `db:seed` bootstrap이 빈 role만 채움 → 기존 role에 `workflows:view` 미부여, nav flip 시 메뉴 상실 | **FIXED** — upgrade-once reconcile을 nav flip 전 실행(§7) + 기존설치 검증. **max 도달로 확인 라운드 없음**(billing-ui N6 검증된 패턴이라 위험 낮음) |
+
+**DEFERRED_TO_IMPL(plan AC/테스트로 연결)**:
+- 서버 range 강제 **메커니즘 확정**(기존 `/api/workflows` GET에 검증 추가 vs 전용 `/api/workflows/calendar` 신설). §6의 서버 range 계약·half-open 경계 테스트를 plan의 acceptance criteria로 편입.
+- `workflows:view` upgrade-once 스크립트 구현(migrate-helpers 패턴) + 기존설치 nav 노출 smoke.
+
+**사용자 확인 대기 1건**: `CREATABLE_WORKFLOW_KINDS`가 client kind를 **전원(OWNER 포함) 생성 차단** — Q2(드롭다운 3종)와 정합하나 Q1 옵션 설명의 "예약 등록 가능"과 미세 긴장. client kind를 지금은 **일정 예약도 불가한 순수 필터 카테고리**로 두는 게 맞는지 확인 필요(아니면 예약만 허용하도록 조정).
