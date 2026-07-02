@@ -71,9 +71,9 @@ describe("findTaskDetail", () => {
   it("type·files·mail·events를 평탄화해 반환", async () => {
     h.ret.findUnique = {
       id: "t1", scheduledAt: new Date("2026-06-12"), status: "GENERATED", createdById: "u1", outputPath: null,
-      type: { kind: "WEEKLY_REPORT", name: "주간보고" },
+      type: { kind: "WEEKLY_REPORT", name: "주간보고", defaultRecipients: { "1": { to: ["a@x"], cc: [], bcc: [] } } },
       files: [{ id: "f1", path: "/o/a.xlsx", displayName: "a.xlsx", mimeType: null, sizeBytes: 10n, createdAt: new Date("2026-06-12") }],
-      mailDeliveries: [{ id: "m1", step: "send", recipients: ["a@x"], subject: "s", status: "SENT", errorMessage: null, providerMessageId: "pm1", sentAt: new Date("2026-06-12") }],
+      mailDeliveries: [{ id: "m1", step: "send", recipients: ["a@x"], cc: ["c@x"], bcc: null, subject: "s", status: "SENT", errorMessage: null, providerMessageId: "pm1", sentAt: new Date("2026-06-12") }],
       events: [{ id: "e1", fromStatus: null, toStatus: "PENDING", actorId: "u1", note: null, occurredAt: new Date("2026-06-12") }],
     };
     const out = await findTaskDetail("t1");
@@ -82,6 +82,10 @@ describe("findTaskDetail", () => {
     expect(out?.files[0].id).toBe("f1");
     expect(out?.mailDeliveries[0].status).toBe("SENT");
     expect(out?.events[0].toStatus).toBe("PENDING");
+    expect(out?.mailDeliveries[0].cc).toEqual(["c@x"]);
+    expect(out?.mailDeliveries[0].bcc).toBeNull();
+    expect(out?.defaultRecipients).toEqual({ "1": { to: ["a@x"], cc: [], bcc: [] } });
+    expect("recipients" in (out as object)).toBe(false); // D5 — 死필드 select 제거
   });
 });
 
