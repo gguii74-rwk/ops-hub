@@ -23,6 +23,7 @@
 ## Cautions
 - **Don't PATCH가 email 필드를 허용·무시(strip)하게 하지 마라.** Reason: D15 — email 불변. `z.strictObject`로 email 포함 body는 400(조용한 무시는 "고쳤다고 오인" 경로).
 - **Don't 게이트를 둘 중 하나만 검사하지 마라.** Reason: D6 — 교집합(∧). 읽기(GET)도 동일 게이트.
+- **Don't 권한 게이트를 라우트에만 두지 마라.** Reason: R3 medium — 서비스가 강제해야(전 함수 첫 인자 userId + `requireManageMailRecipients`) 후속 서버 컴포넌트/라우트가 서비스를 직접 재사용해도 fail-closed(billing config 서비스와 동일한 단일 권위 패턴).
 - **Don't D7 파생 밖 kind/step을 저장하지 마라.** Reason: 소비처 없는 死설정 재생산. kind 400·step 400.
 - **Don't PUT에서 부분 step body를 허용하지 마라.** Reason: 전체 교체(§4.3) 계약에서 누락 step은 다른 단계 세트를 조용히 지운다(R1 high) — step 키 집합이 파생과 정확 일치해야 통과.
 - **Don't 주소록 삭제 시 세트에서 email을 제거하지 마라.** Reason: D12 — 주소록은 식별 보조(참조 무결성 대상 아님). 세트 잔존 email 유효.
@@ -54,12 +55,15 @@ export const recipientSetPutSchema = z.record(z.string(), recipientFieldsSchema)
 
 ### 2. repository + service — 실패 테스트 먼저
 
-`tests/modules/workflows/mail-recipients-service.test.ts` 생성(레포를 mock — 게이트는 라우트 테스트에서):
+`tests/modules/workflows/mail-recipients-service.test.ts` 생성(레포를 mock, **게이트도 서비스 단위에서 검증** — R3):
 
 ```ts
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-vi.mock("@/kernel/access", () => ({ hasPermission: vi.fn(async () => true) }));
+vi.mock("@/kernel/access", () => ({
+  hasPermission: vi.fn(async () => true),
+  ForbiddenError: class ForbiddenError extends Error { constructor(m?: string) { super(m); this.name = "ForbiddenError"; } },
+}));
 vi.mock("@/modules/workflows/repositories/mail-recipients", () => ({
   listContacts: vi.fn(async () => []),
   createContact: vi.fn(),
@@ -70,28 +74,43 @@ vi.mock("@/modules/workflows/repositories/mail-recipients", () => ({
   updateDefaultRecipientsByKind: vi.fn(async () => true),
 }));
 
+import { hasPermission, ForbiddenError } from "@/kernel/access";
 import * as repo from "@/modules/workflows/repositories/mail-recipients";
 import {
-  addMailContact, editMailContact, getRecipientSets, saveRecipientSet,
+  addMailContact, editMailContact, getRecipientSets, listMailContacts, saveRecipientSet,
 } from "@/modules/workflows/services/mail-recipients";
 
 const m = repo as unknown as Record<string, ReturnType<typeof vi.fn>>;
+const perm = hasPermission as unknown as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  perm.mockResolvedValue(true);
   m.findDefaultRecipientsByKind.mockResolvedValue(null);
   m.updateDefaultRecipientsByKind.mockResolvedValue(true);
+});
+
+describe("서비스 권한 강제(R3 — 라우트 규율에 미의존, D6 교집합)", () => {
+  it("교집합 중 하나라도 결여면 ForbiddenError·레포 미호출(fail-closed)", async () => {
+    perm.mockImplementation(async (_u: string, resource: string) => resource !== "workflows.mail");
+    await expect(listMailContacts("u1")).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(addMailContact("u1", { email: "a@x.com", name: "홍" })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(saveRecipientSet("u1", "BILLING", {})).rejects.toBeInstanceOf(ForbiddenError);
+    expect(m.listContacts).not.toHaveBeenCalled();
+    expect(m.createContact).not.toHaveBeenCalled();
+    expect(m.updateDefaultRecipientsByKind).not.toHaveBeenCalled();
+  });
 });
 
 describe("addMailContact / editMailContact", () => {
   it("email은 trim+소문자로 정규화 저장(D2), memo 공백은 null", async () => {
     m.createContact.mockResolvedValue({ id: "c1", email: "a@x.com", name: "홍길동", memo: null });
-    await addMailContact({ email: " A@X.com ", name: " 홍길동 ", memo: "  " });
+    await addMailContact("u1", { email: " A@X.com ", name: " 홍길동 ", memo: "  " });
     expect(m.createContact).toHaveBeenCalledWith({ email: "a@x.com", name: "홍길동", memo: null });
   });
   it("수정은 name·memo만 레포에 전달(D15 — email 인자 자체가 없음)", async () => {
     m.updateContactNameMemo.mockResolvedValue({ id: "c1", email: "a@x.com", name: "김철수", memo: "회계" });
-    await editMailContact("c1", { name: "김철수", memo: "회계" });
+    await editMailContact("u1", "c1", { name: "김철수", memo: "회계" });
     expect(m.updateContactNameMemo).toHaveBeenCalledWith("c1", { name: "김철수", memo: "회계" });
   });
 });
@@ -99,7 +118,7 @@ describe("addMailContact / editMailContact", () => {
 describe("getRecipientSets (D7 파생)", () => {
   it("mailRecipientKinds만 — BILLING steps ['1','2'], 미저장 step은 빈 필드", async () => {
     m.findDefaultRecipientsByKind.mockResolvedValue({ "1": { to: ["a@x.com"], cc: [], bcc: [] } });
-    const sets = await getRecipientSets();
+    const sets = await getRecipientSets("u1");
     expect(sets).toHaveLength(1);
     expect(sets[0]).toEqual({
       kind: "BILLING",
@@ -114,7 +133,7 @@ describe("getRecipientSets (D7 파생)", () => {
 
 describe("saveRecipientSet", () => {
   it("필드별 trim·소문자·dedup 정규화 후 전체 교체 저장(§3)", async () => {
-    const out = await saveRecipientSet("BILLING", {
+    const out = await saveRecipientSet("u1", "BILLING", {
       "1": { to: [" A@X.com ", "a@x.com"], cc: ["B@x.com"], bcc: [] },
     });
     expect(m.updateDefaultRecipientsByKind).toHaveBeenCalledWith("BILLING", {
@@ -124,7 +143,7 @@ describe("saveRecipientSet", () => {
   });
   it("WorkflowType 행 없으면 null(라우트 404)", async () => {
     m.updateDefaultRecipientsByKind.mockResolvedValue(false);
-    expect(await saveRecipientSet("BILLING", {})).toBeNull();
+    expect(await saveRecipientSet("u1", "BILLING", {})).toBeNull();
   });
 });
 ```
@@ -216,7 +235,7 @@ export async function updateDefaultRecipientsByKind(kind: WorkflowKind, map: Def
 ```ts
 import "server-only";
 import type { WorkflowKind } from "@prisma/client";
-import { hasPermission } from "@/kernel/access";
+import { ForbiddenError, hasPermission } from "@/kernel/access";
 import { mailRecipientKinds, sendStepsForKind } from "../policy";
 import { normalizeStoredEmails, type DefaultRecipientsMap, type RecipientFields } from "../recipients";
 import {
@@ -224,8 +243,8 @@ import {
   findDefaultRecipientsByKind, updateDefaultRecipientsByKind,
 } from "../repositories/mail-recipients";
 
-// D6: 관리 읽기·쓰기 동일 교집합 게이트. 관리 페이지(서버 게이트)와 API 라우트가 이 헬퍼로
-// 같은 키를 공유한다(접근제어 규칙①). OWNER는 hasPermission이 자동 허용. 둘 중 하나라도 없으면 거부(fail-closed).
+// D6: 관리 읽기·쓰기 동일 교집합 게이트. OWNER는 hasPermission이 자동 허용. 둘 중 하나라도 없으면 거부(fail-closed).
+// 페이지(서버 컴포넌트)의 redirect 판단용 boolean — API 경로는 아래 require가 서비스 내부에서 강제한다.
 export async function canManageMailRecipients(userId: string): Promise<boolean> {
   return (
     (await hasPermission(userId, "admin.settings", "configure")) &&
@@ -233,14 +252,24 @@ export async function canManageMailRecipients(userId: string): Promise<boolean> 
   );
 }
 
+// 서비스가 authz 권위(billing config 등 workflows 서비스 패턴) — 라우트 규율에 의존하지 않는다.
+// 후속 서버 컴포넌트/라우트가 이 서비스를 직접 재사용해도 게이트를 우회할 수 없다(접근제어 규칙①②).
+async function requireManageMailRecipients(userId: string): Promise<void> {
+  if (!(await canManageMailRecipients(userId))) {
+    throw new ForbiddenError("메일 수신자 관리 권한이 없습니다.");
+  }
+}
+
 export interface MailContactView { id: string; email: string; name: string; memo: string | null }
 
-export async function listMailContacts(): Promise<MailContactView[]> {
+export async function listMailContacts(userId: string): Promise<MailContactView[]> {
+  await requireManageMailRecipients(userId);
   return listContacts();
 }
 
 // email은 trim+소문자로 정규화 저장(D2). 유니크 충돌은 레포가 ConflictError로 정규화 → 라우트 409.
-export async function addMailContact(input: { email: string; name: string; memo?: string }): Promise<MailContactView> {
+export async function addMailContact(userId: string, input: { email: string; name: string; memo?: string }): Promise<MailContactView> {
+  await requireManageMailRecipients(userId);
   return createContact({
     email: input.email.trim().toLowerCase(),
     name: input.name.trim(),
@@ -248,21 +277,24 @@ export async function addMailContact(input: { email: string; name: string; memo?
   });
 }
 
-export async function editMailContact(id: string, input: { name: string; memo?: string }): Promise<MailContactView | null> {
+export async function editMailContact(userId: string, id: string, input: { name: string; memo?: string }): Promise<MailContactView | null> {
+  await requireManageMailRecipients(userId);
   return updateContactNameMemo(id, {
     name: input.name.trim(),
     memo: input.memo?.trim() ? input.memo.trim() : null,
   });
 }
 
-export async function removeMailContact(id: string): Promise<boolean> {
+export async function removeMailContact(userId: string, id: string): Promise<boolean> {
+  await requireManageMailRecipients(userId);
   return deleteContactById(id); // 세트 잔존 email과 무관(D12)
 }
 
 export interface RecipientSetView { kind: WorkflowKind; steps: string[]; recipients: DefaultRecipientsMap }
 
 // D7: SEND_STEP_TRANSITION 파생 kind만 노출. 미저장 step은 빈 필드로 채워 UI가 바로 그린다.
-export async function getRecipientSets(): Promise<RecipientSetView[]> {
+export async function getRecipientSets(userId: string): Promise<RecipientSetView[]> {
+  await requireManageMailRecipients(userId);
   const out: RecipientSetView[] = [];
   for (const kind of mailRecipientKinds()) {
     const stored = (await findDefaultRecipientsByKind(kind)) ?? {};
@@ -275,7 +307,8 @@ export async function getRecipientSets(): Promise<RecipientSetView[]> {
 }
 
 // 전체 교체 저장. 필드별 trim·소문자·dedup(§3 — 주소록 조인 매칭 일관). kind·step 검증은 라우트(400).
-export async function saveRecipientSet(kind: WorkflowKind, map: Record<string, RecipientFields>): Promise<DefaultRecipientsMap | null> {
+export async function saveRecipientSet(userId: string, kind: WorkflowKind, map: Record<string, RecipientFields>): Promise<DefaultRecipientsMap | null> {
+  await requireManageMailRecipients(userId);
   const normalized: DefaultRecipientsMap = {};
   for (const [step, f] of Object.entries(map)) {
     normalized[step] = { to: normalizeStoredEmails(f.to), cc: normalizeStoredEmails(f.cc), bcc: normalizeStoredEmails(f.bcc) };
@@ -296,12 +329,11 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
   auth: vi.fn(async (): Promise<unknown> => ({ user: { id: "u1", systemRole: "MEMBER" } })),
-  canManage: vi.fn(async () => true),
-  listMailContacts: vi.fn(async () => [] as unknown[]),
+  listMailContacts: vi.fn(async (): Promise<unknown> => [] as unknown[]),
   addMailContact: vi.fn(async () => ({ id: "c1", email: "a@x.com", name: "홍", memo: null })),
   editMailContact: vi.fn(async (): Promise<unknown> => ({ id: "c1", email: "a@x.com", name: "김", memo: null })),
   removeMailContact: vi.fn(async () => true),
-  getRecipientSets: vi.fn(async () => [] as unknown[]),
+  getRecipientSets: vi.fn(async (): Promise<unknown> => [] as unknown[]),
   saveRecipientSet: vi.fn(async (): Promise<unknown> => ({})),
 }));
 vi.mock("@/lib/auth", () => ({ auth: () => h.auth() }));
@@ -310,15 +342,15 @@ vi.mock("@/kernel/access", () => ({
   ForbiddenError: class ForbiddenError extends Error { constructor(m?: string) { super(m); this.name = "ForbiddenError"; } },
 }));
 vi.mock("@/modules/workflows/services/mail-recipients", () => ({
-  canManageMailRecipients: (...a: unknown[]) => (h.canManage as (...args: unknown[]) => unknown)(...a),
-  listMailContacts: () => h.listMailContacts(),
+  listMailContacts: (...a: unknown[]) => (h.listMailContacts as (...args: unknown[]) => unknown)(...a),
   addMailContact: (...a: unknown[]) => (h.addMailContact as (...args: unknown[]) => unknown)(...a),
   editMailContact: (...a: unknown[]) => (h.editMailContact as (...args: unknown[]) => unknown)(...a),
   removeMailContact: (...a: unknown[]) => (h.removeMailContact as (...args: unknown[]) => unknown)(...a),
-  getRecipientSets: () => h.getRecipientSets(),
+  getRecipientSets: (...a: unknown[]) => (h.getRecipientSets as (...args: unknown[]) => unknown)(...a),
   saveRecipientSet: (...a: unknown[]) => (h.saveRecipientSet as (...args: unknown[]) => unknown)(...a),
 }));
 
+import { ForbiddenError } from "@/kernel/access";
 import { GET as contactsGET, POST as contactsPOST } from "@/app/api/workflows/mail/contacts/route";
 import { PATCH as contactPATCH, DELETE as contactDELETE } from "@/app/api/workflows/mail/contacts/[id]/route";
 import { GET as setsGET } from "@/app/api/workflows/mail/recipients/route";
@@ -333,31 +365,33 @@ const kindParams = (kind: string) => ({ params: Promise.resolve({ kind }) });
 beforeEach(() => {
   vi.clearAllMocks();
   h.auth.mockResolvedValue({ user: { id: "u1", systemRole: "MEMBER" } });
-  h.canManage.mockResolvedValue(true);
   h.editMailContact.mockResolvedValue({ id: "c1", email: "a@x.com", name: "김", memo: null });
   h.removeMailContact.mockResolvedValue(true);
   h.saveRecipientSet.mockResolvedValue({ "1": { to: ["a@x.com"], cc: [], bcc: [] } });
 });
 
-describe("게이트(D6 교집합 — 읽기 포함)", () => {
+describe("게이트(D6 — 서비스가 권위, 라우트는 401 + ForbiddenError→403)", () => {
   it("미인증 → 401 (전 라우트 대표로 GET contacts)", async () => {
     h.auth.mockResolvedValueOnce(null);
     expect((await contactsGET()).status).toBe(401);
   });
-  it("교집합 게이트 실패 → 403, 서비스 미호출", async () => {
-    h.canManage.mockResolvedValue(false);
+  it("서비스 권한 거부(ForbiddenError) → 403 (읽기 포함)", async () => {
+    h.listMailContacts.mockRejectedValueOnce(new ForbiddenError("forbidden"));
     expect((await contactsGET()).status).toBe(403);
+    h.getRecipientSets.mockRejectedValueOnce(new ForbiddenError("forbidden"));
     expect((await setsGET()).status).toBe(403);
-    expect(h.listMailContacts).not.toHaveBeenCalled();
-    expect(h.getRecipientSets).not.toHaveBeenCalled();
+  });
+  it("서비스에 userId가 전달된다(게이트 재료)", async () => {
+    await contactsGET();
+    expect(h.listMailContacts).toHaveBeenCalledWith("u1");
   });
 });
 
 describe("contacts CRUD", () => {
-  it("POST: 유효 입력 → 201 + 서비스 전달", async () => {
+  it("POST: 유효 입력 → 201 + 서비스 전달(userId 포함)", async () => {
     const res = await contactsPOST(req({ email: "a@x.com", name: "홍", memo: "m" }));
     expect(res.status).toBe(201);
-    expect(h.addMailContact).toHaveBeenCalledWith({ email: "a@x.com", name: "홍", memo: "m" });
+    expect(h.addMailContact).toHaveBeenCalledWith("u1", { email: "a@x.com", name: "홍", memo: "m" });
   });
   it("POST: 비이메일 → 400", async () => {
     expect((await contactsPOST(req({ email: "nope", name: "홍" }))).status).toBe(400);
@@ -390,10 +424,10 @@ describe("recipients 세트", () => {
     "1": { to: ["a@x.com"], cc: [], bcc: [] },
     "2": { to: [], cc: [], bcc: [] },
   };
-  it("PUT: D7 파생 kind·전체 step 맵 → 200 + 서비스 전달", async () => {
+  it("PUT: D7 파생 kind·전체 step 맵 → 200 + 서비스 전달(userId 포함)", async () => {
     const res = await setPUT(req(FULL, "PUT"), kindParams("BILLING"));
     expect(res.status).toBe(200);
-    expect(h.saveRecipientSet).toHaveBeenCalledWith("BILLING", FULL);
+    expect(h.saveRecipientSet).toHaveBeenCalledWith("u1", "BILLING", FULL);
   });
   it("PUT: 파생 밖 kind(WEEKLY_REPORT — 발송 step 없음) → 400", async () => {
     expect((await setPUT(req({}, "PUT"), kindParams("WEEKLY_REPORT"))).status).toBe(400);
@@ -431,28 +465,31 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { auth } from "@/lib/auth";
 import { mailContactCreateSchema } from "@/modules/workflows/validations";
-import { addMailContact, canManageMailRecipients, listMailContacts } from "@/modules/workflows/services/mail-recipients";
+import { addMailContact, listMailContacts } from "@/modules/workflows/services/mail-recipients";
 import { mapError } from "../../_shared";
 
+// 게이트는 서비스가 강제(D6 교집합, ForbiddenError) — 라우트는 401 + mapError(403/409)만.
 export async function GET() {
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-  if (!(await canManageMailRecipients(session.user.id))) return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  const contacts = await listMailContacts();
-  return NextResponse.json({ contacts }, { headers: { "Cache-Control": "no-store" } });
+  try {
+    const contacts = await listMailContacts(session.user.id);
+    return NextResponse.json({ contacts }, { headers: { "Cache-Control": "no-store" } });
+  } catch (e) {
+    return mapError(e);
+  }
 }
 
 export async function POST(req: Request) {
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-  if (!(await canManageMailRecipients(session.user.id))) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   try {
     const input = mailContactCreateSchema.parse(await req.json());
-    const contact = await addMailContact(input);
+    const contact = await addMailContact(session.user.id, input);
     return NextResponse.json({ contact }, { status: 201 });
   } catch (e) {
     if (e instanceof ZodError) return NextResponse.json({ error: "invalid", issues: e.issues }, { status: 400 });
-    return mapError(e); // ConflictError(email 유니크) → 409
+    return mapError(e); // ForbiddenError → 403, ConflictError(email 유니크) → 409
   }
 }
 ```
@@ -464,18 +501,17 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { auth } from "@/lib/auth";
 import { mailContactUpdateSchema } from "@/modules/workflows/validations";
-import { canManageMailRecipients, editMailContact, removeMailContact } from "@/modules/workflows/services/mail-recipients";
+import { editMailContact, removeMailContact } from "@/modules/workflows/services/mail-recipients";
 import { mapError } from "../../../_shared";
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-  if (!(await canManageMailRecipients(session.user.id))) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   const { id } = await params;
   try {
     // D15: email 불변 — strictObject라 email 포함 body는 ZodError → 400.
     const input = mailContactUpdateSchema.parse(await req.json());
-    const contact = await editMailContact(id, input);
+    const contact = await editMailContact(session.user.id, id, input);
     if (!contact) return NextResponse.json({ error: "not found" }, { status: 404 });
     return NextResponse.json({ contact });
   } catch (e) {
@@ -487,11 +523,14 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-  if (!(await canManageMailRecipients(session.user.id))) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   const { id } = await params;
-  const ok = await removeMailContact(id); // 세트 잔존 email 무관(D12)
-  if (!ok) return NextResponse.json({ error: "not found" }, { status: 404 });
-  return NextResponse.json({ ok: true });
+  try {
+    const ok = await removeMailContact(session.user.id, id); // 세트 잔존 email 무관(D12)
+    if (!ok) return NextResponse.json({ error: "not found" }, { status: 404 });
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    return mapError(e);
+  }
 }
 ```
 
@@ -500,14 +539,18 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
 ```ts
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { canManageMailRecipients, getRecipientSets } from "@/modules/workflows/services/mail-recipients";
+import { getRecipientSets } from "@/modules/workflows/services/mail-recipients";
+import { mapError } from "../../_shared";
 
 export async function GET() {
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-  if (!(await canManageMailRecipients(session.user.id))) return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  const sets = await getRecipientSets();
-  return NextResponse.json({ sets }, { headers: { "Cache-Control": "no-store" } });
+  try {
+    const sets = await getRecipientSets(session.user.id);
+    return NextResponse.json({ sets }, { headers: { "Cache-Control": "no-store" } });
+  } catch (e) {
+    return mapError(e);
+  }
 }
 ```
 
@@ -520,15 +563,15 @@ import type { WorkflowKind } from "@prisma/client";
 import { auth } from "@/lib/auth";
 import { mailRecipientKinds, sendStepsForKind } from "@/modules/workflows/policy";
 import { recipientSetPutSchema } from "@/modules/workflows/validations";
-import { canManageMailRecipients, saveRecipientSet } from "@/modules/workflows/services/mail-recipients";
+import { saveRecipientSet } from "@/modules/workflows/services/mail-recipients";
 import { mapError } from "../../../_shared";
 
 export async function PUT(req: Request, { params }: { params: Promise<{ kind: string }> }) {
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-  if (!(await canManageMailRecipients(session.user.id))) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   const { kind: kindRaw } = await params;
   // D7: 발송 단계가 정의된 kind만(파생 단일 출처). 그 외 kind의 세트는 소비처 없는 死설정 — 400.
+  // (kind는 공개 enum이라 게이트 전 400이어도 정보 노출 아님. 게이트는 서비스가 강제 — ForbiddenError→403.)
   if (!(mailRecipientKinds() as string[]).includes(kindRaw)) {
     return NextResponse.json({ error: "unsupported kind" }, { status: 400 });
   }
@@ -542,7 +585,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ kind: st
     if (required.some((s) => !keys.includes(s)) || keys.some((s) => !required.includes(s))) {
       return NextResponse.json({ error: `step set mismatch (required: ${required.join(",")})` }, { status: 400 });
     }
-    const recipients = await saveRecipientSet(kind, body);
+    const recipients = await saveRecipientSet(session.user.id, kind, body);
     if (!recipients) return NextResponse.json({ error: "not found" }, { status: 404 });
     return NextResponse.json({ kind, recipients });
   } catch (e) {
@@ -565,6 +608,6 @@ npm run typecheck && npm run lint && npm test -- tests/modules/workflows/mail-re
 ## Acceptance Criteria
 - `npm run typecheck` / `npm run lint` → 통과(boundaries 포함 — module→kernel import는 허용 방향).
 - 서비스·라우트 테스트 전체 통과.
-- 게이트: GET 포함 전 라우트가 D6 교집합. 게이트 실패 시 서비스 미호출.
+- 게이트: **서비스가 강제**(전 함수 첫 인자 userId, 교집합 결여 시 ForbiddenError·레포 미호출) — 라우트는 401 + mapError(403). 읽기(GET) 포함 동일 게이트.
 - PATCH: email 포함 body 400(strip 아님). PUT: 파생 밖 kind 400·step 키 집합 정확 일치(누락·초과 400). POST: 중복 email 409.
 - 저장 값: 소문자·trim·dedup 정규화(saveRecipientSet 반환 = DB 기록).
