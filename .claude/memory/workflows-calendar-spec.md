@@ -1,6 +1,6 @@
 ---
 name: workflows-calendar-spec
-description: 업무 캘린더 화면(sub-project A) spec+split plan+plan review-loop 완료(7태스크) — 구현(SDD)은 새 세션에서. D5=전용 라우트, WorkflowType prod갭 확정, SC-13 에러상태 통일
+description: 업무 캘린더 화면(sub-project A) spec+plan+SDD 구현+impl review-loop 5회(=max) 종결 → **PR #30 머지(merge commit acd1d48)+kgs-dev 배포 완료**(2026-07-02). D5=전용 라우트, WorkflowType prod갭, SC-13 통일, 이력목록 토글 복구. 다음=sub-project B(수신자 세트)
 metadata: 
   node_type: memory
   type: project
@@ -36,4 +36,15 @@ metadata:
 - **DUPLICATE**: rollback version-skew(신규 enum) 재지적 = spec R4·F1 ACCEPTED(수준 B, allow-list 차단 미채택, 수동 preflight+단일 pm2+cutover 2-phase 관리). **재수정 말 것**.
 - no-AI-trace 정리 커밋(도구명 제거, spec 176행 포함).
 
-**다음**: 단계 경계 → **새 세션에서 `superpowers:subagent-driven-development`**로 구현(01부터, 01 이후 02·03·06·07 병렬 가능→04→05). 표현계층+additive 스키마=표준 restart 배포. 관련: [[session-per-merge-workflow]] [[backend-minimal-data-principle]] [[billing-generation-storage-root-deploy-gap]] [[no-ai-trace-in-review-loop-output]]
+**SDD 구현 완료(2026-07-01, HEAD=2b6702f, impl 8커밋 de2484a..2b6702f)**: task-01~07 전부 task리뷰 Approved(Critical/Important 0), 최종 whole-branch 리뷰(opus)=**Ready to merge YES**. 게이트: typecheck/lint clean(rules-of-hooks 0)·test 1694 passed(1 사전존재 env 실패=list-with-user 무관)·build green(`/api/workflows/calendar` ƒ 등록). 최종리뷰 Minor 1 fix(2b6702f, test-only)=labels.test에 WORKFLOW_KIND_ORDER 완전성 가드(F1 마지막 손수유지 배열 drift 방지). no-AI-trace grep clean. 브랜치 그대로 유지(사용자 선택). SDD 원장=`.superpowers/sdd/progress.md`(git-ignored).
+- **배포=표준 restart**(task-01 additive enum migration 동반): prisma migrate deploy → generate → db:seed[**grant→seedNavigation→nav flip 순서**·WorkflowType 5종] → build → pm2 restart. smoke: /workflows 캘린더·생성모달·/api/workflows/calendar 200(인증)·**notification-only role(민원 외주) 메뉴 노출**(기존설치 검증, fresh seed만으론 불충분).
+
+**impl review-loop 완료(2026-07-02, 5회=max, base=98c1d9a, HEAD=8a6f246, 미판정 blocking 0)** — 5커밋(9bd192f·7523f89·d36aab9·344b1c8·8a6f246). 각 라운드 distinct 심화(churn 아님), 게이트 green(test 1713·build). ledger=spec §9. **사용자 판정(재논의 말 것)**:
+- **R1 medium→FIXED(사용자 결정=이력목록 복구)**: 캘린더 완전교체로 운영창(±12개월) 밖 과거/미래 task UI 발견 불가(감사·재다운로드). **캘린더/목록 토글** 추가(`workflows-view.tsx`), 목록은 range 없이 `GET /api/workflows`로 전체 이력(복구 `workflows-list.tsx`, 브라우징 전용·생성은 캘린더 모달 단일출처). page title "업무 캘린더"→"업무".
+- **R2 medium→FIXED**: `applyWorkflowsViewUpgrade`가 role만 승격, kind-view를 scope=all ALLOW override로만 가진 사용자 누락 → 집계 override 승격 추가(접근제어 규칙①).
+- **R3 high→FIXED**: 기존 DB에 신규 client kind view/create 미배포(bootstrap 스킵) → **`applyWorkflowsClientKindsUpgrade` 신설**(client :view=weekly:view 보유 role, :create=pm, billing-create 선례). §7 3b, nav flip 전.
+- **R4-A high→FIXED**: 위 헬퍼 driver가 scope·DENY 무관 → scope=all ALLOW ∧ role DENY 제외로 한정(getPermissionSummary 일치).
+- **R4-B medium→DUPLICATE/ACCEPTED**: enum rollback version-skew=spec R4·#8 기결정.
+- **R5 high→ACCEPTED(사용자 결정+§7 preflight)**: client :view 승격이 user weekly:view DENY override 미mirror(targeted deny 우회). 근거=D5 비민감·신규 empty·드문 시나리오·타 helper도 미mirror. 배포 preflight로 weekly:view DENY override 보유자 점검.
+
+**PR #30 머지+배포 완료(2026-07-02)**: merge commit `acd1d48`(main), origin=local 일치 확인 후 `gh api` REST merge. **kgs-dev 배포 완료**(표준 restart): git pull(98c1d9a→acd1d48) → prisma:generate(스키마 변경) → migrate deploy(`20260701000000_workflow_client_kinds` additive enum +2 적용) → db:seed(permissions=55·roles=6·nav=5, grant→seedNav→flip) → db:seed:demo → build(`/api/workflows/calendar` ƒ 등록) → pm2 restart(online). **DB 검증**: WorkflowKind enum에 WEEKLY_REPORT_CLIENT·MONTHLY_REPORT_CLIENT 반영·`workflows.weeklyClient|monthlyClient:view/create` 권한 등록·**R3 reconcile 반영**(weeklyClient:view→관리자·PM / :create→PM). **R5 preflight**: workflows `*:view` DENY override 보유자 0명 → R5 우려 이 환경 무해. **HTTP smoke green**: /login 200·/api/workflows/calendar 401·/api/calendar/feed 401(advisory·P2010 없음)·/api/leave/calendar 401. pm2 err log는 어제(07-01) billing STORAGE_ROOT 흔적뿐(조치 완료·재시작 후 신규 에러 0). 잔여=인증 후 시각 smoke(LAN 172.21.10.27:3200 수동). 관련: [[session-per-merge-workflow]] [[backend-minimal-data-principle]] [[billing-generation-storage-root-deploy-gap]] [[no-ai-trace-in-review-loop-output]] [[workflows-billing-ui-review-loop]]
