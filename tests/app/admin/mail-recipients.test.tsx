@@ -95,6 +95,16 @@ describe("주소록 CRUD", () => {
     expect(init.method).toBe("PATCH");
     expect(JSON.parse(init.body as string)).toEqual({ name: "홍길동2", memo: "고객사 A 회계" });
   });
+  it("수정 모달: 메모를 비우면 memo:\"\"를 보내 서버가 클리어(생략=보존이므로 생략 금지)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetchMock);
+    setup();
+    fireEvent.click(screen.getByRole("button", { name: "수정" }));
+    fireEvent.change(screen.getByLabelText("메모"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({ name: "홍길동", memo: "" });
+  });
   it("삭제: 2-click confirm 후 DELETE", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
     vi.stubGlobal("fetch", fetchMock);

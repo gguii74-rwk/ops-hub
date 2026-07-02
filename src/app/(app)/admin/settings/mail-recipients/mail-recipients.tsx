@@ -143,10 +143,11 @@ function EditContactModal({ contact, onClose }: { contact: ContactDto; onClose: 
     setBusy(true);
     try {
       // D15: email 불변 — body에 name·memo만(서버 strictObject가 email 포함을 400으로 거부).
+      // memo는 항상 포함 — 서버 계약이 생략=보존이라 비운 값(→null 클리어)을 전달하려면 생략하면 안 됨.
       const res = await fetch(`/api/workflows/mail/contacts/${contact.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), ...(memo.trim() ? { memo: memo.trim() } : {}) }),
+        body: JSON.stringify({ name: name.trim(), memo: memo.trim() }),
       });
       if (!res.ok) { toast.error("저장에 실패했습니다."); return; }
       toast.success("저장되었습니다.");
