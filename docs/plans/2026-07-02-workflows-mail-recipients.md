@@ -140,11 +140,14 @@ export interface TaskDetailView { …; effectiveRecipients?: EffectiveRecipients
 
 **preflight(§7 — multiSchema라 스키마 한정 필수, fail-fast)**: ① `workflows."WorkflowTask"."recipients"`·`workflows."WorkflowType"."defaultRecipients"` **non-null 행 0 증명**(D5 전제 — non-null이면 배포 중단, 값을 D3 구조로 이관/폐기 판단) ② `kernel."SystemSetting"`의 `workflows.weeklyReport.defaultRecipients` 값 확인(비어있지 않으면 수동 이관 판단). smoke: `/admin/settings/mail-recipients` 게이트(pm 200·비권한 redirect), `/api/workflows/mail/contacts` 401/403, 발송 모달 3필드 prefill, 기존 상세 이력 렌더.
 
-## Plan 적대검증 ledger (plan 단계)
+## Plan 적대검증 ledger (plan 단계 — 4R 종결, 미판정 blocking 0)
+
+blocking score 추세: R1=3(high1·medium1 중 미판정 high1) → R2=3(신규 high1) → R3=1(신규 medium1) → R4=0. verdict 추세: needs-attention ×4이나 R4 잔여는 전부 기판정(DUPLICATE·OUT_OF_SCOPE)으로 닫힘.
 
 | # | round | sev | finding (fingerprint) | disposition |
 |---|---|---|---|---|
 | 1 | R1 | high | task-06 `PUT recipients/[kind]`가 누락 step을 미검사 — 부분 body(`{"1":…}`·`{}`)가 전체 교체로 내려가 다른 단계 세트를 조용히 삭제 | **FIXED** — 라우트가 step 키 집합 = `sendStepsForKind(kind)` **정확 일치** 강제(누락·초과 400) + 부분 body 400 테스트. SC-8·task-06 반영 |
-| 2 | R1 | medium | 수신자 세트 저장이 LWW(버전/`expectedUpdatedAt` 없음) — 동시 편집 시 마지막 저장이 앞선 변경을 조용히 덮어씀 | **ACCEPTED** — ① 세트는 발송 모달 prefill **기본값**일 뿐, 실제 발송은 항상 모달 명시 envelope(D6)라 stale 세트가 곧바로 오발송이 되지 않음 ② 편집 주체 = D6 교집합 권한자(pm·OWNER 소수) ③ billing config 등 기존 도메인 관리 화면과 동일한 LWW 관례. 보완: 운영에서 충돌이 실증되면 후속으로 `WorkflowType.updatedAt` 낙관적 잠금 도입. (R2 재지목 = DUPLICATE) |
+| 2 | R1 | medium | 수신자 세트 저장이 LWW(버전/`expectedUpdatedAt` 없음) — 동시 편집 시 마지막 저장이 앞선 변경을 조용히 덮어씀 | **ACCEPTED** — ① 세트는 발송 모달 prefill **기본값**일 뿐, 실제 발송은 항상 모달 명시 envelope(D6)라 stale 세트가 곧바로 오발송이 되지 않음 ② 편집 주체 = D6 교집합 권한자(pm·OWNER 소수) ③ billing config 등 기존 도메인 관리 화면과 동일한 LWW 관례. 보완: 운영에서 충돌이 실증되면 후속으로 `WorkflowType.updatedAt` 낙관적 잠금 도입. (R2 medium·R3 high·R4 high 재지목 = **DUPLICATE** — fingerprint 4회 반복, 설계 판정으로 종결. **재논의 말 것**) |
 | 3 | R2 | high | task-04 runSend 입력 판단이 `?.length` — `recipients: []`(비운 명시 입력, `[] + cc` 포함)가 defaults로 폴백해 의도치 않은 기본 수신자 발송 | **FIXED** — 입력 여부 = 존재(`!== undefined`) 기준으로 개정: `[]`는 to 빈 거부(폴백 금지), 생략 시에만 type[step] 폴백. SC-6·task-04(구현·테스트 2케이스·Caution) 반영 |
-| 4 | R3 | medium | task-06 서비스 함수가 권한 ctx 없이 export — 라우트 전용 게이트라 후속 서버 컴포넌트/라우트가 서비스 직접 재사용 시 무권한 변경 가능 | **FIXED** — 전 서비스 함수 첫 인자 `userId` + 내부 `requireManageMailRecipients`(ForbiddenError) 강제(billing config 서비스의 단일 권위 패턴). 라우트는 401+mapError(403)로 단순화. SC-8·task-06(서비스·라우트·테스트) 반영 |
+| 4 | R3 | medium | task-06 서비스 함수가 권한 ctx 없이 export — 라우트 전용 게이트라 후속 서버 컴포넌트/라우트가 서비스 직접 재사용 시 무권한 변경 가능 | **FIXED** — 전 서비스 함수 첫 인자 `userId` + 내부 `requireManageMailRecipients`(ForbiddenError) 강제(billing config 서비스의 단일 권위 패턴). 라우트는 401+mapError(403)로 단순화. SC-8·task-06(서비스·라우트·테스트) 반영. R4에서 소멸 확정 |
+| 5 | R4 | medium | 주소록·세트 변경에 감사 로그(AuditLog) 없음 — 오발송 조사 시 변경 이력 추적 불능 | **OUT_OF_SCOPE** — spec(D1~D15, 2R 종결)에 감사 요구 없음 + 기존 relational 관리 경로(billing config·round-date CRUD)와 동일한 무감사 관례(SystemSetting `writeWithAudit`는 카탈로그 설정 전용). follow-up: relational 관리 경로(billing config·mail contacts·recipient sets) 공통 감사 로그 도입을 별도 과제로 검토 |
