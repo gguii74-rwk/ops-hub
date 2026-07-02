@@ -36,15 +36,17 @@
 | D2 | **주소록 = `MailContact` 테이블 신설**(workflows 스키마): `email` 유니크(소문자 정규화 저장) + `name` + `memo?`. 세트에는 **email 문자열만** 저장, 이름·메모는 UI가 주소록 조인 표시 | 사용자 결정(Q4): 같은 주소가 여러 세트에 들어가도 이름을 한 곳에서 수정(drift 없음). "주소가 늘어나면 누구인지 파악" 요구의 직접 구현 |
 | D3 | **기본 세트 저장 = `WorkflowType.defaultRecipients` 구조 진화**: flat `string[]` → `{ [step: string]: {to: string[], cc: string[], bcc: string[]} }`. **현재 이 컬럼은 쓰기 지점이 없어 전부 null** → 데이터 마이그레이션 불필요, 코드 타입만 교체 | 도메인 데이터가 도메인 모델에 삶. kernel `SystemSetting` 병행 저장 시 이 컬럼이 死설정으로 남음(PR #25가 잡은 문제 재생산) → 단일 거처 |
 | D4 | **`MailDelivery`에 additive `cc Json?`·`bcc Json?` 컬럼** 추가. 기존 `recipients` = **to 의미 보존** | 기존 행·소비자(`string[]` reader) 무변경. Json 재구조화(다형성)보다 additive가 명확 |
-| D5 | **발송 해석 체인 개정(I1)**: 입력(모달 명시) → `type.defaultRecipients[step]` → 거부. **`task.recipients`는 체인에서 제거, 컬럼은 보존**. **to가 비면 거부**(cc/bcc만으론 발송 불가) | `task.recipients`는 쓰기 지점이 없는 死필드(항상 null) — 체인 유지 시 구조화 타입만 복잡해짐. 컬럼 drop은 비가역 마이그레이션이라 미채택(보존, 후속 정리) |
+| D5 | **발송 해석 체인 개정(I1)**: 입력(모달 명시) → `type.defaultRecipients[step]` → 거부. **`task.recipients`는 체인에서 제거, 컬럼은 보존**. **to가 비면 거부**(cc/bcc만으론 발송 불가). 제거의 전제 "쓰기 지점 없음=항상 null"은 코드 근거이므로 **배포 preflight에서 DB로 증명**(§7 — non-null legacy 값 검사, 있으면 이관/fail-fast) | `task.recipients`는 쓰기 지점이 없는 死필드(항상 null) — 체인 유지 시 구조화 타입만 복잡해짐. 컬럼 drop은 비가역 마이그레이션이라 미채택(보존, 후속 정리) |
 | D6 | **관리 API·페이지 게이트 = `admin.settings:configure` ∧ `workflows.mail:configure` 교집합**(읽기·쓰기 동일) | 사용자 결정(Q3). 연차 알림 토글(D6 선례: 설정페이지 게이트 + 도메인 게이트)과 대칭. kind별 `:configure` sprawl(3종 추가 필요) 회피 — 단일 신설 권한 |
 | D7 | **편집 가능한 kind×step = `SEND_STEP_TRANSITION`(policy) 파생 단일 출처** — 현재 BILLING `"1"`·`"2"`만 노출·저장 허용, 그 외 kind/step은 400 | 발송이 정의되지 않은 kind의 세트는 소비처가 없는 死설정. 향후 kind에 발송 단계가 생기면 관리 화면이 자동 확장 |
 | D8 | **`effectiveRecipients` 확장**: 상세 API는 step 컨텍스트가 없으므로 **단계별 맵** `{ [step]: {to,cc,bcc} }`을 내려주고, 각 항목은 서버측 주소록 조인으로 `{email, name?}` enrich. 모달이 자기 step 것을 prefill. 기존과 동일하게 **`:send` 권한자에게만**, 해당 수신자의 이름만 노출(주소록 전체 미노출) | 발송 모달에서도 "누구인지 파악" 충족하되 backend-minimal-data 원칙 준수(서버 조인, 필요분만) |
 | D9 | **설정 진입 = catalog relational 항목**(`workflows.mail.recipients`, workflows 그룹, permission=`workflows.mail:configure`) + `manageHref: /admin/settings/mail-recipients` 전용 페이지 | 사용자 결정(Q2). 대금청구 설정(relational + manageHref)과 동일 패턴. 주소록 CRUD + 세트 편집은 인라인 편집기보다 전용 페이지가 적합 |
-| D10 | **메일 정규화 규칙(sendMail 단일 관문)**: 필드별 trim·case-insensitive dedup(첫 표기 보존, 기존 로직 확장) + **cc − to, bcc − (to ∪ cc)** 교차 제외. `MailDelivery`는 호출자 입력 그대로 기록(현행과 대칭), 전송 시점에만 정규화 | 중복 수신 방지. 단일 관문이라 모든 호출자(workflows·leave)가 일관 |
+| D10 | **메일 정규화 규칙**: 필드별 trim·case-insensitive dedup(첫 표기 보존, 기존 로직 확장) + **cc − to, bcc − (to ∪ cc)** 교차 제외. 정규화 함수는 lib이 소유·export하고 **`deliver`가 `MailDelivery` 기록 전에 적용** → **기록 = 실제 전송 envelope**(감사·재시도 원천). retry는 저장된 envelope를 그대로 재발송(정규화 멱등이라 재적용 무해). 원본 입력 별도 보존(`rawRecipients`류)은 소비처 없어 미채택 | 중복 수신 방지 + **기록≠실제 발송 불일치 차단**(기록이 감사·복구 원천인데 전송 시점만 정규화하면 이력에 남은 주소가 실제로는 제거될 수 있음). lib 단일 소유라 모든 호출자(workflows·leave) 일관 |
 | D11 | **권한 `workflows.mail:configure` 신설** — seed catalog·`RESOURCES` 추가, pm ALLOW. 기존 DB엔 **upgrade-once reconcile**(billing-create·client-kinds 선례 패턴, plan에서 헬퍼 확정) | 신설 권한은 fresh seed만으론 기존 설치에 미부여(캘린더 R3 학습). 접근제어 규칙①: 설정 카드 노출(useCan)과 API 게이트가 동일 키 |
 | D12 | **주소록 미등록 email 허용** — 세트·발송 모두. 세트 편집 화면은 "주소록 미등록" 표시만, 주소록 삭제 시 세트 잔존 email도 유효 | 주소록은 식별 보조지 참조 무결성 대상이 아님. 강제 시 발송이 주소록 관리에 종속(운영 마찰) |
 | D13 | **마이그레이션 = additive 2건**(`MailContact` 테이블, `MailDelivery` cc/bcc 컬럼) → **표준 restart 배포** | 컬럼 drop·재구조화 없음. 비가역 full-stop 불필요 |
+| D14 | **상세 이력의 bcc는 `<kind>:send` 권한자에게만 직렬화** — view-only(`<kind>:view`만 보유) 응답에서는 bcc 필드 생략. **cc는 view 허용**(수신자 전원에게 보이는 공개 헤더) | bcc는 의도적 은닉 envelope 필드 — 기존 상세 게이트(view)만으로 노출하면 민감 수신자(감사·법무 등)가 과노출. `effectiveRecipients`의 `:send` 게이트(D8)와 일관 |
+| D15 | **`MailContact.email`은 불변** — PATCH는 `name`·`memo`만. 주소 변경 = 새 contact 등록 + 구 contact 삭제 + 세트에서 직접 교체 | 세트가 email 문자열을 저장(D2)하므로 contact email만 고치면 세트가 낡은 주소로 계속 발송(운영자는 고쳤다고 오인). 불변이면 이 불일치 경로 자체가 없음 — contact id 참조 모델링(무결성 강결합)보다 D12(주소록=식별 보조)와 정합 |
 
 ## 3. 데이터 모델
 
@@ -70,30 +72,30 @@ model MailContact {
 ### 4.1 메일 lib (`src/lib/integrations/mail`)
 
 - `MailMessage`에 `cc?: string[]; bcc?: string[]` 추가. `MailTransport.sendMail` opts에 `cc?/bcc?: string` 추가.
-- `normalizeRecipients` 확장: to/cc/bcc 각각 정규화 + D10 교차 제외. **to는 비면 throw(기존), cc/bcc는 빈 결과 허용(헤더 생략)**.
+- 정규화(D10)를 **export 함수로 분리**(to/cc/bcc 각각 dedup + 교차 제외, 멱등): `deliver`가 기록 전에 쓰고, `sendMail`도 방어적으로 적용(직접 호출자 대비). **to는 비면 throw(기존), cc/bcc는 빈 결과 허용(헤더 생략)**.
 - 기존 호출자(leave 알림 등)는 cc/bcc 미지정 → 동작 불변.
 
 ### 4.2 발송 경로 (workflows services)
 
 - `runSend` 입력: `{step, subject, body, recipients(=to), cc?, bcc?}` — 기존 필드명 유지(surgical). 해석: 입력이 오면 **입력의 to/cc/bcc를 그대로**(D6 모달 명시 전송 원칙 유지), 없으면 `type.defaultRecipients[step]` 폴백(API 직접 호출 경로용), to 비면 `ConflictError`.
-- `deliver`: `createSendingDelivery`에 cc/bcc 기록, `sendMail`에 전달.
-- `retryDelivery`: 저장된 `recipients + cc + bcc`로 재발송(D4 컬럼 소비).
+- `deliver`: **D10 정규화를 먼저 적용한 뒤** `createSendingDelivery`에 기록하고 `sendMail`에 전달 — 기록 = 실제 전송 envelope.
+- `retryDelivery`: 저장된 `recipients + cc + bcc`(이미 정규화된 envelope)로 재발송(D4 컬럼 소비).
 - `resolveDelivery`: 무변경(수신자 미관여).
-- `MailView`(상세 이력): `cc: string[]; bcc: string[]` 추가(null→`[]`), UI에 참조/숨은참조 표시.
+- `MailView`(상세 이력): `cc: string[]` 추가(null→`[]`). **`bcc`는 D14 — `:send` 권한자 응답에만 포함, view-only는 필드 생략**. UI는 있는 필드만 표시.
 - `effectiveRecipients`(D8): `type.defaultRecipients`에서 파생한 단계별 맵 `{ [step]: { to: Array<{email, name?}>, cc: [...], bcc: [...] } }`. 모달이 자기 step 것을 prefill. 기존 flat `string[]` 필드는 이 구조로 대체(소비처 = 발송 모달뿐, 동시 교체).
 
 ### 4.3 관리 API (workflows routes, 게이트 = D6 교집합)
 
 - `GET /api/workflows/mail/contacts` — 주소록 목록.
 - `POST /api/workflows/mail/contacts` — `{email, name, memo?}`. email 정규화 후 유니크 충돌 409.
-- `PATCH/DELETE /api/workflows/mail/contacts/[id]` — 수정(이름·메모·email)·삭제. 삭제는 세트 잔존과 무관(D12).
+- `PATCH/DELETE /api/workflows/mail/contacts/[id]` — 수정은 **`name`·`memo`만**(D15, email 불변 — body에 email 포함 시 400). 삭제는 세트 잔존과 무관(D12).
 - `GET /api/workflows/mail/recipients` — kind별 세트 전체(D7 파생 kind×step만).
 - `PUT /api/workflows/mail/recipients/[kind]` — `{ [step]: {to,cc,bcc} }` 전체 교체 저장. kind·step이 D7 파생 밖이면 400. 이메일 zod `.email()` 검증.
 
 ### 4.4 관리 페이지 (`/admin/settings/mail-recipients`, Aurora 컨벤션)
 
 - 서버 게이트: 페이지 진입 시 D6 교집합 검사(불충족 redirect) — API와 동일 키(접근제어 규칙①).
-- **주소록 섹션**: 테이블(email·이름·메모·수정/삭제) + 추가 모달.
+- **주소록 섹션**: 테이블(email·이름·메모·수정/삭제) + 추가 모달. 수정 모달은 이름·메모만(D15 — email은 표시 전용).
 - **기본 세트 섹션**: D7 파생 kind×step 카드(현재 "대금청구 1단계/2단계") — to/cc/bcc 쉼표 구분 입력, 저장. 각 이메일 옆에 주소록 이름 배지, 미등록이면 "주소록 미등록" 표시(D12).
 - 설정 페이지 카드: catalog relational 항목으로 노출(D9) — permission에 따라 항목 자체가 숨겨짐(기존 listSettings 동작).
 
@@ -111,15 +113,16 @@ model MailContact {
 
 - 신설: `workflows.mail:configure`. seed: `RESOURCES`·permission catalog 추가, seed-roles **pm ALLOW**. 기존 DB: upgrade-once reconcile(D11, plan에서 헬퍼·순서 확정).
 - 관리 UI 노출(설정 카드·페이지)과 관리 API가 **동일 키 교집합**(D6) — deny 우선·기본 거부 유지.
-- `effectiveRecipients`·이력 cc/bcc 표시는 기존 게이트(`:send`·상세 view) 그대로.
+- `effectiveRecipients` = `:send` 게이트(기존). 상세 이력의 **bcc = `:send` 게이트로 분리**(D14), cc는 상세 view 그대로.
 
 ## 6. 테스트
 
 - **mail lib**: cc/bcc 전달, D10 정규화(필드별 dedup·교차 제외·표기 보존), to 빈 throw·cc/bcc 빈 허용, 기존 호출 형태(무 cc/bcc) 회귀.
 - **deliver/retry**: cc/bcc 기록·재발송, 기존 행(cc/bcc null) 재시도 호환.
 - **runSend**: 입력 우선·type[step] 폴백·task.recipients 미참조(D5)·to 빈 거부.
-- **관리 API**: D6 교집합 게이트(둘 중 하나 결여 시 403), D7 밖 kind/step 400, email 검증·정규화·유니크 409.
+- **관리 API**: D6 교집합 게이트(둘 중 하나 결여 시 403), D7 밖 kind/step 400, email 검증·정규화·유니크 409, **contact PATCH의 email 거부(D15)**.
 - **effectiveRecipients**: `:send` 게이트 유지, 구조·enrich(주소록 조인, 미등록 name 없음).
+- **bcc 직렬화 게이트(D14)**: `:send` 보유 응답에 bcc 포함, view-only 응답에 bcc 필드 부재.
 - **UI**: 관리 페이지(주소록 CRUD·세트 편집·이름 배지), 발송 모달(3필드 prefill·명시 전송 payload·to 빈 차단).
 - **회귀**: leave 알림 발송 무변경, 상세 이력 기존 행 표시.
 
@@ -127,9 +130,16 @@ model MailContact {
 
 표준 restart(D13): `prisma migrate deploy`(additive 2건) → `prisma:generate` → `db:seed`(신설 권한 catalog·pm grant·reconcile) → build → `pm2 restart`.
 
-- preflight: `kernel."SystemSetting"`의 `workflows.weeklyReport.defaultRecipients` 값 확인(§4.6). multiSchema 주의 — 테이블 참조는 스키마 한정 필수.
+- preflight (multiSchema 주의 — 테이블 참조는 스키마 한정 필수):
+  - `kernel."SystemSetting"`의 `workflows.weeklyReport.defaultRecipients` 값 확인(§4.6 — 비어있지 않으면 수동 이관 판단).
+  - **legacy 수신자 값 증명(D5)**: `workflows."WorkflowTask"."recipients"`·`workflows."WorkflowType"."defaultRecipients"` **non-null 행 검사**. 코드상 쓰기 지점이 없어 null이어야 정상 — non-null이면(수동 SQL·cutover 데이터 등) **배포 중단(fail-fast)** 후 값을 단계별 구조(D3)로 이관하거나 폐기 판단. 미검증 배포 시 직접 API 발송이 task별 수신자를 무시하거나 flat 배열을 새 구조로 오독한다.
 - smoke: `/admin/settings/mail-recipients` 게이트(pm 200·비권한 redirect), `/api/workflows/mail/contacts` 401/403, 발송 모달 3필드 prefill, 기존 상세 이력 렌더.
 
 ## 8. 적대검증 ledger (spec 단계)
 
-(review-loop에서 기록)
+| R | severity | finding (fingerprint) | disposition |
+| --- | --- | --- | --- |
+| R1 | high | legacy `task.recipients`/`type.defaultRecipients` non-null 값을 미검증 채 해석 체인 제거/구조 교체 | **FIXED** — D5에 "DB로 증명" 전제 명시 + §7 preflight에 workflows 스키마 non-null 검사·fail-fast 추가 |
+| R1 | high | 상세 이력 cc/bcc를 기존 view 게이트로 노출 → view-only 사용자에게 bcc(은닉 envelope) 과노출 | **FIXED** — D14 신설: bcc는 `:send` 권한자에게만 직렬화, cc는 공개 헤더라 view 허용. §4.2·§5·§6 반영 |
+| R1 | medium | `MailDelivery`=호출자 입력 그대로 기록이면 전송 시점 교차 제외와 어긋나 기록≠실제 envelope, retry 불일치 | **FIXED** — D10 개정: 정규화 함수를 lib export로 분리, `deliver`가 기록 전 적용 → 기록=실제 전송 envelope, retry는 저장 envelope 재발송. `rawRecipients` 별도 보존은 소비처 없어 미채택 |
+| R1 | medium | 주소록 email PATCH가 세트(email 문자열)에 미반영 → 낡은 주소로 지속 발송 | **FIXED** — D15 신설: `MailContact.email` 불변(PATCH=name·memo만, email 포함 시 400). 주소 변경=신규 등록+구 삭제+세트 직접 교체 |
