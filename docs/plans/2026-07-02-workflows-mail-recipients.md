@@ -92,7 +92,7 @@ export interface TaskDetailView { …; effectiveRecipients?: EffectiveRecipients
 
 - 게이트(서비스 소유, 페이지·API 공유 — 접근제어 규칙①): `services/mail-recipients.ts`의
   `canManageMailRecipients(userId): Promise<boolean>` = `hasPermission(admin.settings, configure) && hasPermission(workflows.mail, configure)`.
-- 라우트(전부 401 → 403 게이트 → zod 400): `GET/POST /api/workflows/mail/contacts`, `PATCH/DELETE /api/workflows/mail/contacts/[id]`(PATCH=name·memo만, email 포함 body 400 — D15), `GET /api/workflows/mail/recipients`, `PUT /api/workflows/mail/recipients/[kind]`(kind∉`mailRecipientKinds()` 400, step 키⊄`sendStepsForKind` 400).
+- 라우트(전부 401 → 403 게이트 → zod 400): `GET/POST /api/workflows/mail/contacts`, `PATCH/DELETE /api/workflows/mail/contacts/[id]`(PATCH=name·memo만, email 포함 body 400 — D15), `GET /api/workflows/mail/recipients`, `PUT /api/workflows/mail/recipients/[kind]`(kind∉`mailRecipientKinds()` 400, **step 키 집합 = `sendStepsForKind(kind)` 정확 일치 — 누락·초과 모두 400**: 전체 교체 계약에서 부분 body가 다른 단계 세트를 지우지 못하게).
 - validations(`validations/index.ts`): `mailContactCreateSchema`(email trim+email·name min1·memo≤500 optional), `mailContactUpdateSchema`(**strictObject** name·memo — D15), `recipientSetPutSchema` = `z.record(z.string(), recipientFieldsSchema)`(각 필드 email 배열).
 - 서비스(`services/mail-recipients.ts`): `listMailContacts()`, `addMailContact({email,name,memo?})`(email trim+소문자, P2002→ConflictError→409), `editMailContact(id,{name,memo?})`(없으면 null→404), `removeMailContact(id)`, `getRecipientSets(): RecipientSetView[]`(`{kind, steps, recipients}` — 미저장 step은 빈 필드), `saveRecipientSet(kind, map)`(필드별 `normalizeStoredEmails` 후 전체 교체, type 행 없으면 null→404).
 - 레포(`repositories/mail-recipients.ts`): `listContacts`, `createContact`, `updateContactNameMemo`, `deleteContactById`, `findContactNamesByEmails(emails): Map<소문자 email, name>`, `findDefaultRecipientsByKind`, `updateDefaultRecipientsByKind`.
@@ -139,3 +139,10 @@ export interface TaskDetailView { …; effectiveRecipients?: EffectiveRecipients
 표준 restart(D13): `prisma migrate deploy`(additive 2건) → `npm run prisma:generate` → `db:seed`(신설 권한·pm reconcile) → build → `pm2 restart ops-hub`.
 
 **preflight(§7 — multiSchema라 스키마 한정 필수, fail-fast)**: ① `workflows."WorkflowTask"."recipients"`·`workflows."WorkflowType"."defaultRecipients"` **non-null 행 0 증명**(D5 전제 — non-null이면 배포 중단, 값을 D3 구조로 이관/폐기 판단) ② `kernel."SystemSetting"`의 `workflows.weeklyReport.defaultRecipients` 값 확인(비어있지 않으면 수동 이관 판단). smoke: `/admin/settings/mail-recipients` 게이트(pm 200·비권한 redirect), `/api/workflows/mail/contacts` 401/403, 발송 모달 3필드 prefill, 기존 상세 이력 렌더.
+
+## Plan 적대검증 ledger (plan 단계)
+
+| # | round | sev | finding (fingerprint) | disposition |
+|---|---|---|---|---|
+| 1 | R1 | high | task-06 `PUT recipients/[kind]`가 누락 step을 미검사 — 부분 body(`{"1":…}`·`{}`)가 전체 교체로 내려가 다른 단계 세트를 조용히 삭제 | **FIXED** — 라우트가 step 키 집합 = `sendStepsForKind(kind)` **정확 일치** 강제(누락·초과 400) + 부분 body 400 테스트. SC-8·task-06 반영 |
+| 2 | R1 | medium | 수신자 세트 저장이 LWW(버전/`expectedUpdatedAt` 없음) — 동시 편집 시 마지막 저장이 앞선 변경을 조용히 덮어씀 | **ACCEPTED** — ① 세트는 발송 모달 prefill **기본값**일 뿐, 실제 발송은 항상 모달 명시 envelope(D6)라 stale 세트가 곧바로 오발송이 되지 않음 ② 편집 주체 = D6 교집합 권한자(pm·OWNER 소수) ③ billing config 등 기존 도메인 관리 화면과 동일한 LWW 관례. 보완: 운영에서 충돌이 실증되면 후속으로 `WorkflowType.updatedAt` 낙관적 잠금 도입 |

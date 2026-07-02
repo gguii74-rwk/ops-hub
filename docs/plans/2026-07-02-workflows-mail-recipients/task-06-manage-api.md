@@ -24,6 +24,7 @@
 - **Don't PATCH가 email 필드를 허용·무시(strip)하게 하지 마라.** Reason: D15 — email 불변. `z.strictObject`로 email 포함 body는 400(조용한 무시는 "고쳤다고 오인" 경로).
 - **Don't 게이트를 둘 중 하나만 검사하지 마라.** Reason: D6 — 교집합(∧). 읽기(GET)도 동일 게이트.
 - **Don't D7 파생 밖 kind/step을 저장하지 마라.** Reason: 소비처 없는 死설정 재생산. kind 400·step 400.
+- **Don't PUT에서 부분 step body를 허용하지 마라.** Reason: 전체 교체(§4.3) 계약에서 누락 step은 다른 단계 세트를 조용히 지운다(R1 high) — step 키 집합이 파생과 정확 일치해야 통과.
 - **Don't 주소록 삭제 시 세트에서 email을 제거하지 마라.** Reason: D12 — 주소록은 식별 보조(참조 무결성 대상 아님). 세트 잔존 email 유효.
 - **Don't `WorkflowType.defaultRecipients`에 정규화 전 원본을 저장하지 마라.** Reason: §3 — trim·소문자·dedup 저장(주소록 조인 매칭 일관).
 
@@ -385,27 +386,36 @@ describe("contacts CRUD", () => {
 });
 
 describe("recipients 세트", () => {
-  it("PUT: D7 파생 kind·step만 — 정상 payload → 200 + 서비스 전달", async () => {
-    const body = { "1": { to: ["a@x.com"], cc: [], bcc: [] } };
-    const res = await setPUT(req(body, "PUT"), kindParams("BILLING"));
+  const FULL = {
+    "1": { to: ["a@x.com"], cc: [], bcc: [] },
+    "2": { to: [], cc: [], bcc: [] },
+  };
+  it("PUT: D7 파생 kind·전체 step 맵 → 200 + 서비스 전달", async () => {
+    const res = await setPUT(req(FULL, "PUT"), kindParams("BILLING"));
     expect(res.status).toBe(200);
-    expect(h.saveRecipientSet).toHaveBeenCalledWith("BILLING", body);
+    expect(h.saveRecipientSet).toHaveBeenCalledWith("BILLING", FULL);
   });
   it("PUT: 파생 밖 kind(WEEKLY_REPORT — 발송 step 없음) → 400", async () => {
     expect((await setPUT(req({}, "PUT"), kindParams("WEEKLY_REPORT"))).status).toBe(400);
     expect(h.saveRecipientSet).not.toHaveBeenCalled();
   });
-  it("PUT: 파생 밖 step 키 → 400", async () => {
-    const body = { "9": { to: ["a@x.com"], cc: [], bcc: [] } };
+  it("PUT: 파생 밖 step 키(초과) → 400", async () => {
+    const body = { ...FULL, "9": { to: ["a@x.com"], cc: [], bcc: [] } };
     expect((await setPUT(req(body, "PUT"), kindParams("BILLING"))).status).toBe(400);
   });
+  it("PUT: step 누락(부분 body) → 400 — 전체 교체가 다른 단계 세트를 지우지 못함", async () => {
+    const partial = { "1": { to: ["a@x.com"], cc: [], bcc: [] } }; // "2" 누락
+    expect((await setPUT(req(partial, "PUT"), kindParams("BILLING"))).status).toBe(400);
+    expect((await setPUT(req({}, "PUT"), kindParams("BILLING"))).status).toBe(400); // 빈 body도 거부
+    expect(h.saveRecipientSet).not.toHaveBeenCalled();
+  });
   it("PUT: 필드에 비이메일 → 400", async () => {
-    const body = { "1": { to: ["nope"], cc: [], bcc: [] } };
+    const body = { ...FULL, "1": { to: ["nope"], cc: [], bcc: [] } };
     expect((await setPUT(req(body, "PUT"), kindParams("BILLING"))).status).toBe(400);
   });
   it("PUT: WorkflowType 행 없음(null) → 404", async () => {
     h.saveRecipientSet.mockResolvedValueOnce(null);
-    expect((await setPUT(req({ "1": { to: ["a@x.com"], cc: [], bcc: [] } }, "PUT"), kindParams("BILLING"))).status).toBe(404);
+    expect((await setPUT(req(FULL, "PUT"), kindParams("BILLING"))).status).toBe(404);
   });
 });
 ```
@@ -525,9 +535,13 @@ export async function PUT(req: Request, { params }: { params: Promise<{ kind: st
   const kind = kindRaw as WorkflowKind;
   try {
     const body = recipientSetPutSchema.parse(await req.json());
-    const allowed = new Set(sendStepsForKind(kind));
-    const badStep = Object.keys(body).find((s) => !allowed.has(s));
-    if (badStep !== undefined) return NextResponse.json({ error: `unsupported step: ${badStep}` }, { status: 400 });
+    // 전체 교체(§4.3) 계약 강제: step 키 집합이 D7 파생과 **정확히 일치**해야 한다. 초과 step은 死설정,
+    // 누락 step은 부분 body가 다른 단계 세트를 조용히 지우는 경로(R1 high) — 둘 다 400.
+    const required = sendStepsForKind(kind);
+    const keys = Object.keys(body);
+    if (required.some((s) => !keys.includes(s)) || keys.some((s) => !required.includes(s))) {
+      return NextResponse.json({ error: `step set mismatch (required: ${required.join(",")})` }, { status: 400 });
+    }
     const recipients = await saveRecipientSet(kind, body);
     if (!recipients) return NextResponse.json({ error: "not found" }, { status: 404 });
     return NextResponse.json({ kind, recipients });
@@ -552,5 +566,5 @@ npm run typecheck && npm run lint && npm test -- tests/modules/workflows/mail-re
 - `npm run typecheck` / `npm run lint` → 통과(boundaries 포함 — module→kernel import는 허용 방향).
 - 서비스·라우트 테스트 전체 통과.
 - 게이트: GET 포함 전 라우트가 D6 교집합. 게이트 실패 시 서비스 미호출.
-- PATCH: email 포함 body 400(strip 아님). PUT: 파생 밖 kind/step 400. POST: 중복 email 409.
+- PATCH: email 포함 body 400(strip 아님). PUT: 파생 밖 kind 400·step 키 집합 정확 일치(누락·초과 400). POST: 중복 email 409.
 - 저장 값: 소문자·trim·dedup 정규화(saveRecipientSet 반환 = DB 기록).
