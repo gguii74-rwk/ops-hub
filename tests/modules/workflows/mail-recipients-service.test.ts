@@ -53,6 +53,18 @@ describe("addMailContact / editMailContact", () => {
     await editMailContact("u1", "c1", { name: "김철수", memo: "회계" });
     expect(m.updateContactNameMemo).toHaveBeenCalledWith("c1", { name: "김철수", memo: "회계" });
   });
+  it("수정에서 memo 생략 시 기존 memo 보존 — 갱신 데이터에 memo 키 자체가 없음", async () => {
+    m.updateContactNameMemo.mockResolvedValue({ id: "c1", email: "a@x.com", name: "김철수", memo: "회계" });
+    await editMailContact("u1", "c1", { name: "김철수" });
+    const data = m.updateContactNameMemo.mock.calls[0][1] as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(data, "memo")).toBe(false);
+    expect(data).toEqual({ name: "김철수" });
+  });
+  it("수정에서 memo 공백 문자열은 명시 클리어 — null 전달", async () => {
+    m.updateContactNameMemo.mockResolvedValue({ id: "c1", email: "a@x.com", name: "김철수", memo: null });
+    await editMailContact("u1", "c1", { name: "김철수", memo: "  " });
+    expect(m.updateContactNameMemo).toHaveBeenCalledWith("c1", { name: "김철수", memo: null });
+  });
 });
 
 describe("getRecipientSets (D7 파생)", () => {

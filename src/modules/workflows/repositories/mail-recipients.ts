@@ -24,7 +24,7 @@ export async function createContact(data: { email: string; name: string; memo: s
 }
 
 // D15: email 불변 — name·memo만 갱신. 대상 없으면 null(라우트 404).
-export async function updateContactNameMemo(id: string, data: { name: string; memo: string | null }): Promise<MailContactRow | null> {
+export async function updateContactNameMemo(id: string, data: { name: string; memo?: string | null }): Promise<MailContactRow | null> {
   try {
     return await prisma.mailContact.update({ where: { id }, data, select: CONTACT_SELECT });
   } catch (e) {

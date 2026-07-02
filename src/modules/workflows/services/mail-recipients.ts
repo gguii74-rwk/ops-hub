@@ -42,11 +42,12 @@ export async function addMailContact(userId: string, input: { email: string; nam
   });
 }
 
+// memo 생략 = 기존 값 보존, 공백 문자열 = 명시 클리어(null).
 export async function editMailContact(userId: string, id: string, input: { name: string; memo?: string }): Promise<MailContactView | null> {
   await requireManageMailRecipients(userId);
   return updateContactNameMemo(id, {
     name: input.name.trim(),
-    memo: input.memo?.trim() ? input.memo.trim() : null,
+    ...(input.memo !== undefined ? { memo: input.memo.trim() ? input.memo.trim() : null } : {}),
   });
 }
 
