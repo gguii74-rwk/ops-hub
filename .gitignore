@@ -16,9 +16,9 @@ prisma/*.db-journal
 out/
 .claude/worktrees/
 .superpowers/
+.codex
 
 # 배포 shared 스토리지가 로컬에 존재할 때
 Template/
 keys/
 *.log
-
