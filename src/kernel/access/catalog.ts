@@ -2,7 +2,7 @@ export const RESOURCES = [
   "dashboard",
   "calendar.work", "calendar.leave", "calendar.personal", "calendar.team", "calendar.admin",
   "workflows", "workflows.weekly", "workflows.billing", "workflows.notification",
-  "workflows.weeklyClient", "workflows.monthlyClient",
+  "workflows.weeklyClient", "workflows.monthlyClient", "workflows.mail",
   "leave.request", "leave.approval", "leave.allocation", "leave.status", "leave.admin",
   "admin.users", "admin.settings", "admin.audit", "admin.navigation", "admin.teams", "admin.roles",
   "integrations.google", "integrations.smtp", "integrations.templates",
