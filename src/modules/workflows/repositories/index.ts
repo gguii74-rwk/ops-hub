@@ -4,6 +4,7 @@ import { prisma, type PrismaTx } from "@/lib/prisma";
 import type { WorkflowKind, WorkflowStatus, MailDeliveryStatus, WorkflowTask } from "@prisma/client";
 import type { GeneratorResult } from "../types";
 import { ConflictError } from "../types";
+import { parseDefaultRecipients, type DefaultRecipientsMap } from "../recipients";
 
 export interface TaskListRow { id: string; kind: WorkflowKind; typeName: string; scheduledAt: Date; status: WorkflowStatus; }
 export interface TaskListFilter { kinds: WorkflowKind[]; statuses?: WorkflowStatus[]; start?: Date; end?: Date; }
@@ -175,22 +176,22 @@ export async function findTaskForGenerate(id: string): Promise<FullTaskForGenera
 
 export interface TaskForSend {
   id: string; status: WorkflowStatus; kind: WorkflowKind; outputPath: string | null;
-  recipients: string[] | null; defaultRecipients: string[] | null;
+  // D5: task.recipients는 死필드(쓰기 지점 없음) — select·체인에서 제거(컬럼은 보존). 폴백은 type의 단계별 맵뿐.
+  defaultRecipients: DefaultRecipientsMap | null;
 }
 
 export async function findTaskForSend(id: string): Promise<TaskForSend | null> {
   const t = await prisma.workflowTask.findUnique({
     where: { id },
     select: {
-      id: true, status: true, outputPath: true, recipients: true,
+      id: true, status: true, outputPath: true,
       type: { select: { kind: true, defaultRecipients: true } },
     },
   });
   if (!t) return null;
   return {
     id: t.id, status: t.status, kind: t.type.kind, outputPath: t.outputPath,
-    recipients: Array.isArray(t.recipients) ? (t.recipients as string[]) : null,
-    defaultRecipients: Array.isArray(t.type.defaultRecipients) ? (t.type.defaultRecipients as string[]) : null,
+    defaultRecipients: parseDefaultRecipients(t.type.defaultRecipients),
   };
 }
 

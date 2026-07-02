@@ -19,7 +19,7 @@ const ATTACH_EXTENSIONS = [".hwpx", ".xlsx"]; // 대금청구 1단계: hwpx 4종
 
 export async function runSend(
   taskId: string,
-  input: { step: number; subject: string; body: string; recipients?: string[] },
+  input: { step: number; subject: string; body: string; recipients?: string[]; cc?: string[]; bcc?: string[] },
   ctx: TransitionCtx,
 ): Promise<void> {
   if (input.step !== 1 && input.step !== 2) {
@@ -38,10 +38,14 @@ export async function runSend(
     throw new NotImplementedError(`${task.kind} ${input.step}단계 발송은 지원하지 않습니다.`);
   }
 
-  // 수신자 해석(I1): 입력 우선 → task → type 기본. 빈 결과면 MailDelivery 생성 전 거부.
-  const recipients =
-    (input.recipients?.length ? input.recipients : null) ?? task.recipients ?? task.defaultRecipients ?? [];
-  if (recipients.length === 0) {
+  // 수신자 해석(D5): 입력(모달 명시 envelope) → type.defaultRecipients[step] → 거부. task.recipients 미참조(死필드).
+  // 입력 여부 = recipients **존재**(undefined 아님) 기준 — `[]`는 "비운 명시 입력"이라 폴백하지 않고 거부한다
+  // (length 판단이면 [] + cc가 defaults로 발송되는 의도치 않은 수신자 경로). 생략(undefined) 시에만 폴백.
+  const fallback = task.defaultRecipients?.[String(input.step)];
+  const envelope = input.recipients !== undefined
+    ? { to: input.recipients, cc: input.cc ?? [], bcc: input.bcc ?? [] }
+    : { to: fallback?.to ?? [], cc: fallback?.cc ?? [], bcc: fallback?.bcc ?? [] };
+  if (envelope.to.length === 0) {
     throw new ConflictError("수신자가 없습니다. 수신자를 지정해 발송하세요.");
   }
 
@@ -59,7 +63,7 @@ export async function runSend(
   await deliver({
     taskId,
     step: String(input.step),
-    msg: { to: recipients, subject: input.subject, html: input.body, attachments },
+    msg: { to: envelope.to, cc: envelope.cc, bcc: envelope.bcc, subject: input.subject, html: input.body, attachments },
     sentById: ctx.userId,
     expectedTaskStatus: transition.from,
     onDelivered: { fromStatus: transition.from, toStatus: transition.to, actorId: ctx.userId },
