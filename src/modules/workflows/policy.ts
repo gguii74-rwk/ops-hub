@@ -72,3 +72,13 @@ export function sendStepTransition(
   if (!kind || step == null) return null;
   return SEND_STEP_TRANSITION[kind]?.[step] ?? null;
 }
+
+// D7: 수신자 세트를 편집·노출할 kind×step = SEND_STEP_TRANSITION 파생 단일 출처.
+// 발송이 정의되지 않은 kind의 세트는 소비처 없는 死설정 — 관리 화면·API가 이 파생만 허용한다.
+export function sendStepsForKind(kind: WorkflowKind): string[] {
+  return Object.keys(SEND_STEP_TRANSITION[kind] ?? {});
+}
+
+export function mailRecipientKinds(): WorkflowKind[] {
+  return (Object.keys(SEND_STEP_TRANSITION) as WorkflowKind[]).filter((k) => sendStepsForKind(k).length > 0);
+}

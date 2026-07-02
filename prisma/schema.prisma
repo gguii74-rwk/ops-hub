@@ -448,6 +448,8 @@ model MailDelivery {
   step              String?
   status            MailDeliveryStatus
   recipients        Json
+  cc                Json?
+  bcc               Json?
   subject           String
   bodyHtml          String?
   attachmentPaths   Json?
@@ -466,6 +468,17 @@ model MailDelivery {
   @@index([sentAt])
   @@index([leaveRequestId])
   @@index([status, lockedUntil])
+  @@schema("workflows")
+}
+
+model MailContact {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  memo      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@schema("workflows")
 }
 
