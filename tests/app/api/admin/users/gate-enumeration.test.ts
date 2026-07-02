@@ -224,6 +224,11 @@ const knownProtected = new Set<string>([
   "/api/workflows/[id]/files/[fileId]",
   // calendar API (workflows-calendar task-03) — auth()→getPermissionSummary 게이트, allowedKinds로 필터
   "/api/workflows/calendar",
+  // mail recipients API (mail-recipients task-06) — auth()→401, 서비스가 D6 교집합(admin.settings∧workflows.mail:configure) 강제→ForbiddenError(403)
+  "/api/workflows/mail/contacts",
+  "/api/workflows/mail/contacts/[id]",
+  "/api/workflows/mail/recipients",
+  "/api/workflows/mail/recipients/[kind]",
 ]);
 
 beforeEach(() => {
