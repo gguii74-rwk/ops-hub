@@ -18,8 +18,8 @@
 
 ## Cautions
 - **Don't `task.recipients`를 어떤 형태로든 폴백에 남기지 마라.** Reason: D5 — 死필드(쓰기 지점 없음). 컬럼은 보존하되 select·타입·체인에서 제거.
-- **Don't 입력이 있을 때(to 비어있지 않음) 서버에서 defaults를 merge하지 마라.** Reason: D6 원칙 — 모달 명시 전송(화면 목록 = 실제 발송). 입력 envelope 그대로.
-- **Don't 입력의 to가 비고 cc만 있을 때 cc를 defaults에 합치지 마라.** Reason: 체인은 "입력 전체 → 폴백 전체 → 거부" — 부분 merge는 화면과 발송의 불일치를 만든다. `input.recipients` 비면 입력 cc/bcc도 무시하고 폴백.
+- **Don't 입력이 있을 때 서버에서 defaults를 merge하지 마라.** Reason: D6 원칙 — 모달 명시 전송(화면 목록 = 실제 발송). 입력 envelope 그대로.
+- **Don't 입력 존재 판단에 `?.length`(비어있음)를 쓰지 마라.** Reason: R2 high — `recipients: []`는 "비운 명시 입력"인데 length 판단이면 defaults로 폴백해 **의도치 않은 기본 수신자에게 발송**된다(직접 API·stale 클라 경로). 존재(`!== undefined`) 기준: `[]`면 to 빈 거부, **생략 시에만** 폴백.
 - **Don't 첨부 산출·전이(policy)·deliver 배선(expectedTaskStatus·onDelivered)을 바꾸지 마라.** Reason: 수신자 해석만 개정(surgical).
 
 ## TDD Steps
@@ -56,6 +56,22 @@ const baseTask = { id: "t1", status: "GENERATED", kind: "BILLING", outputPath: "
     expect(deliverFn).toHaveBeenCalledWith(expect.objectContaining({
       msg: expect.objectContaining({ to: ["in@x.com"], cc: [], bcc: [] }),
     }));
+  });
+  it("recipients: []는 '비운 명시 입력' — defaults 폴백 금지, Conflict(R2 high)", async () => {
+    findTask.mockResolvedValue({
+      ...baseTask,
+      defaultRecipients: { "1": { to: ["t@x.com"], cc: [], bcc: [] } },
+    });
+    await expect(runSend("t1", { step: 1, subject: "s", body: "b", recipients: [] }, ctx(["workflows.billing:send"]))).rejects.toBeInstanceOf(ConflictError);
+    expect(deliverFn).not.toHaveBeenCalled();
+  });
+  it("recipients: [] + cc만 있어도 폴백·발송 금지(Conflict)", async () => {
+    findTask.mockResolvedValue({
+      ...baseTask,
+      defaultRecipients: { "1": { to: ["t@x.com"], cc: [], bcc: [] } },
+    });
+    await expect(runSend("t1", { step: 1, subject: "s", body: "b", recipients: [], cc: ["c@x.com"] }, ctx(["workflows.billing:send"]))).rejects.toBeInstanceOf(ConflictError);
+    expect(deliverFn).not.toHaveBeenCalled();
   });
   it("입력 cc/bcc 전달", async () => {
     await runSend("t1", { step: 1, subject: "s", body: "b", recipients: ["a@x.com"], cc: ["c@x.com"], bcc: ["b@x.com"] }, ctx(["workflows.billing:send"]));
@@ -124,9 +140,10 @@ export async function runSend(
 
 ```ts
   // 수신자 해석(D5): 입력(모달 명시 envelope) → type.defaultRecipients[step] → 거부. task.recipients 미참조(死필드).
-  // 입력 여부는 to(recipients) 기준 — to 없이 cc/bcc만 온 입력은 폴백으로 처리(부분 merge 금지).
+  // 입력 여부 = recipients **존재**(undefined 아님) 기준 — `[]`는 "비운 명시 입력"이라 폴백하지 않고 거부한다
+  // (length 판단이면 [] + cc가 defaults로 발송되는 의도치 않은 수신자 경로). 생략(undefined) 시에만 폴백.
   const fallback = task.defaultRecipients?.[String(input.step)];
-  const envelope = input.recipients?.length
+  const envelope = input.recipients !== undefined
     ? { to: input.recipients, cc: input.cc ?? [], bcc: input.bcc ?? [] }
     : { to: fallback?.to ?? [], cc: fallback?.cc ?? [], bcc: fallback?.bcc ?? [] };
   if (envelope.to.length === 0) {
@@ -232,5 +249,5 @@ npm run typecheck && npm run lint && npm test -- tests/modules/workflows/run-sen
 ## Acceptance Criteria
 - `npm run typecheck` / `npm run lint` → 통과(특히 `TaskForSend`에서 recipients 참조 제거로 send.ts 컴파일).
 - `npm test -- tests/modules/workflows/run-send.test.ts tests/app/api/workflows/send-route.test.ts` → 통과.
-- runSend: 입력 우선(전체 envelope) / type[step] 폴백 / to 빈 거부 / `task.recipients` 미참조(코드 검색 `task.recipients` 0곳 — services/send.ts 기준).
+- runSend: 입력 존재(≠undefined) 시 입력 envelope 그대로(`[]`는 거부 — 폴백 금지) / 생략 시에만 type[step] 폴백 / 최종 to 빈 거부 / `task.recipients` 미참조(코드 검색 `task.recipients` 0곳 — services/send.ts 기준).
 - 라우트: cc/bcc 배열 email 검증(비이메일 400), 생략 허용.

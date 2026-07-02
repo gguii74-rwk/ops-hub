@@ -72,7 +72,7 @@ export function normalizeEnvelope(input: { to: string[]; cc?: string[]; bcc?: st
 
 ### SC-6. runSend 해석 체인 (D5) — `services/send.ts` · `[id]/send/route.ts`
 
-- 입력: `{ step, subject, body, recipients?, cc?, bcc? }`. 해석: `input.recipients` 비어있지 않으면 **입력 envelope 그대로**(`cc/bcc` 기본 `[]`) → 아니면 `type.defaultRecipients[String(step)]`의 `{to,cc,bcc}` → to 비면 `ConflictError`. **`task.recipients` 미참조**(死필드 — 컬럼 보존).
+- 입력: `{ step, subject, body, recipients?, cc?, bcc? }`. 해석: `input.recipients`가 **존재하면**(`!== undefined` — `[]` 포함) **입력 envelope 그대로**(`cc/bcc` 기본 `[]`) — `[]`는 "비운 명시 입력"이라 to 빈 거부(**defaults 폴백 금지** — 의도치 않은 기본 수신자 발송 차단). **생략(undefined) 시에만** `type.defaultRecipients[String(step)]`의 `{to,cc,bcc}` 폴백 → 최종 to 비면 `ConflictError`. **`task.recipients` 미참조**(死필드 — 컬럼 보존).
 - `TaskForSend`: `recipients` 필드 제거, `defaultRecipients: DefaultRecipientsMap | null`(`parseDefaultRecipients`).
 - route zod: `cc: z.array(z.string().email()).optional(), bcc: z.array(z.string().email()).optional()` 추가.
 
@@ -145,4 +145,5 @@ export interface TaskDetailView { …; effectiveRecipients?: EffectiveRecipients
 | # | round | sev | finding (fingerprint) | disposition |
 |---|---|---|---|---|
 | 1 | R1 | high | task-06 `PUT recipients/[kind]`가 누락 step을 미검사 — 부분 body(`{"1":…}`·`{}`)가 전체 교체로 내려가 다른 단계 세트를 조용히 삭제 | **FIXED** — 라우트가 step 키 집합 = `sendStepsForKind(kind)` **정확 일치** 강제(누락·초과 400) + 부분 body 400 테스트. SC-8·task-06 반영 |
-| 2 | R1 | medium | 수신자 세트 저장이 LWW(버전/`expectedUpdatedAt` 없음) — 동시 편집 시 마지막 저장이 앞선 변경을 조용히 덮어씀 | **ACCEPTED** — ① 세트는 발송 모달 prefill **기본값**일 뿐, 실제 발송은 항상 모달 명시 envelope(D6)라 stale 세트가 곧바로 오발송이 되지 않음 ② 편집 주체 = D6 교집합 권한자(pm·OWNER 소수) ③ billing config 등 기존 도메인 관리 화면과 동일한 LWW 관례. 보완: 운영에서 충돌이 실증되면 후속으로 `WorkflowType.updatedAt` 낙관적 잠금 도입 |
+| 2 | R1 | medium | 수신자 세트 저장이 LWW(버전/`expectedUpdatedAt` 없음) — 동시 편집 시 마지막 저장이 앞선 변경을 조용히 덮어씀 | **ACCEPTED** — ① 세트는 발송 모달 prefill **기본값**일 뿐, 실제 발송은 항상 모달 명시 envelope(D6)라 stale 세트가 곧바로 오발송이 되지 않음 ② 편집 주체 = D6 교집합 권한자(pm·OWNER 소수) ③ billing config 등 기존 도메인 관리 화면과 동일한 LWW 관례. 보완: 운영에서 충돌이 실증되면 후속으로 `WorkflowType.updatedAt` 낙관적 잠금 도입. (R2 재지목 = DUPLICATE) |
+| 3 | R2 | high | task-04 runSend 입력 판단이 `?.length` — `recipients: []`(비운 명시 입력, `[] + cc` 포함)가 defaults로 폴백해 의도치 않은 기본 수신자 발송 | **FIXED** — 입력 여부 = 존재(`!== undefined`) 기준으로 개정: `[]`는 to 빈 거부(폴백 금지), 생략 시에만 type[step] 폴백. SC-6·task-04(구현·테스트 2케이스·Caution) 반영 |
