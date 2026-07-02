@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { toast } from "sonner";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -142,14 +141,5 @@ describe("SettingEditor — 타입 분기(D8)", () => {
     fireEvent.click(screen.getByRole("button", { name: "저장" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).value).toEqual(["cal-2"]);
-  });
-
-  it("list 편집기(이메일 키): 잘못된 형식 추가 거부(toast.error, 미추가)", () => {
-    vi.mocked(toast.error).mockClear();
-    render(<SettingEditor settingKey="workflows.weeklyReport.defaultRecipients" initialValue={[]} updatedAt={null} />);
-    fireEvent.change(screen.getByPlaceholderText("추가할 항목 입력"), { target: { value: "not-an-email" } });
-    fireEvent.click(screen.getByRole("button", { name: "추가" }));
-    expect(toast.error).toHaveBeenCalled();
-    expect(screen.queryByText("not-an-email")).toBeNull();
   });
 });

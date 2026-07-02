@@ -13,7 +13,9 @@ vi.mock("@/lib/auth/permissions-client", () => ({
   useCan: (_r: string, a: string) => (a === "generate" ? can.generate : a === "send" ? can.send : false),
 }));
 vi.mock("@/app/(app)/workflows/[id]/send-modal", () => ({
-  SendModal: (p: { step: number }) => <div data-testid="send-modal">step {p.step}</div>,
+  SendModal: (p: { step: number; effectiveRecipients?: { to: Array<{ email: string }> } }) => (
+    <div data-testid="send-modal">step {p.step} to {(p.effectiveRecipients?.to ?? []).map((e) => e.email).join(",")}</div>
+  ),
 }));
 
 import { WorkflowDetail } from "@/app/(app)/workflows/[id]/workflow-detail";
@@ -119,5 +121,38 @@ describe("WorkflowDetail 액션 슬롯(BILLING)", () => {
     detailData.current = baseDetail({ kind: "WEEKLY_REPORT", status: "PENDING" });
     render(<WorkflowDetail taskId="t1" isAdmin={false} />);
     expect(screen.queryByRole("button", { name: "문서 생성" })).toBeNull();
+  });
+});
+
+describe("메일 이력 cc/bcc 표시 + 모달 prefill 전달", () => {
+  const mail = (over: Record<string, unknown> = {}) => ({
+    id: "m1", step: "1", recipients: ["a@x.com"], cc: [], subject: "s", status: "SENT", errorMessage: null, sentAt: null, ...over,
+  });
+
+  it("cc/bcc 있으면 라벨과 함께 표시", () => {
+    detailData.current = baseDetail({ mailDeliveries: [mail({ cc: ["c@x.com"], bcc: ["b@x.com"] })] });
+    render(<WorkflowDetail taskId="t1" isAdmin={false} />);
+    expect(screen.getByText(/참조: c@x\.com/)).toBeTruthy();
+    expect(screen.getByText(/숨은참조: b@x\.com/)).toBeTruthy();
+  });
+
+  it("bcc 필드 부재(view-only 응답, D14) → 숨은참조 미표시", () => {
+    detailData.current = baseDetail({ mailDeliveries: [mail({ cc: ["c@x.com"] })] });
+    render(<WorkflowDetail taskId="t1" isAdmin={false} />);
+    expect(screen.queryByText(/숨은참조/)).toBeNull();
+  });
+
+  it("발송 모달에 자기 step의 effectiveRecipients를 전달", () => {
+    can.send = true;
+    detailData.current = baseDetail({
+      status: "GENERATED",
+      effectiveRecipients: {
+        "1": { to: [{ email: "a@x.com", name: "홍" }], cc: [], bcc: [] },
+        "2": { to: [{ email: "z@x.com" }], cc: [], bcc: [] },
+      },
+    });
+    render(<WorkflowDetail taskId="t1" isAdmin={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "1단계 발송" }));
+    expect(screen.getByTestId("send-modal").textContent).toContain("to a@x.com");
   });
 });

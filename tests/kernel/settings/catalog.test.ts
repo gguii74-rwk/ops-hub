@@ -59,11 +59,11 @@ describe("settings catalog 정합성", () => {
     expect(getEntry("nope.nope.nope")).toBeUndefined();
   });
 
-  it("카탈로그 항목 수 고정 (6 systemSetting, 5 envSecret, 1 relational)", () => {
+  it("카탈로그 항목 수 고정 (5 systemSetting, 5 envSecret, 2 relational)", () => {
     const byKind = (k: string) => CATALOG.filter((e) => e.kind === k).length;
-    expect(byKind("systemSetting")).toBe(6); // host·port 제거 후(fromAddress·calendarIds·defaultRecipients·onRequest·onApprove·onReject)
+    expect(byKind("systemSetting")).toBe(5); // weeklyReport.defaultRecipients 제거 후(fromAddress·calendarIds·onRequest·onApprove·onReject)
     expect(byKind("envSecret")).toBe(5);
-    expect(byKind("relational")).toBe(1);
+    expect(byKind("relational")).toBe(2); // billing.config + mail.recipients
     expect(CATALOG.length).toBe(12);
   });
 
@@ -123,5 +123,25 @@ describe("settings catalog 정합성", () => {
       expect(e!.schema.safeParse("true").success).toBe(false);
       expect(e!.schema.safeParse(1).success).toBe(false);
     }
+  });
+
+  it("workflows.weeklyReport.defaultRecipients는 제거됨(死설정 정리 ⑦)", () => {
+    expect(getEntry("workflows.weeklyReport.defaultRecipients")).toBeUndefined();
+  });
+
+  it("메일 수신자 relational 항목(D9) — workflows.mail:configure·전용 관리 페이지", () => {
+    const e = getEntry("workflows.mail.recipients");
+    expect(e?.kind).toBe("relational");
+    expect(e?.category).toBe("workflows");
+    expect(e?.group).toBe("workflows");
+    expect(e?.permission).toEqual({ resource: "workflows.mail", action: "configure" });
+    if (e?.kind !== "relational") throw new Error("unreachable");
+    expect(e.manageHref).toBe("/admin/settings/mail-recipients");
+  });
+
+  it("대금청구 설정 manageHref = 실제 관리 페이지 경로(⑦ — 깨진 /admin/settings/billing 수정)", () => {
+    const e = getEntry("workflows.billing.config");
+    if (e?.kind !== "relational") throw new Error("unreachable");
+    expect(e.manageHref).toBe("/workflows/billing/settings");
   });
 });

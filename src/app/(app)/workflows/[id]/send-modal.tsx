@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Modal } from "@/components/ui/modal";
 import { LoadingState, ErrorState } from "@/components/ui/states";
 import { buildSubject, buildBody, plainToHtml } from "../mail-templates";
+import type { EffectiveRecipientFields, RecipientEntry } from "@/modules/workflows/recipients";
 
 const SEND_ERROR: Record<number, string> = {
   400: "입력 형식을 확인하세요.",
@@ -20,7 +21,7 @@ const SEND_ERROR: Record<number, string> = {
 export function SendModal({
   taskId, step, scheduledAt, effectiveRecipients, onClose,
 }: {
-  taskId: string; step: 1 | 2; scheduledAt: string; effectiveRecipients?: string[]; onClose: () => void;
+  taskId: string; step: 1 | 2; scheduledAt: string; effectiveRecipients?: EffectiveRecipientFields; onClose: () => void;
 }) {
   const { projectYear } = computeBillingPeriod(new Date(scheduledAt));
   const cfg = useQuery({
@@ -65,11 +66,15 @@ function SendForm({
   taskId, step, scheduledAt, projectName, projectNameMissing, effectiveRecipients, onClose,
 }: {
   taskId: string; step: 1 | 2; scheduledAt: string; projectName: string; projectNameMissing: boolean;
-  effectiveRecipients?: string[]; onClose: () => void;
+  effectiveRecipients?: EffectiveRecipientFields; onClose: () => void;
 }) {
   const qc = useQueryClient();
   const ctx = { scheduledAt: new Date(scheduledAt), projectName };
-  const [recipients, setRecipients] = useState((effectiveRecipients ?? []).join(", "));
+  const parseList = (s: string) => s.split(",").map((v) => v.trim()).filter(Boolean);
+  const joinEmails = (list: RecipientEntry[] | undefined) => (list ?? []).map((e) => e.email).join(", ");
+  const [recipients, setRecipients] = useState(joinEmails(effectiveRecipients?.to));
+  const [cc, setCc] = useState(joinEmails(effectiveRecipients?.cc));
+  const [bcc, setBcc] = useState(joinEmails(effectiveRecipients?.bcc));
   const [subject, setSubject] = useState(buildSubject(step, ctx));
   const [body, setBody] = useState(buildBody(step, ctx));
   const [error, setError] = useState<string | null>(null);
@@ -77,7 +82,7 @@ function SendForm({
 
   async function submit() {
     // D6 fail-closed: 화면 표시 목록을 파싱해 빈 목록이면 발송 차단(fetch 미발생). 백엔드 폴백 미의존.
-    const to = recipients.split(",").map((s) => s.trim()).filter(Boolean);
+    const to = parseList(recipients);
     if (to.length === 0) { setError("수신자를 1명 이상 입력하세요."); return; }
     setError(null);
     setSending(true);
@@ -85,8 +90,8 @@ function SendForm({
       const res = await fetch(`/api/workflows/${taskId}/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // recipients를 항상 명시 포함(화면 목록과 정확히 일치, 생략 없음 — D6). body는 HTML 변환.
-        body: JSON.stringify({ step, subject, body: plainToHtml(body), recipients: to }),
+        // 화면 3필드를 항상 명시 포함(정확히 일치, 생략 없음 — D6). 정규화(dedup·교차 제외)는 서버 lib 소유(D10).
+        body: JSON.stringify({ step, subject, body: plainToHtml(body), recipients: to, cc: parseList(cc), bcc: parseList(bcc) }),
       });
       if (!res.ok) { toast.error(SEND_ERROR[res.status] ?? "발송에 실패했습니다."); return; }
       toast.success("발송되었습니다.");
@@ -104,10 +109,9 @@ function SendForm({
         {projectNameMissing && (
           <p className="text-sm text-amber-600">이 연도의 대금청구 설정(사업명)이 없습니다 — 제목·본문의 사업명을 직접 확인·입력하세요.</p>
         )}
-        <label className="grid gap-1 text-sm">
-          <span className="text-muted-foreground">수신자 (쉼표 구분)</span>
-          <Input aria-label="수신자" value={recipients} placeholder="name@example.com, ..." onChange={(e) => setRecipients(e.target.value)} />
-        </label>
+        <RecipientField label="수신자" value={recipients} onChange={setRecipients} entries={effectiveRecipients?.to} />
+        <RecipientField label="참조" value={cc} onChange={setCc} entries={effectiveRecipients?.cc} />
+        <RecipientField label="숨은참조" value={bcc} onChange={setBcc} entries={effectiveRecipients?.bcc} />
         <label className="grid gap-1 text-sm">
           <span className="text-muted-foreground">제목</span>
           <Input aria-label="제목" value={subject} onChange={(e) => setSubject(e.target.value)} />
@@ -124,5 +128,21 @@ function SendForm({
         </div>
       </div>
     </Modal>
+  );
+}
+
+function RecipientField({ label, value, onChange, entries }: {
+  label: string; value: string; onChange: (v: string) => void; entries?: RecipientEntry[];
+}) {
+  // 이름 힌트(D8): 서버가 enrich한 name 있는 항목만 "email = name"으로 표시.
+  const hints = (entries ?? []).filter((e): e is Required<RecipientEntry> => Boolean(e.name));
+  return (
+    <label className="grid gap-1 text-sm">
+      <span className="text-muted-foreground">{label} (쉼표 구분)</span>
+      <Input aria-label={label} value={value} placeholder="name@example.com, ..." onChange={(e) => onChange(e.target.value)} />
+      {hints.length > 0 && (
+        <span className="text-xs text-muted-foreground">{hints.map((e) => `${e.email} = ${e.name}`).join(" · ")}</span>
+      )}
+    </label>
   );
 }

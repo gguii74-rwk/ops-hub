@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import type { MailDelivery, WorkflowKind, WorkflowStatus } from "@prisma/client";
 import { ForbiddenError } from "@/kernel/access";
-import { sendMail, type MailMessage } from "@/lib/integrations/mail";
+import { normalizeEnvelope, sendMail, type MailMessage } from "@/lib/integrations/mail";
 import { getSmtpConfig } from "@/kernel/settings/reader";
 import { resolveStoragePath, toStoredOutputPath } from "@/lib/storage";
 import { ConflictError, type MailActionCtx } from "../types";
@@ -24,11 +24,16 @@ export async function deliver(args: {
   expectedTaskStatus?: WorkflowStatus; // D11
   onDelivered?: { fromStatus: WorkflowStatus; toStatus: WorkflowStatus; actorId: string }; // G2b
 }): Promise<MailDelivery> {
+  // D10: 정규화를 기록 전에 적용 — 기록 = 실제 전송 envelope(감사·재시도 원천). to가 비면 기록 없이 거부.
+  const env = normalizeEnvelope({ to: args.msg.to, cc: args.msg.cc, bcc: args.msg.bcc });
+  if (env.to.length === 0) throw new ConflictError("수신자가 없습니다. 수신자를 지정해 발송하세요.");
   // 멱등 가드 + SENDING 선기록. 활성 중복이면 ConflictError(SMTP 미발생).
   const record = await createSendingDelivery({
     taskId: args.taskId,
     step: args.step,
-    recipients: args.msg.to,
+    recipients: env.to,
+    cc: env.cc,
+    bcc: env.bcc,
     subject: args.msg.subject,
     bodyHtml: args.msg.html,
     // D8·I4: 첨부 절대경로 → storage-relative로 저장(out 밖이면 throw). 빈 배열이면 그대로 [](leave/무첨부 무영향).
@@ -43,7 +48,7 @@ export async function deliver(args: {
   const smtpConfig = await getSmtpConfig(); // 멱등 가드 통과 후 해석(ConflictError 시 미발생)
   let providerMessageId: string | null;
   try {
-    ({ providerMessageId } = await sendMail(args.msg, smtpConfig));
+    ({ providerMessageId } = await sendMail({ ...args.msg, to: env.to, cc: env.cc, bcc: env.bcc }, smtpConfig));
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return finalizeDelivery(record.id, { status: "FAILED", sentAt: null, errorMessage: message });
@@ -100,6 +105,8 @@ export async function retryDelivery(
   try {
     ({ providerMessageId } = await sendMail({
       to: d.recipients,
+      cc: d.cc,
+      bcc: d.bcc,
       subject: d.subject,
       html: d.bodyHtml ?? "",
       attachments: absPaths.map((p) => ({ filename: basename(p), path: p })),

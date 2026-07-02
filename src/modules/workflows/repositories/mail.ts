@@ -6,13 +6,13 @@ import { ConflictError } from "../types";
 
 export interface DeliveryForAction {
   id: string; taskId: string | null; step: string | null; status: MailDeliveryStatus;
-  recipients: string[]; subject: string; bodyHtml: string | null; attachmentPaths: string[];
+  recipients: string[]; cc: string[]; bcc: string[]; subject: string; bodyHtml: string | null; attachmentPaths: string[];
   kind: WorkflowKind | null;
 }
 
 // (taskId,step) 멱등 가드(tx 내 활성 조회 + create). 경합 시 부분 unique 인덱스 P2002 → ConflictError.
 export async function createSendingDelivery(args: {
-  taskId: string | null; step: string | null; recipients: string[]; subject: string;
+  taskId: string | null; step: string | null; recipients: string[]; cc?: string[]; bcc?: string[]; subject: string;
   bodyHtml: string; attachmentPaths: string[]; sentById: string;
   expectedTaskStatus?: WorkflowStatus; // D11: task가 이 status일 때만 SENDING 생성(cancel과 상호배제)
 }): Promise<MailDelivery> {
@@ -44,6 +44,8 @@ export async function createSendingDelivery(args: {
           step: args.step,
           status: "SENDING",
           recipients: args.recipients,
+          cc: args.cc ?? [],
+          bcc: args.bcc ?? [],
           subject: args.subject,
           bodyHtml: args.bodyHtml,
           attachmentPaths: args.attachmentPaths,
@@ -112,7 +114,7 @@ export async function findDeliveryForAction(deliveryId: string): Promise<Deliver
   const d = await prisma.mailDelivery.findUnique({
     where: { id: deliveryId },
     select: {
-      id: true, taskId: true, step: true, status: true, recipients: true, subject: true,
+      id: true, taskId: true, step: true, status: true, recipients: true, cc: true, bcc: true, subject: true,
       bodyHtml: true, attachmentPaths: true,
       task: { select: { type: { select: { kind: true } } } },
     },
@@ -124,6 +126,8 @@ export async function findDeliveryForAction(deliveryId: string): Promise<Deliver
     step: d.step,
     status: d.status,
     recipients: Array.isArray(d.recipients) ? (d.recipients as string[]) : [],
+    cc: Array.isArray(d.cc) ? (d.cc as string[]) : [],
+    bcc: Array.isArray(d.bcc) ? (d.bcc as string[]) : [],
     subject: d.subject,
     bodyHtml: d.bodyHtml,
     attachmentPaths: Array.isArray(d.attachmentPaths) ? (d.attachmentPaths as string[]) : [],

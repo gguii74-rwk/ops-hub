@@ -81,8 +81,8 @@ describe("getSetting", () => {
     expect(await getSetting("integrations.smtp.fromAddress")).toBe("ops@x.com");
   });
   it("invalid row + fallbackSafe=true → default(no throw)", async () => {
-    store.set("workflows.weeklyReport.defaultRecipients", { value: "not-array", updatedAt: new Date() });
-    expect(await getSetting("workflows.weeklyReport.defaultRecipients")).toEqual([]);
+    store.set("leave.notifications.onRequest", { value: "not-a-boolean", updatedAt: new Date() });
+    expect(await getSetting("leave.notifications.onRequest")).toBe(true);
   });
   it("invalid row + fallbackSafe=false → SettingInvalidError", async () => {
     store.set("integrations.smtp.fromAddress", { value: 123, updatedAt: new Date() });
@@ -145,7 +145,7 @@ describe("listSettings", () => {
     const items = await listSettings("u1");
     const keys = items.map((i) => i.key);
     expect(keys).toContain("integrations.smtp.fromAddress");
-    expect(keys).not.toContain("workflows.weeklyReport.defaultRecipients");
+    expect(keys).not.toContain("workflows.mail.recipients"); // workflows.mail:configure 미보유 → 항목 숨김
   });
   it("systemSetting status: 유효→OK(value), invalid→INVALID(default)", async () => {
     setAllowed(new Set(["integrations.smtp:configure"]));
@@ -179,6 +179,6 @@ describe("listSettings", () => {
     const items = await listSettings("u1");
     const billing = items.find((i) => i.key === "workflows.billing.config")!;
     expect(billing.status).toBe("LINK");
-    expect(billing.manageHref).toBe("/admin/settings/billing");
+    expect(billing.manageHref).toBe("/workflows/billing/settings");
   });
 });

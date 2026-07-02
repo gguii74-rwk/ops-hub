@@ -6,18 +6,24 @@ vi.mock("@/modules/workflows/repositories", () => ({
   findTaskDetail: vi.fn(),
   createGeneratedFiles: vi.fn(),
 }));
+vi.mock("@/modules/workflows/repositories/mail-recipients", () => ({
+  findContactNamesByEmails: vi.fn(async () => new Map<string, string>()),
+}));
 
 import { ForbiddenError } from "@/kernel/access";
 import * as repo from "@/modules/workflows/repositories";
+import * as contactRepo from "@/modules/workflows/repositories/mail-recipients";
 import { getTaskList, getTaskDetailView, getCalendarTasks } from "@/modules/workflows/services/tasks";
 import { recordGeneratedFiles } from "@/modules/workflows/services/generator";
 
 const m = repo as unknown as Record<string, ReturnType<typeof vi.fn>>;
+const cm = contactRepo as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
 beforeEach(() => {
   m.findTaskList.mockReset().mockResolvedValue([]);
   m.findTaskDetail.mockReset().mockResolvedValue(null);
   m.createGeneratedFiles.mockReset().mockResolvedValue(undefined);
+  cm.findContactNamesByEmails.mockReset().mockResolvedValue(new Map());
 });
 
 describe("getTaskList", () => {
@@ -52,54 +58,74 @@ describe("getTaskList", () => {
 
 describe("getTaskDetailView", () => {
   const detail = {
-    id: "t1", kind: "WEEKLY_REPORT", typeName: "주간보고", scheduledAt: new Date("2026-06-12T00:00:00Z"), status: "GENERATED",
-    createdById: "u1", outputPath: null, recipients: null, defaultRecipients: null,
+    id: "t1", kind: "BILLING", typeName: "대금청구", scheduledAt: new Date("2026-06-12T00:00:00Z"), status: "GENERATED",
+    createdById: "u1", outputPath: null,
+    defaultRecipients: { "1": { to: ["a@x.com"], cc: ["c@x.com"], bcc: ["b@x.com"] } },
     files: [{ id: "f1", path: "/o/a.xlsx", displayName: "a.xlsx", mimeType: null, sizeBytes: 123n, createdAt: new Date("2026-06-12T00:00:00Z") }],
-    mailDeliveries: [{ id: "m1", step: "send", recipients: ["a@x"], subject: "s", status: "FAILED", errorMessage: "boom", providerMessageId: null, sentAt: null }],
+    mailDeliveries: [{ id: "m1", step: "1", recipients: ["a@x"], cc: ["c@x"], bcc: ["b@x"], subject: "s", status: "FAILED", errorMessage: "boom", providerMessageId: null, sentAt: null }],
     events: [{ id: "e1", fromStatus: null, toStatus: "PENDING", actorId: "u1", note: null, occurredAt: new Date("2026-06-12T00:00:00Z") }],
   };
 
   it("없으면 null", async () => {
     m.findTaskDetail.mockResolvedValue(null);
-    expect(await getTaskDetailView("nope", { permissionKeys: new Set(["workflows.weekly:view"]) })).toBeNull();
+    expect(await getTaskDetailView("nope", { permissionKeys: new Set(["workflows.billing:view"]) })).toBeNull();
   });
 
   it("해당 kind :view 없으면 ForbiddenError", async () => {
     m.findTaskDetail.mockResolvedValue(detail);
-    await expect(getTaskDetailView("t1", { permissionKeys: new Set(["workflows.billing:view"]) })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(getTaskDetailView("t1", { permissionKeys: new Set(["workflows.weekly:view"]) })).rejects.toBeInstanceOf(ForbiddenError);
   });
 
   it("권한 있으면 DTO(ISO·Number·timeline) 직렬화", async () => {
     m.findTaskDetail.mockResolvedValue(detail);
-    const out = await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.weekly:view"]) });
+    const out = await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.billing:view"]) });
     expect(out!.scheduledAt).toBe("2026-06-12T00:00:00.000Z");
     expect(out!.files[0]).toEqual({ id: "f1", displayName: "a.xlsx", mimeType: null, sizeBytes: 123, createdAt: "2026-06-12T00:00:00.000Z" });
-    expect(out!.mailDeliveries[0]).toEqual({ id: "m1", step: "send", recipients: ["a@x"], subject: "s", status: "FAILED", errorMessage: "boom", sentAt: null });
+    expect(out!.mailDeliveries[0]).toEqual({ id: "m1", step: "1", recipients: ["a@x"], cc: ["c@x"], subject: "s", status: "FAILED", errorMessage: "boom", sentAt: null });
     expect(out!.timeline[0]).toEqual({ id: "e1", fromStatus: null, toStatus: "PENDING", actorId: "u1", note: null, occurredAt: "2026-06-12T00:00:00.000Z" });
   });
 
-  it(":send 없으면 effectiveRecipients 미포함(:view-only 비노출, F3)", async () => {
-    m.findTaskDetail.mockResolvedValue({ ...detail, recipients: ["a@x"], defaultRecipients: ["b@x"] });
-    const out = await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.weekly:view"]) });
+  it(":send 없으면 effectiveRecipients 미포함 + mail bcc 필드 부재(D8·D14)", async () => {
+    m.findTaskDetail.mockResolvedValue(detail);
+    const out = await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.billing:view"]) });
     expect(out!.effectiveRecipients).toBeUndefined();
+    expect(out!.mailDeliveries[0].cc).toEqual(["c@x"]);            // cc는 view 허용
+    expect("bcc" in out!.mailDeliveries[0]).toBe(false);           // bcc는 필드 생략
+    expect(cm.findContactNamesByEmails).not.toHaveBeenCalled();
   });
 
-  it(":send 있으면 task.recipients 우선", async () => {
-    m.findTaskDetail.mockResolvedValue({ ...detail, recipients: ["a@x"], defaultRecipients: ["b@x"] });
-    const out = await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.weekly:view", "workflows.weekly:send"]) });
-    expect(out!.effectiveRecipients).toEqual(["a@x"]);
+  it(":send 보유 → mail bcc 포함 + effectiveRecipients 단계별 맵(미저장 step은 빈 필드)", async () => {
+    m.findTaskDetail.mockResolvedValue(detail);
+    cm.findContactNamesByEmails.mockResolvedValue(new Map([["a@x.com", "홍길동"]]));
+    const out = await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.billing:view", "workflows.billing:send"]) });
+    expect(out!.mailDeliveries[0].bcc).toEqual(["b@x"]);
+    expect(out!.effectiveRecipients).toEqual({
+      "1": { to: [{ email: "a@x.com", name: "홍길동" }], cc: [{ email: "c@x.com" }], bcc: [{ email: "b@x.com" }] },
+      "2": { to: [], cc: [], bcc: [] },
+    });
   });
 
-  it(":send 있고 task.recipients 비면(null) type.defaultRecipients", async () => {
-    m.findTaskDetail.mockResolvedValue({ ...detail, recipients: null, defaultRecipients: ["b@x"] });
-    const out = await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.weekly:view", "workflows.weekly:send"]) });
-    expect(out!.effectiveRecipients).toEqual(["b@x"]);
+  it("enrich는 세트 등장 email만 조회(주소록 전체 미노출)", async () => {
+    m.findTaskDetail.mockResolvedValue(detail);
+    await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.billing:view", "workflows.billing:send"]) });
+    const [emails] = cm.findContactNamesByEmails.mock.calls[0] as [string[]];
+    expect([...emails].sort()).toEqual(["a@x.com", "b@x.com", "c@x.com"]);
   });
 
-  it(":send 있고 둘 다 없으면 []", async () => {
-    m.findTaskDetail.mockResolvedValue({ ...detail, recipients: null, defaultRecipients: null });
+  it("발송 step 없는 kind(WEEKLY_REPORT)는 빈 맵", async () => {
+    m.findTaskDetail.mockResolvedValue({ ...detail, kind: "WEEKLY_REPORT", defaultRecipients: null });
     const out = await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.weekly:view", "workflows.weekly:send"]) });
-    expect(out!.effectiveRecipients).toEqual([]);
+    expect(out!.effectiveRecipients).toEqual({});
+  });
+
+  it("기존 행(cc/bcc null) → cc []·bcc [](:send 기준) 호환", async () => {
+    m.findTaskDetail.mockResolvedValue({
+      ...detail,
+      mailDeliveries: [{ ...detail.mailDeliveries[0], cc: null, bcc: null }],
+    });
+    const out = await getTaskDetailView("t1", { permissionKeys: new Set(["workflows.billing:view", "workflows.billing:send"]) });
+    expect(out!.mailDeliveries[0].cc).toEqual([]);
+    expect(out!.mailDeliveries[0].bcc).toEqual([]);
   });
 });
 

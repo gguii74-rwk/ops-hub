@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { sendMail, setMailTransportForTests, type MailTransport, type MailTransportConfig } from "@/lib/integrations/mail";
+import { sendMail, normalizeEnvelope, setMailTransportForTests, type MailTransport, type MailTransportConfig } from "@/lib/integrations/mail";
 
 let sent: any[] = [];
 const fake: MailTransport = {
@@ -81,5 +81,40 @@ describe("sendMail — config 주입(MailTransportConfig)", () => {
     } finally {
       if (prevFrom === undefined) delete process.env.SMTP_FROM; else process.env.SMTP_FROM = prevFrom;
     }
+  });
+});
+
+describe("normalizeEnvelope (D10 — lib 단일 소유)", () => {
+  it("필드별 trim·빈 제거·대소문자 무시 dedup(첫 표기 보존)", () => {
+    expect(normalizeEnvelope({ to: [" A@x.com ", "a@X.com", "b@x.com", "" ] }))
+      .toEqual({ to: ["A@x.com", "b@x.com"], cc: [], bcc: [] });
+  });
+  it("교차 제외: cc−to, bcc−(to∪cc)", () => {
+    expect(normalizeEnvelope({ to: ["a@x.com"], cc: ["A@x.com", "c@x.com"], bcc: ["c@X.com", "d@x.com"] }))
+      .toEqual({ to: ["a@x.com"], cc: ["c@x.com"], bcc: ["d@x.com"] });
+  });
+  it("멱등: 정규화 결과에 재적용해도 동일(retry가 저장 envelope를 재발송해도 무해)", () => {
+    const once = normalizeEnvelope({ to: ["a@x.com", "A@x.com"], cc: ["b@x.com"], bcc: ["c@x.com", "b@x.com"] });
+    expect(normalizeEnvelope(once)).toEqual(once);
+  });
+  it("to 빈 결과 허용(throw는 소비자 몫), cc/bcc 미지정 → []", () => {
+    expect(normalizeEnvelope({ to: ["  "] })).toEqual({ to: [], cc: [], bcc: [] });
+  });
+});
+
+describe("sendMail cc/bcc (D10·§4.1)", () => {
+  it("cc/bcc를 콤마 결합해 transport에 전달", async () => {
+    await sendMail({ to: ["a@x.com"], cc: ["b@x.com", "c@x.com"], bcc: ["d@x.com"], subject: "s", html: "<p>h</p>" });
+    expect(sent[0].cc).toBe("b@x.com, c@x.com");
+    expect(sent[0].bcc).toBe("d@x.com");
+  });
+  it("cc/bcc 미지정이면 헤더 자체를 생략(기존 호출 형태 회귀 — leave 등)", async () => {
+    await sendMail({ to: ["a@x.com"], subject: "s", html: "<p>h</p>" });
+    expect("cc" in sent[0]).toBe(false);
+    expect("bcc" in sent[0]).toBe(false);
+  });
+  it("to와 중복된 cc는 전송 전 제거(방어 정규화 — 직접 호출자 대비)", async () => {
+    await sendMail({ to: ["a@x.com"], cc: ["A@x.com"], subject: "s", html: "h" });
+    expect("cc" in sent[0]).toBe(false);
   });
 });

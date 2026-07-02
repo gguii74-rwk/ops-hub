@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 vi.mock("@/kernel/access", () => ({ ForbiddenError: class ForbiddenError extends Error { constructor(m?: string) { super(m); this.name = "ForbiddenError"; } } }));
-vi.mock("@/lib/integrations/mail", () => ({ sendMail: vi.fn() }));
+vi.mock("@/lib/integrations/mail", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/integrations/mail")>();
+  return { ...actual, sendMail: vi.fn() };
+});
 vi.mock("@/kernel/settings/reader", () => ({
   getSmtpConfig: vi.fn(async () => ({ host: "mail.x", port: 587, secure: false, user: "", from: "noreply@x.com" })),
 }));
@@ -105,10 +108,26 @@ describe("deliver", () => {
     expect(send).toHaveBeenCalled();
     expect(repo.finalizeDelivery).not.toHaveBeenCalledWith("d1", expect.objectContaining({ status: "FAILED" }));
   });
+
+  it("D10: 정규화를 기록 전에 적용 — 기록=전송 envelope(cc−to 교차 제외 포함)", async () => {
+    await deliver({ taskId: "t1", step: "send", msg: { to: ["a@x", "A@x"], cc: ["a@x", "b@x"], bcc: ["b@x", "c@x"], subject: "s", html: "h" }, sentById: "u1" });
+    expect(repo.createSendingDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      recipients: ["a@x"], cc: ["b@x"], bcc: ["c@x"],
+    }));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: ["a@x"], cc: ["b@x"], bcc: ["c@x"] }), expect.anything());
+  });
+
+  it("정규화 후 to가 비면 ConflictError — SENDING 기록·SMTP 미발생(fail-closed)", async () => {
+    await expect(
+      deliver({ taskId: "t1", step: "send", msg: { to: ["  "], cc: ["b@x"], subject: "s", html: "h" }, sentById: "u1" }),
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(repo.createSendingDelivery).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
 });
 
 describe("retryDelivery", () => {
-  const failed = { id: "d1", taskId: "t1", step: "send", status: "FAILED", recipients: ["a@x"], subject: "s", bodyHtml: "<p>저장본문</p>", attachmentPaths: ["out/workflows/t1/a.hwpx"], kind: "WEEKLY_REPORT" };
+  const failed = { id: "d1", taskId: "t1", step: "send", status: "FAILED", recipients: ["a@x"], cc: [], bcc: [], subject: "s", bodyHtml: "<p>저장본문</p>", attachmentPaths: ["out/workflows/t1/a.hwpx"], kind: "WEEKLY_REPORT" };
 
   it("FAILED를 저장된 bodyHtml로 재발송(워크플로 재생성 없음) → SENT", async () => {
     repo.findDeliveryForAction.mockResolvedValue(failed);
@@ -222,6 +241,16 @@ describe("retryDelivery", () => {
     await retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.weekly:send"] }));
     expect(repo.finalizeDeliveryWithTransition).not.toHaveBeenCalled();
     expect(repo.finalizeDelivery).toHaveBeenCalledWith("d1", expect.objectContaining({ status: "SENT" }));
+  });
+
+  it("저장된 cc/bcc envelope 그대로 재발송(D4 컬럼 소비)", async () => {
+    repo.findDeliveryForAction.mockResolvedValue({
+      id: "d1", taskId: "t1", step: "1", status: "FAILED", recipients: ["a@x"], cc: ["b@x"], bcc: ["c@x"],
+      subject: "s", bodyHtml: "<p>h</p>", attachmentPaths: [], kind: "BILLING",
+    });
+    repo.claimFailedForRetry.mockResolvedValue(true);
+    await retryDelivery({ deliveryId: "d1", taskId: "t1" }, ctx({ keys: ["workflows.billing:send"] }));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: ["a@x"], cc: ["b@x"], bcc: ["c@x"] }), expect.anything());
   });
 });
 

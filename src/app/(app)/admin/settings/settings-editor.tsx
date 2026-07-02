@@ -208,8 +208,6 @@ function NumberSettingEditor({
   );
 }
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 function ListSettingEditor({
   settingKey,
   initialValue,
@@ -219,8 +217,7 @@ function ListSettingEditor({
   initialValue: string[];
   updatedAt: string | null;
 }) {
-  // 이메일 리스트만 클라 형식 검증(나머지는 비어있지 않음+중복만). 서버 zod가 권위.
-  const requireEmail = settingKey === "workflows.weeklyReport.defaultRecipients";
+  // 리스트 항목은 비어있지 않음+중복만 클라 검증. 서버 zod가 권위.
   const [items, setItems] = useState<string[]>(initialValue);
   const [draft, setDraft] = useState("");
   const [token, setToken] = useState<string | null>(updatedAt);
@@ -229,10 +226,6 @@ function ListSettingEditor({
   function addItem() {
     const v = draft.trim();
     if (!v) return;
-    if (requireEmail && !EMAIL_RE.test(v)) {
-      toast.error("이메일 형식이 아닙니다.");
-      return;
-    }
     if (items.includes(v)) {
       toast.error("이미 추가된 항목입니다.");
       return;

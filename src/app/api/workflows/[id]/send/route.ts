@@ -5,12 +5,14 @@ import { getPermissionSummary } from "@/kernel/access";
 import { runSend } from "@/modules/workflows/services/send";
 import { buildTransitionCtx, mapError } from "../../_shared";
 
-// step ∈ {1,2}만 허용(3은 zod 거부 — F2). recipients는 이메일 배열(선택, 미지정 시 task/type 폴백).
+// step ∈ {1,2}만 허용(3은 zod 거부 — F2). recipients=to(선택, 미지정 시 type[step] 폴백 — D5). cc/bcc 선택(D14는 응답측).
 const sendSchema = z.object({
   step: z.union([z.literal(1), z.literal(2)]),
   subject: z.string().min(1),
   body: z.string(),
   recipients: z.array(z.string().email()).optional(),
+  cc: z.array(z.string().email()).optional(),
+  bcc: z.array(z.string().email()).optional(),
 });
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {

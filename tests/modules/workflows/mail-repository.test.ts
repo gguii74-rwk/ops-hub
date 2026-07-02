@@ -84,6 +84,16 @@ describe("createSendingDelivery", () => {
     h.ret.throwP2002 = true;
     await expect(createSendingDelivery({ taskId: "t1", step: "send", recipients: ["a@x"], subject: "s", bodyHtml: "h", attachmentPaths: [], sentById: "u1" })).rejects.toBeInstanceOf(ConflictError);
   });
+
+  it("cc/bcc를 그대로 기록(D4)", async () => {
+    await createSendingDelivery({ taskId: "t1", step: "send", recipients: ["a@x"], cc: ["b@x"], bcc: ["c@x"], subject: "s", bodyHtml: "h", attachmentPaths: [], sentById: "u1" });
+    expect(h.calls.create.data).toMatchObject({ recipients: ["a@x"], cc: ["b@x"], bcc: ["c@x"] });
+  });
+
+  it("cc/bcc 미지정 → 빈 배열 기록(기존 호출자 호환)", async () => {
+    await createSendingDelivery({ taskId: "t1", step: "send", recipients: ["a@x"], subject: "s", bodyHtml: "h", attachmentPaths: [], sentById: "u1" });
+    expect(h.calls.create.data).toMatchObject({ cc: [], bcc: [] });
+  });
 });
 
 describe("finalizeDelivery (SENDING 대상 compare-and-set)", () => {
@@ -146,10 +156,15 @@ describe("claimFailedForRetry", () => {
 });
 
 describe("findDeliveryForAction", () => {
-  it("task→type.kind를 평탄화하고 recipients/attachmentPaths를 배열로", async () => {
-    h.ret.found = { id: "d1", taskId: "t1", step: "send", status: "FAILED", recipients: ["a@x"], subject: "s", bodyHtml: "<p>h</p>", attachmentPaths: ["/o/a.pdf"], task: { type: { kind: "BILLING" } } };
+  it("task→type.kind를 평탄화하고 recipients/cc/bcc/attachmentPaths를 배열로", async () => {
+    h.ret.found = { id: "d1", taskId: "t1", step: "send", status: "FAILED", recipients: ["a@x"], cc: ["b@x"], bcc: ["c@x"], subject: "s", bodyHtml: "<p>h</p>", attachmentPaths: ["/o/a.pdf"], task: { type: { kind: "BILLING" } } };
     const out = await findDeliveryForAction("d1");
-    expect(out).toMatchObject({ id: "d1", taskId: "t1", status: "FAILED", kind: "BILLING", recipients: ["a@x"], attachmentPaths: ["/o/a.pdf"] });
+    expect(out).toMatchObject({ id: "d1", taskId: "t1", status: "FAILED", kind: "BILLING", recipients: ["a@x"], cc: ["b@x"], bcc: ["c@x"], attachmentPaths: ["/o/a.pdf"] });
+  });
+  it("기존 행(cc/bcc null) → []로 해석(호환)", async () => {
+    h.ret.found = { id: "d1", taskId: "t1", step: "send", status: "FAILED", recipients: ["a@x"], cc: null, bcc: null, subject: "s", bodyHtml: null, attachmentPaths: [], task: null };
+    const out = await findDeliveryForAction("d1");
+    expect(out).toMatchObject({ cc: [], bcc: [], kind: null });
   });
   it("없으면 null", async () => {
     expect(await findDeliveryForAction("nope")).toBeNull();

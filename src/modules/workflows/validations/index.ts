@@ -41,3 +41,19 @@ export const billingRoundDateUpdateSchema = z.object({ submitDate: z.string().da
 export type BillingConfigData = z.infer<typeof billingConfigSchema>;             // 금액은 bigint
 export type BillingConfigUpdateData = z.infer<typeof billingConfigUpdateSchema>;
 export type BillingRoundDateUpdateData = z.infer<typeof billingRoundDateUpdateSchema>;
+
+// --- mail recipients (메일 수신자 — 주소록·타입×단계 세트) ---
+export const mailContactCreateSchema = z.object({
+  email: z.string().trim().email(),
+  name: z.string().trim().min(1),
+  memo: z.string().max(500).optional(),
+});
+// D15: email 불변 — strictObject라 email 등 여분 키가 body에 있으면 400.
+export const mailContactUpdateSchema = z.strictObject({
+  name: z.string().trim().min(1),
+  memo: z.string().max(500).optional(),
+});
+const emailListSchema = z.array(z.string().trim().email());
+export const recipientFieldsSchema = z.object({ to: emailListSchema, cc: emailListSchema, bcc: emailListSchema });
+// step 키 → 필드. 허용 step(D7 파생) 검사는 라우트에서.
+export const recipientSetPutSchema = z.record(z.string(), recipientFieldsSchema);

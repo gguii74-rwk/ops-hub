@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { TRANSITIONS, KIND_RESOURCE, ACTION_FOR_STATUS, STAMP_FOR_STATUS } from "@/modules/workflows/policy";
+import {
+  TRANSITIONS,
+  KIND_RESOURCE,
+  ACTION_FOR_STATUS,
+  STAMP_FOR_STATUS,
+  sendStepsForKind,
+  mailRecipientKinds,
+} from "@/modules/workflows/policy";
 import { ConflictError } from "@/modules/workflows/types";
 
 describe("TRANSITIONS (fail-closed)", () => {
@@ -70,5 +77,18 @@ describe("ConflictError", () => {
     const e = new ConflictError();
     expect(e).toBeInstanceOf(Error);
     expect(e.name).toBe("ConflictError");
+  });
+});
+
+describe("sendStepsForKind·mailRecipientKinds (D7 — SEND_STEP_TRANSITION 파생 단일 출처)", () => {
+  it("BILLING의 발송 step은 ['1','2']", () => {
+    expect(sendStepsForKind("BILLING")).toEqual(["1", "2"]);
+  });
+  it("발송 단계가 정의되지 않은 kind는 []", () => {
+    expect(sendStepsForKind("WEEKLY_REPORT")).toEqual([]);
+    expect(sendStepsForKind("WEEKLY_REPORT_CLIENT")).toEqual([]);
+  });
+  it("mailRecipientKinds는 현재 BILLING뿐 — 향후 kind에 step이 생기면 자동 확장", () => {
+    expect(mailRecipientKinds()).toEqual(["BILLING"]);
   });
 });

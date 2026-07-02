@@ -18,7 +18,7 @@ const findTask = findTaskForSend as unknown as ReturnType<typeof vi.fn>;
 const deliverFn = deliver as unknown as ReturnType<typeof vi.fn>;
 const readdir = fs.readdirSync as unknown as ReturnType<typeof vi.fn>;
 const ctx = (keys: string[]) => ({ userId: "u1", isOwner: false, permissionKeys: new Set(keys) });
-const baseTask = { id: "t1", status: "GENERATED", kind: "BILLING", outputPath: "out/workflows/t1", recipients: null, defaultRecipients: null };
+const baseTask = { id: "t1", status: "GENERATED", kind: "BILLING", outputPath: "out/workflows/t1", defaultRecipients: null };
 
 beforeEach(() => {
   findTask.mockReset().mockResolvedValue(baseTask);
@@ -37,7 +37,7 @@ describe("runSend (1·2단계, D7·D11·G2b·I1·F2)", () => {
   it("send 권한 없으면 Forbidden(fail-closed)", async () => {
     await expect(runSend("t1", { step: 1, subject: "s", body: "b", recipients: ["a@x.com"] }, ctx(["workflows.billing:view"]))).rejects.toBeInstanceOf(ForbiddenError);
   });
-  it("수신자 미해석(input/task/default 모두 없음) → Conflict, deliver 미호출(I1)", async () => {
+  it("수신자 미해석(input·type[step] 모두 없음) → Conflict, deliver 미호출(D5)", async () => {
     await expect(runSend("t1", { step: 1, subject: "s", body: "b" }, ctx(["workflows.billing:send"]))).rejects.toBeInstanceOf(ConflictError);
     expect(deliverFn).not.toHaveBeenCalled();
   });
@@ -73,11 +73,6 @@ describe("runSend (1·2단계, D7·D11·G2b·I1·F2)", () => {
     readdir.mockReturnValue(["memo.txt"]);
     await expect(runSend("t1", { step: 1, subject: "s", body: "b", recipients: ["a@x.com"] }, ctx(["workflows.billing:send"]))).rejects.toBeInstanceOf(ConflictError);
   });
-  it("수신자 폴백: input 없으면 task.recipients 사용", async () => {
-    findTask.mockResolvedValue({ ...baseTask, recipients: ["task@x.com"] });
-    await runSend("t1", { step: 1, subject: "s", body: "b" }, ctx(["workflows.billing:send"]));
-    expect(deliverFn).toHaveBeenCalledWith(expect.objectContaining({ msg: expect.objectContaining({ to: ["task@x.com"] }) }));
-  });
   it("onDelivered 성공 시 finalizeDeliveryWithTransition이 호출됨(G2b, 09-M1)", async () => {
     // deliver mock이 onDelivered를 받았을 때 실제로 finalizeDeliveryWithTransition에 위임하는지
     // 검증하려면 deliver 자체를 실 구현으로 실행해야 하지만, mail.service 테스트에서 이미 G2b를 커버한다.
@@ -94,5 +89,55 @@ describe("runSend (1·2단계, D7·D11·G2b·I1·F2)", () => {
     const { resolveStoragePath } = await import("@/lib/storage");
     (resolveStoragePath as ReturnType<typeof vi.fn>).mockImplementationOnce(() => { throw new Error("strict: 허용 안 된 경로"); });
     await expect(runSend("t1", { step: 1, subject: "s", body: "b", recipients: ["a@x.com"] }, ctx(["workflows.billing:send"]))).rejects.toThrow("strict");
+  });
+  it("수신자 폴백(D5): input 없으면 type.defaultRecipients[step]의 to/cc/bcc 사용", async () => {
+    findTask.mockResolvedValue({
+      ...baseTask,
+      defaultRecipients: { "1": { to: ["t@x.com"], cc: ["c@x.com"], bcc: ["b@x.com"] } },
+    });
+    await runSend("t1", { step: 1, subject: "s", body: "b" }, ctx(["workflows.billing:send"]));
+    expect(deliverFn).toHaveBeenCalledWith(expect.objectContaining({
+      msg: expect.objectContaining({ to: ["t@x.com"], cc: ["c@x.com"], bcc: ["b@x.com"] }),
+    }));
+  });
+  it("입력이 있으면 입력 envelope 그대로(D6 — defaults 무시, cc/bcc 기본 [])", async () => {
+    findTask.mockResolvedValue({
+      ...baseTask,
+      defaultRecipients: { "1": { to: ["t@x.com"], cc: ["c@x.com"], bcc: [] } },
+    });
+    await runSend("t1", { step: 1, subject: "s", body: "b", recipients: ["in@x.com"] }, ctx(["workflows.billing:send"]));
+    expect(deliverFn).toHaveBeenCalledWith(expect.objectContaining({
+      msg: expect.objectContaining({ to: ["in@x.com"], cc: [], bcc: [] }),
+    }));
+  });
+  it("recipients: []는 '비운 명시 입력' — defaults 폴백 금지, Conflict(R2 high)", async () => {
+    findTask.mockResolvedValue({
+      ...baseTask,
+      defaultRecipients: { "1": { to: ["t@x.com"], cc: [], bcc: [] } },
+    });
+    await expect(runSend("t1", { step: 1, subject: "s", body: "b", recipients: [] }, ctx(["workflows.billing:send"]))).rejects.toBeInstanceOf(ConflictError);
+    expect(deliverFn).not.toHaveBeenCalled();
+  });
+  it("recipients: [] + cc만 있어도 폴백·발송 금지(Conflict)", async () => {
+    findTask.mockResolvedValue({
+      ...baseTask,
+      defaultRecipients: { "1": { to: ["t@x.com"], cc: [], bcc: [] } },
+    });
+    await expect(runSend("t1", { step: 1, subject: "s", body: "b", recipients: [], cc: ["c@x.com"] }, ctx(["workflows.billing:send"]))).rejects.toBeInstanceOf(ConflictError);
+    expect(deliverFn).not.toHaveBeenCalled();
+  });
+  it("입력 cc/bcc 전달", async () => {
+    await runSend("t1", { step: 1, subject: "s", body: "b", recipients: ["a@x.com"], cc: ["c@x.com"], bcc: ["b@x.com"] }, ctx(["workflows.billing:send"]));
+    expect(deliverFn).toHaveBeenCalledWith(expect.objectContaining({
+      msg: expect.objectContaining({ to: ["a@x.com"], cc: ["c@x.com"], bcc: ["b@x.com"] }),
+    }));
+  });
+  it("step에 세트가 없으면(다른 step만 존재) Conflict — cc/bcc만으론 발송 불가", async () => {
+    findTask.mockResolvedValue({
+      ...baseTask,
+      defaultRecipients: { "2": { to: ["t@x.com"], cc: [], bcc: [] }, "1": { to: [], cc: ["c@x.com"], bcc: [] } },
+    });
+    await expect(runSend("t1", { step: 1, subject: "s", body: "b" }, ctx(["workflows.billing:send"]))).rejects.toBeInstanceOf(ConflictError);
+    expect(deliverFn).not.toHaveBeenCalled();
   });
 });

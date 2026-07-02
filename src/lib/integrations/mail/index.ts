@@ -2,11 +2,11 @@ import "server-only";
 import nodemailer from "nodemailer";
 
 export interface MailAttachment { filename: string; path: string; contentType?: string; }
-export interface MailMessage { to: string[]; subject: string; html: string; attachments?: MailAttachment[]; }
+export interface MailMessage { to: string[]; cc?: string[]; bcc?: string[]; subject: string; html: string; attachments?: MailAttachment[]; }
 export interface SendResult { providerMessageId: string | null; }
 export interface MailTransport {
   sendMail(opts: {
-    from: string; to: string; subject: string; html: string; attachments?: MailAttachment[];
+    from: string; to: string; cc?: string; bcc?: string; subject: string; html: string; attachments?: MailAttachment[];
   }): Promise<{ messageId?: string }>;
 }
 
@@ -45,29 +45,41 @@ function buildTransport(config?: MailTransportConfig): MailTransport {
   }) as unknown as MailTransport;
 }
 
-// trim + 대소문자 무시 중복 제거(첫 표기 보존).
-function normalizeRecipients(to: string[]): string {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of to) {
-    const t = raw.trim();
-    const key = t.toLowerCase();
-    if (t && !seen.has(key)) {
-      seen.add(key);
-      out.push(t);
+export interface MailEnvelope { to: string[]; cc: string[]; bcc: string[] }
+
+// D10 정규화(단일 소유·멱등): 필드별 trim·빈 제거·대소문자 무시 dedup(첫 표기 보존) + 교차 제외
+// cc−to, bcc−(to∪cc). deliver가 MailDelivery 기록 전에 적용해 "기록 = 실제 전송 envelope"를 보장하고,
+// sendMail도 방어적으로 재적용한다(직접 호출자 대비 — 멱등이라 무해). to 빈 결과 허용(throw는 소비자 몫).
+export function normalizeEnvelope(input: { to: string[]; cc?: string[]; bcc?: string[] }): MailEnvelope {
+  const dedup = (list: string[], exclude: Set<string>): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const raw of list) {
+      const t = raw.trim();
+      const key = t.toLowerCase();
+      if (t && !seen.has(key) && !exclude.has(key)) { seen.add(key); out.push(t); }
     }
-  }
-  if (out.length === 0) throw new Error("수신자가 없습니다.");
-  return out.join(", ");
+    return out;
+  };
+  const to = dedup(input.to, new Set());
+  const toKeys = new Set(to.map((e) => e.toLowerCase()));
+  const cc = dedup(input.cc ?? [], toKeys);
+  const ccKeys = new Set([...toKeys, ...cc.map((e) => e.toLowerCase())]);
+  const bcc = dedup(input.bcc ?? [], ccKeys);
+  return { to, cc, bcc };
 }
 
 export async function sendMail(msg: MailMessage, config?: MailTransportConfig): Promise<SendResult> {
   const transport = testTransport ?? buildTransport(config);
   // config.from은 getSmtpConfig가 항상 비어있지 않게 보장. 미주입 시 기존 env 폴백 체인.
   const from = config?.from || process.env.SMTP_FROM || process.env.SMTP_USER || "noreply@uracle.co.kr";
+  const env = normalizeEnvelope(msg);
+  if (env.to.length === 0) throw new Error("수신자가 없습니다.");
   const info = await transport.sendMail({
     from,
-    to: normalizeRecipients(msg.to),
+    to: env.to.join(", "),
+    ...(env.cc.length > 0 ? { cc: env.cc.join(", ") } : {}),
+    ...(env.bcc.length > 0 ? { bcc: env.bcc.join(", ") } : {}),
     subject: msg.subject,
     html: msg.html + SIGNATURE_HTML,
     attachments: msg.attachments,

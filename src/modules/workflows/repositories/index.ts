@@ -4,19 +4,20 @@ import { prisma, type PrismaTx } from "@/lib/prisma";
 import type { WorkflowKind, WorkflowStatus, MailDeliveryStatus, WorkflowTask } from "@prisma/client";
 import type { GeneratorResult } from "../types";
 import { ConflictError } from "../types";
+import { parseDefaultRecipients, type DefaultRecipientsMap } from "../recipients";
 
 export interface TaskListRow { id: string; kind: WorkflowKind; typeName: string; scheduledAt: Date; status: WorkflowStatus; }
 export interface TaskListFilter { kinds: WorkflowKind[]; statuses?: WorkflowStatus[]; start?: Date; end?: Date; }
 export interface FileRow { id: string; path: string; displayName: string; mimeType: string | null; sizeBytes: bigint | null; createdAt: Date; }
 export interface MailRow {
-  id: string; step: string | null; recipients: unknown; subject: string;
+  id: string; step: string | null; recipients: unknown; cc: unknown; bcc: unknown; subject: string;
   status: MailDeliveryStatus; errorMessage: string | null; providerMessageId: string | null; sentAt: Date | null;
 }
 export interface EventRow { id: string; fromStatus: WorkflowStatus | null; toStatus: WorkflowStatus; actorId: string | null; note: string | null; occurredAt: Date; }
 export interface TaskDetailRow {
   id: string; kind: WorkflowKind; typeName: string; scheduledAt: Date; status: WorkflowStatus;
   createdById: string | null; outputPath: string | null;
-  recipients: string[] | null; defaultRecipients: string[] | null;
+  defaultRecipients: DefaultRecipientsMap | null; // D5: task.recipients는 死필드 — select·타입에서 제거(컬럼 보존)
   files: FileRow[]; mailDeliveries: MailRow[]; events: EventRow[];
 }
 export interface TaskForTransition { id: string; status: WorkflowStatus; createdById: string | null; kind: WorkflowKind; }
@@ -41,11 +42,11 @@ export async function findTaskDetail(id: string): Promise<TaskDetailRow | null> 
   const t = await prisma.workflowTask.findUnique({
     where: { id },
     select: {
-      id: true, scheduledAt: true, status: true, createdById: true, outputPath: true, recipients: true,
+      id: true, scheduledAt: true, status: true, createdById: true, outputPath: true,
       type: { select: { kind: true, name: true, defaultRecipients: true } },
       files: { select: { id: true, path: true, displayName: true, mimeType: true, sizeBytes: true, createdAt: true }, orderBy: { createdAt: "asc" } },
       mailDeliveries: {
-        select: { id: true, step: true, recipients: true, subject: true, status: true, errorMessage: true, providerMessageId: true, sentAt: true },
+        select: { id: true, step: true, recipients: true, cc: true, bcc: true, subject: true, status: true, errorMessage: true, providerMessageId: true, sentAt: true },
         orderBy: { sentAt: "desc" },
       },
       events: { select: { id: true, fromStatus: true, toStatus: true, actorId: true, note: true, occurredAt: true }, orderBy: { occurredAt: "asc" } },
@@ -55,8 +56,7 @@ export async function findTaskDetail(id: string): Promise<TaskDetailRow | null> 
   return {
     id: t.id, kind: t.type.kind, typeName: t.type.name, scheduledAt: t.scheduledAt, status: t.status,
     createdById: t.createdById, outputPath: t.outputPath,
-    recipients: Array.isArray(t.recipients) ? (t.recipients as string[]) : null,
-    defaultRecipients: Array.isArray(t.type.defaultRecipients) ? (t.type.defaultRecipients as string[]) : null,
+    defaultRecipients: parseDefaultRecipients(t.type.defaultRecipients),
     files: t.files, mailDeliveries: t.mailDeliveries, events: t.events,
   };
 }
@@ -175,22 +175,22 @@ export async function findTaskForGenerate(id: string): Promise<FullTaskForGenera
 
 export interface TaskForSend {
   id: string; status: WorkflowStatus; kind: WorkflowKind; outputPath: string | null;
-  recipients: string[] | null; defaultRecipients: string[] | null;
+  // D5: task.recipients는 死필드(쓰기 지점 없음) — select·체인에서 제거(컬럼은 보존). 폴백은 type의 단계별 맵뿐.
+  defaultRecipients: DefaultRecipientsMap | null;
 }
 
 export async function findTaskForSend(id: string): Promise<TaskForSend | null> {
   const t = await prisma.workflowTask.findUnique({
     where: { id },
     select: {
-      id: true, status: true, outputPath: true, recipients: true,
+      id: true, status: true, outputPath: true,
       type: { select: { kind: true, defaultRecipients: true } },
     },
   });
   if (!t) return null;
   return {
     id: t.id, status: t.status, kind: t.type.kind, outputPath: t.outputPath,
-    recipients: Array.isArray(t.recipients) ? (t.recipients as string[]) : null,
-    defaultRecipients: Array.isArray(t.type.defaultRecipients) ? (t.type.defaultRecipients as string[]) : null,
+    defaultRecipients: parseDefaultRecipients(t.type.defaultRecipients),
   };
 }
 
