@@ -11,14 +11,15 @@ import {
   CANCELLABLE, KIND_LABEL, MAIL_LABEL, MAIL_VARIANT, STATUS_LABEL, STATUS_VARIANT,
   type MailStatus, type WfStatus,
 } from "../labels";
+import type { EffectiveRecipientsMap } from "@/modules/workflows/recipients";
 
 interface TimelineEntry { id: string; fromStatus: WfStatus | null; toStatus: WfStatus; actorId: string | null; note: string | null; occurredAt: string; }
-interface MailView { id: string; step: string | null; recipients: string[]; subject: string; status: MailStatus; errorMessage: string | null; sentAt: string | null; }
+interface MailView { id: string; step: string | null; recipients: string[]; cc: string[]; bcc?: string[]; subject: string; status: MailStatus; errorMessage: string | null; sentAt: string | null; }
 interface FileView { id: string; displayName: string; mimeType: string | null; sizeBytes: number | null; createdAt: string; }
 interface Detail {
   id: string; kind: string; typeName: string; scheduledAt: string; status: WfStatus;
   files: FileView[]; mailDeliveries: MailView[]; timeline: TimelineEntry[];
-  effectiveRecipients?: string[]; // :send 권한자에게만 백엔드가 포함(SC-4)
+  effectiveRecipients?: EffectiveRecipientsMap; // :send 권한자에게만 백엔드가 포함(D8 — 단계별 맵)
 }
 
 async function fetchDetail(id: string): Promise<Detail | null> {
@@ -153,6 +154,8 @@ export function WorkflowDetail({ taskId, isAdmin }: { taskId: string; isAdmin: b
                 <Badge variant={MAIL_VARIANT[m.status]}>{MAIL_LABEL[m.status]}</Badge>
                 <span className="font-medium">{m.subject}</span>
                 <span className="text-muted-foreground">{m.recipients.join(", ")}</span>
+                {m.cc.length > 0 && <span className="text-muted-foreground">참조: {m.cc.join(", ")}</span>}
+                {m.bcc && m.bcc.length > 0 && <span className="text-muted-foreground">숨은참조: {m.bcc.join(", ")}</span>}
                 {m.errorMessage && <span className="text-destructive">{m.errorMessage}</span>}
                 {m.status === "FAILED" && canSend && (
                   <Button size="sm" variant="outline" disabled={busy} onClick={() => act(`/api/workflows/${taskId}/mail/${m.id}/retry`)}>
@@ -176,7 +179,7 @@ export function WorkflowDetail({ taskId, isAdmin }: { taskId: string; isAdmin: b
           taskId={taskId}
           step={sendStep}
           scheduledAt={detail.scheduledAt}
-          effectiveRecipients={detail.effectiveRecipients}
+          effectiveRecipients={detail.effectiveRecipients?.[String(sendStep)]}
           onClose={() => setSendStep(null)}
         />
       )}

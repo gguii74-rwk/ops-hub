@@ -23,17 +23,35 @@ afterEach(() => {
 // 2026-02-09T15:00Z = KST 2026-02-10 → 전월=1월, projectYear=2026
 const SCHEDULED = "2026-02-09T15:00:00.000Z";
 
+const er = (to: Array<{ email: string; name?: string }>, cc: Array<{ email: string; name?: string }> = [], bcc: Array<{ email: string; name?: string }> = []) => ({ to, cc, bcc });
+
 describe("SendModal prefill", () => {
   it("effectiveRecipients·템플릿(projectName·전월) prefill", () => {
-    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={["a@x.com", "b@x.com"]} onClose={() => {}} />);
+    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={er([{ email: "a@x.com" }, { email: "b@x.com" }])} onClose={() => {}} />);
     expect((screen.getByLabelText("수신자") as HTMLInputElement).value).toBe("a@x.com, b@x.com");
     const subject = (screen.getByLabelText("제목") as HTMLInputElement).value;
     expect(subject).toContain("테스트사업");
     expect(subject).toContain("1월");
   });
   it("step2는 '첨부 없음' 안내", () => {
-    render(<SendModal taskId="t1" step={2} scheduledAt={SCHEDULED} effectiveRecipients={["a@x.com"]} onClose={() => {}} />);
+    render(<SendModal taskId="t1" step={2} scheduledAt={SCHEDULED} effectiveRecipients={er([{ email: "a@x.com" }])} onClose={() => {}} />);
     expect(screen.getByText(/첨부 없음/)).toBeTruthy();
+  });
+
+  it("3필드 prefill: cc/bcc + 이름 힌트(enrich name만 표시)", () => {
+    render(
+      <SendModal
+        taskId="t1" step={1} scheduledAt={SCHEDULED}
+        effectiveRecipients={er([{ email: "a@x.com", name: "홍길동" }], [{ email: "c@x.com" }], [{ email: "b@x.com", name: "감사팀" }])}
+        onClose={() => {}}
+      />,
+    );
+    expect((screen.getByLabelText("수신자") as HTMLInputElement).value).toBe("a@x.com");
+    expect((screen.getByLabelText("참조") as HTMLInputElement).value).toBe("c@x.com");
+    expect((screen.getByLabelText("숨은참조") as HTMLInputElement).value).toBe("b@x.com");
+    expect(screen.getByText(/a@x\.com = 홍길동/)).toBeTruthy();
+    expect(screen.getByText(/b@x\.com = 감사팀/)).toBeTruthy();
+    expect(screen.queryByText(/c@x\.com =/)).toBeNull(); // name 없는 항목은 힌트 없음
   });
 });
 
@@ -41,7 +59,7 @@ describe("SendModal fail-closed (D6)", () => {
   it("① 빈 To는 발송 차단(fetch 미발생) + 검증 오류", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={[]} onClose={() => {}} />);
+    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={undefined} onClose={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "발송" }));
     expect(fetchMock).not.toHaveBeenCalled();
     expect(screen.getByText(/수신자를 1명 이상/)).toBeTruthy();
@@ -51,7 +69,7 @@ describe("SendModal fail-closed (D6)", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
     vi.stubGlobal("fetch", fetchMock);
     const onClose = vi.fn();
-    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={[]} onClose={onClose} />);
+    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={undefined} onClose={onClose} />);
     fireEvent.change(screen.getByLabelText("수신자"), { target: { value: "a@x.com,  b@x.com " } });
     fireEvent.click(screen.getByRole("button", { name: "발송" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
@@ -62,6 +80,8 @@ describe("SendModal fail-closed (D6)", () => {
     expect(payload.recipients).toEqual(["a@x.com", "b@x.com"]); // trim·filter 후 정확히, 생략 없음
     expect(typeof payload.subject).toBe("string");
     expect(payload.body).toContain("<p>"); // plainToHtml 적용
+    expect(payload.cc).toEqual([]);   // cc/bcc도 항상 명시(D6)
+    expect(payload.bcc).toEqual([]);
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
@@ -69,10 +89,33 @@ describe("SendModal fail-closed (D6)", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 409, json: async () => ({}) });
     vi.stubGlobal("fetch", fetchMock);
     const onClose = vi.fn();
-    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={["a@x.com"]} onClose={onClose} />);
+    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={er([{ email: "a@x.com" }])} onClose={onClose} />);
     fireEvent.click(screen.getByRole("button", { name: "발송" }));
     await waitFor(() => expect(toastErr).toHaveBeenCalled());
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("③ cc/bcc 입력이 payload에 그대로(쉼표 파싱만, 정규화는 서버)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={er([{ email: "a@x.com" }])} onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText("참조"), { target: { value: "c@x.com,  d@x.com " } });
+    fireEvent.change(screen.getByLabelText("숨은참조"), { target: { value: "b@x.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "발송" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const payload = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(payload.recipients).toEqual(["a@x.com"]);
+    expect(payload.cc).toEqual(["c@x.com", "d@x.com"]);
+    expect(payload.bcc).toEqual(["b@x.com"]);
+  });
+  it("④ cc/bcc만 있고 To가 비면 차단(fetch 미발생)", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={undefined} onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText("참조"), { target: { value: "c@x.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "발송" }));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getByText(/수신자를 1명 이상/)).toBeTruthy();
   });
 });
 
@@ -81,14 +124,14 @@ describe("SendModal config 로드 (F-A2)", () => {
     cfgState.isError = true; cfgState.data = undefined;
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={["a@x.com"]} onClose={() => {}} />);
+    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={er([{ email: "a@x.com" }])} onClose={() => {}} />);
     expect(screen.queryByRole("button", { name: "발송" })).toBeNull();
     expect(screen.getByText(/설정을 불러오지 못했습니다/)).toBeTruthy();
     expect(fetchMock).not.toHaveBeenCalled();
   });
   it("404(설정 없음, 사업명 공백) → 경고 노출하되 발송 가능(D5 편집 경로 보존)", () => {
     cfgState.isError = false; cfgState.data = { projectName: "" };
-    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={["a@x.com"]} onClose={() => {}} />);
+    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={er([{ email: "a@x.com" }])} onClose={() => {}} />);
     expect(screen.getByText(/설정\(사업명\)이 없습니다/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "발송" })).toBeTruthy();
   });
@@ -102,7 +145,7 @@ describe("SendModal F-A1 escape-chain (end-to-end)", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
     vi.stubGlobal("fetch", fetchMock);
     const onClose = vi.fn();
-    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={["a@x.com"]} onClose={onClose} />);
+    render(<SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={er([{ email: "a@x.com" }])} onClose={onClose} />);
     fireEvent.click(screen.getByRole("button", { name: "발송" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const [, init] = fetchMock.mock.calls[0];
@@ -122,12 +165,12 @@ describe("SendModal stale config prefill (refetch resync)", () => {
     // React Query가 캐시된(이전/404) 설정을 즉시 반환한 뒤 최신 설정으로 갱신되는 상황을 모사.
     cfgState.data = { projectName: "이전사업" };
     const { rerender } = render(
-      <SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={["a@x.com"]} onClose={() => {}} />,
+      <SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={er([{ email: "a@x.com" }])} onClose={() => {}} />,
     );
     expect((screen.getByLabelText("제목") as HTMLInputElement).value).toContain("이전사업");
     cfgState.data = { projectName: "최신사업" };
     rerender(
-      <SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={["a@x.com"]} onClose={() => {}} />,
+      <SendModal taskId="t1" step={1} scheduledAt={SCHEDULED} effectiveRecipients={er([{ email: "a@x.com" }])} onClose={() => {}} />,
     );
     const subject = (screen.getByLabelText("제목") as HTMLInputElement).value;
     expect(subject).toContain("최신사업");
