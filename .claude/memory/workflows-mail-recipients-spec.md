@@ -1,6 +1,6 @@
 ---
 name: workflows-mail-recipients-spec
-description: "메일 수신자 세트(sub-project B) spec 2R + plan 4R + SDD impl 10/10 + impl review-loop 3R 종결(미판정 0) → PR #31 생성(HEAD 2c4480f). 다음=머지 + kgs-dev 배포(preflight 필수)"
+description: "메일 수신자 세트(sub-project B) spec 2R + plan 4R + SDD impl 10/10 + impl review-loop 3R 종결(미판정 0) → PR #31 머지(6a2692a) + kgs-dev 배포·preflight·DB검증 완료(2026-07-02). 잔여=인증 후 시각 smoke"
 metadata: 
   node_type: memory
   type: project
@@ -18,4 +18,4 @@ metadata:
 - **DUPLICATE(기판정 재지목)**: 세트 LWW=plan ACCEPTED(통산 6회 재지목) · AuditLog=plan OUT_OF_SCOPE(follow-up) · **legacy recipients 실행형 가드=spec D5·§7 기결정**(배포 preflight SQL로 non-null 0 증명·fail-fast, in-repo 가드 미채택 — R2·R3 연속 재지목, 재논의 말 것)
 - 게이트: typecheck/lint 0 · test **1790** · build green · no-AI-trace(메타 커밋 메시지 재작성 `d74397d`)
 
-**PR #31 생성 완료**(push됨, origin=로컬 `2c4480f`). **다음=머지(merge commit, 머지 전 origin==로컬 확인) + kgs-dev 배포**: preflight(§7 — `workflows."WorkflowTask"."recipients"`·`workflows."WorkflowType"."defaultRecipients"` non-null 0, multiSchema 스키마 한정) → additive 2건 migrate → prisma:generate → db:seed(workflows.mail:configure+pm reconcile) → 표준 restart → smoke. 관련: [[workflows-calendar-spec]] [[workflows-billing-ui-review-loop]] [[session-per-merge-workflow]] [[no-ai-trace-in-review-loop-output]]
+**PR #31 머지(merge commit `6a2692a`) + kgs-dev 배포 완료(2026-07-02)**: preflight 통과(legacy 값 0/0 — D5 전제 DB 증명, 死설정 잔존 없음) → migrate `20260702000000_mail_recipients` 적용 → db:seed → build → 표준 restart. **DB 검증**: `workflows.mail:configure` Permission 행·pm ALLOW all·upgrade-once 플래그·MailDelivery cc/bcc 컬럼·MailContact 테이블(0행) 확인. **smoke green**: /login 200·mail contacts/recipients 비인증 401·calendar feed 401(P2010 없음). pm2 에러 로그의 STORAGE_ROOT 오류는 07-01 잔존 로그(재발 아님, .env 설정 확인). **잔여=인증 후 시각 smoke**(LAN 172.21.10.27:3200 — 설정 카드 노출·주소록 CRUD·발송 모달 3필드 prefill). 관련: [[workflows-calendar-spec]] [[workflows-billing-ui-review-loop]] [[session-per-merge-workflow]] [[no-ai-trace-in-review-loop-output]] [[billing-generation-storage-root-deploy-gap]]
