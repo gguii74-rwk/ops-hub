@@ -1,6 +1,6 @@
 # 워크플로 메일 수신자 세트(주소록 + 타입×단계 기본값) 설계
 
-- Status: Draft (brainstorming 합의)
+- Status: Draft (brainstorming 합의 + spec 적대검증 2R 종결 — R1 blocking 4건 전부 FIXED, R2 approve·잔여 0. §8 ledger)
 - Date: 2026-07-02
 - 선행: **대금청구 백엔드/UI**(PR #28·#29 — send 1·2단계, `MailDelivery`, `effectiveRecipients`), **업무 캘린더**(PR #30), **설정 재설계 PR-A**(PR #25 — 설정 그룹 카드·死설정 제거 원칙).
 - 배경: 대금청구 UI spec(2026-06-30)에서 **CC/BCC를 명시 유보**("백엔드 send가 수신자 단일 목록(To)만 받음")한 sub-project B. day-sync 선례 = 설정 모달에서 타입별 `{to, cc, bcc, hq:{to,cc,bcc}}` 기본 수신자 관리.
