@@ -129,4 +129,22 @@ describe("세트 저장", () => {
     fireEvent.click(screen.getByRole("button", { name: "대금청구 세트 저장" }));
     await waitFor(() => expect(toastErr).toHaveBeenCalledWith("이메일 형식을 확인하세요."));
   });
+  it("PUT 200 → 응답의 서버 정규화 recipients로 draft 동기화", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        kind: "BILLING",
+        recipients: {
+          "1": { to: ["hong@x.com"], cc: ["etc@x.com"], bcc: [] },
+          "2": { to: [], cc: [], bcc: [] },
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setup();
+    fireEvent.change(screen.getByLabelText("1단계 참조"), { target: { value: " ETC@x.com , etc@x.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "대금청구 세트 저장" }));
+    await waitFor(() => expect((screen.getByLabelText("1단계 참조") as HTMLInputElement).value).toBe("etc@x.com"));
+  });
 });

@@ -206,6 +206,19 @@ function RecipientSetCard({ set, nameByEmail }: { set: SetDto; nameByEmail: Map<
       });
       if (!res.ok) { toast.error(res.status === 400 ? "이메일 형식을 확인하세요." : "저장에 실패했습니다."); return; }
       toast.success("저장되었습니다.");
+      // 서버가 trim/lowercase/dedupe한 값을 echo(§4.3) — 화면 draft를 그 값으로 동기화해
+      // 저장 직후 입력에 남은 raw 값(대소문자·공백·중복)이 저장된 값과 갈라지지 않게 한다.
+      try {
+        const data = (await res.json()) as { recipients?: Record<string, FieldsDto> };
+        if (data.recipients) {
+          setDraft(Object.fromEntries(set.steps.map((s) => {
+            const f = data.recipients![s] ?? { to: [], cc: [], bcc: [] };
+            return [s, { to: f.to.join(", "), cc: f.cc.join(", "), bcc: f.bcc.join(", ") }];
+          })));
+        }
+      } catch {
+        // 응답 본문이 없거나 파싱 실패해도 저장 자체는 성공 — draft는 기존 값 유지.
+      }
       await qc.invalidateQueries({ queryKey: ["mail-recipient-sets"] });
     } finally { setSaving(false); }
   }
