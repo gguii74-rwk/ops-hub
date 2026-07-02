@@ -98,23 +98,20 @@ export const CATALOG: readonly SettingEntry[] = [
     audit: "summary",
     fallbackSafe: false,
   },
-  // --- workflows (systemSetting) ---
+  // --- workflows ---
   {
-    kind: "systemSetting",
-    key: "workflows.weeklyReport.defaultRecipients",
+    kind: "relational",
+    key: "workflows.mail.recipients",
     category: "workflows",
     group: "workflows",
     groupOrder: 1,
     order: 40,
-    title: "주간보고 기본 수신자",
-    description: "주간보고 메일 기본 수신자 이메일 목록.",
-    permission: { resource: "workflows.weekly", action: "configure" },
-    schema: z.array(z.string().email()),
-    default: [],
-    audit: "summary",
-    fallbackSafe: true,
+    title: "메일 수신자",
+    description: "주소록과 업무유형×발송단계별 기본 수신자 세트를 관리합니다.",
+    permission: { resource: "workflows.mail", action: "configure" },
+    model: "MailContact",
+    manageHref: "/admin/settings/mail-recipients",
   },
-  // --- workflows (relational, 편집기 Phase 4) ---
   {
     kind: "relational",
     key: "workflows.billing.config",
@@ -126,7 +123,7 @@ export const CATALOG: readonly SettingEntry[] = [
     description: "연도별 계약·청구 설정(전용 화면에서 관리, Phase 4).",
     permission: { resource: "workflows.billing", action: "configure" },
     model: "BillingConfig",
-    manageHref: "/admin/settings/billing",
+    manageHref: "/workflows/billing/settings",
   },
   // --- leave (systemSetting) ---
   {
