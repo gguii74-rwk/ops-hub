@@ -51,6 +51,27 @@ const KIND_STYLES: Record<string, KindStyle> = {
     soft: "bg-violet-100 text-violet-700 ring-1 ring-violet-300/70 dark:bg-violet-500/20 dark:text-violet-100 dark:ring-violet-400/30",
     bold: "bg-violet-500 text-white ring-1 ring-violet-600/40 dark:bg-violet-500/80 dark:text-violet-50",
   },
+  // 워크플로 kind별 색(D7) — 통합 캘린더 WORKFLOW_TASK(단일 주황)와 별개 additive.
+  BILLING: {
+    soft: "bg-orange-100 text-orange-950 ring-1 ring-orange-300/70 dark:bg-orange-500/20 dark:text-orange-100 dark:ring-orange-300/30",
+    bold: "bg-orange-500 text-white ring-1 ring-orange-600/40 dark:bg-orange-500/80 dark:text-orange-50 dark:ring-orange-400/40",
+  },
+  NOTIFICATION_BILLING: {
+    soft: "bg-cyan-100 text-cyan-950 ring-1 ring-cyan-300/70 dark:bg-cyan-500/20 dark:text-cyan-100 dark:ring-cyan-400/30",
+    bold: "bg-cyan-500 text-white ring-1 ring-cyan-600/40 dark:bg-cyan-500/80 dark:text-cyan-50 dark:ring-cyan-400/40",
+  },
+  WEEKLY_REPORT: {
+    soft: "bg-indigo-100 text-indigo-950 ring-1 ring-indigo-300/70 dark:bg-indigo-500/20 dark:text-indigo-100 dark:ring-indigo-300/30",
+    bold: "bg-indigo-500 text-white ring-1 ring-indigo-600/40 dark:bg-indigo-500/80 dark:text-indigo-50 dark:ring-indigo-400/40",
+  },
+  WEEKLY_REPORT_CLIENT: {
+    soft: "bg-violet-100 text-violet-950 ring-1 ring-violet-300/70 dark:bg-violet-500/20 dark:text-violet-100 dark:ring-violet-400/30",
+    bold: "bg-violet-500 text-white ring-1 ring-violet-600/40 dark:bg-violet-500/80 dark:text-violet-50 dark:ring-violet-400/40",
+  },
+  MONTHLY_REPORT_CLIENT: {
+    soft: "bg-pink-100 text-pink-950 ring-1 ring-pink-300/70 dark:bg-pink-500/20 dark:text-pink-100 dark:ring-pink-400/30",
+    bold: "bg-pink-500 text-white ring-1 ring-pink-600/40 dark:bg-pink-500/80 dark:text-pink-50 dark:ring-pink-400/40",
+  },
 };
 
 const NEUTRAL: KindStyle = {

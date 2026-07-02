@@ -5,9 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // react-query 모킹: useQuery 데이터를 가변 queryData로(테스트가 holidays/unsyncedYears를 주입).
 const h = vi.hoisted(() => ({
   queryData: { events: [] as unknown[], holidays: [] as unknown[], unsyncedYears: [] as number[] },
+  isError: false,
 }));
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({ data: h.queryData }),
+  useQuery: () => ({ data: h.isError ? undefined : h.queryData, isError: h.isError }),
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
   useMutation: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
 }));
@@ -16,6 +17,7 @@ import { LeaveCalendar } from "@/app/(app)/leave/_components/leave-calendar";
 
 beforeEach(() => {
   h.queryData = { events: [], holidays: [], unsyncedYears: [] };
+  h.isError = false;
 });
 afterEach(() => {
   cleanup();
@@ -132,5 +134,18 @@ describe("LeaveCalendar — nav 운영 창 경계 비활성(D10)", () => {
     }
     const prev = screen.getByRole("button", { name: "이전" }) as HTMLButtonElement;
     expect(prev.disabled).toBe(true);
+  });
+});
+
+describe("LeaveCalendar — 조회 실패 에러상태(SC-13)", () => {
+  it("조회 실패 시 에러 배너 노출(빈 캘린더로 위장 안 함)", () => {
+    h.isError = true;
+    render(<LeaveCalendar canCreate canManage={false} />);
+    expect(screen.getByText("연차 캘린더를 불러오지 못했습니다.")).toBeTruthy();
+  });
+
+  it("정상(비-에러) 시 에러 배너 없음", () => {
+    render(<LeaveCalendar canCreate canManage={false} />);
+    expect(screen.queryByText("연차 캘린더를 불러오지 못했습니다.")).toBeNull();
   });
 });

@@ -1,12 +1,21 @@
+import type { WorkflowKind } from "@prisma/client";
+
 export type WfStatus = "PENDING" | "GENERATED" | "REVIEWED" | "SENT" | "HQ_REQUESTED" | "FINAL_SENT" | "CANCELLED";
 export type MailStatus = "PENDING" | "SENDING" | "SENT" | "FAILED" | "CANCELLED";
 type BadgeVariant = "default" | "secondary" | "outline" | "destructive";
 
 export const KIND_LABEL: Record<string, string> = {
-  WEEKLY_REPORT: "주간보고",
+  WEEKLY_REPORT: "주간보고(본부)",
   BILLING: "대금청구",
-  NOTIFICATION_BILLING: "알림톡",
+  NOTIFICATION_BILLING: "알림톡청구",
+  WEEKLY_REPORT_CLIENT: "주간보고(고객사)",
+  MONTHLY_REPORT_CLIENT: "월간보고(고객사)",
 };
+
+// 필터(전체+5)·생성 드롭다운 공통 표시 순서(D6/D10). 값=WorkflowKind enum.
+export const WORKFLOW_KIND_ORDER: WorkflowKind[] = [
+  "BILLING", "NOTIFICATION_BILLING", "WEEKLY_REPORT", "WEEKLY_REPORT_CLIENT", "MONTHLY_REPORT_CLIENT",
+];
 
 export const STATUS_LABEL: Record<WfStatus, string> = {
   PENDING: "대기", GENERATED: "생성됨", REVIEWED: "검토됨", SENT: "발송됨",

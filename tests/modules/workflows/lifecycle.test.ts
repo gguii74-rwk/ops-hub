@@ -121,6 +121,25 @@ describe("createTask", () => {
     await createTask({ kind: "BILLING", scheduledAt: new Date("2026-06-20") }, baseCtx({ isOwner: true }));
     expect(m.createTaskWithInitialEvent).toHaveBeenCalled();
   });
+
+  it("client kind: create 미부여 → ForbiddenError(R2·F1a — 타입 해석 전 차단)", async () => {
+    await expect(
+      createTask({ kind: "WEEKLY_REPORT_CLIENT", scheduledAt: new Date() }, baseCtx({ keys: ["workflows.weeklyClient:view"] })),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    expect(m.findWorkflowTypeByKind).not.toHaveBeenCalled();
+  });
+
+  it("client kind: create 부여 → PENDING 예약 생성(R2·F1b, 수준 B)", async () => {
+    m.findWorkflowTypeByKind.mockResolvedValue({ id: "monthly-report-client" });
+    m.createTaskWithInitialEvent.mockResolvedValue({ id: "c1" });
+    const out = await createTask(
+      { kind: "MONTHLY_REPORT_CLIENT", scheduledAt: new Date("2026-07-20") },
+      baseCtx({ keys: ["workflows.monthlyClient:create"] }),
+    );
+    expect(out).toEqual({ id: "c1" });
+    expect(m.findWorkflowTypeByKind).toHaveBeenCalledWith("MONTHLY_REPORT_CLIENT");
+    expect(m.createTaskWithInitialEvent).toHaveBeenCalledWith({ typeId: "monthly-report-client", scheduledAt: new Date("2026-07-20"), createdById: "u1" });
+  });
 });
 
 describe("cancelTask", () => {

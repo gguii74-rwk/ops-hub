@@ -63,6 +63,8 @@ enum WorkflowKind {
   WEEKLY_REPORT
   BILLING
   NOTIFICATION_BILLING
+  WEEKLY_REPORT_CLIENT
+  MONTHLY_REPORT_CLIENT
 
   @@schema("workflows")
 }

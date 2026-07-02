@@ -14,7 +14,8 @@ export interface TaskDetailView {
   effectiveRecipients?: string[]; // :send 권한자에게만(§6, F3). 없으면 필드 생략.
 }
 
-const ALL_KINDS: WorkflowKind[] = ["WEEKLY_REPORT", "BILLING", "NOTIFICATION_BILLING"];
+// 조회 allow-list 단일 출처(F1): 완전매핑 Record에서 파생 → 신규 kind가 typecheck 없이 자동 포함.
+const ALL_KINDS = Object.keys(KIND_RESOURCE) as WorkflowKind[];
 
 function allowedKinds(keys: Set<string>): WorkflowKind[] {
   return ALL_KINDS.filter((k) => keys.has(`${KIND_RESOURCE[k]}:view`));
@@ -26,6 +27,26 @@ export async function getTaskList(
 ): Promise<TaskListItem[]> {
   const kinds = allowedKinds(ctx.permissionKeys);
   const rows = await findTaskList({ kinds, statuses: filter.statuses, start: filter.start, end: filter.end });
+  return rows.map((r) => ({
+    id: r.id,
+    kind: r.kind,
+    typeName: r.typeName,
+    scheduledAt: r.scheduledAt.toISOString(),
+    status: r.status,
+  }));
+}
+
+// 캘린더 전용 조회(D5). start/end 비-optional = 타입-레벨 range 계약(서버가 무제한 조회를 구조적으로 차단).
+// 런타임 방어로 start<end 강제(RangeError). kind 필터는 응답을 받은 클라가 수행(kind는 민감정보 아님, D5).
+export async function getCalendarTasks(
+  ctx: { permissionKeys: Set<string> },
+  range: { start: Date; end: Date },
+): Promise<TaskListItem[]> {
+  if (!(range.start.getTime() < range.end.getTime())) {
+    throw new RangeError("조회 범위가 올바르지 않습니다(start<end).");
+  }
+  const kinds = allowedKinds(ctx.permissionKeys);
+  const rows = await findTaskList({ kinds, start: range.start, end: range.end });
   return rows.map((r) => ({
     id: r.id,
     kind: r.kind,

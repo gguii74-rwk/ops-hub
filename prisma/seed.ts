@@ -9,9 +9,13 @@ import { applyTeamsPermissionUpgrade } from "./migrate-helpers/teams-upgrade";
 import { applyLeaveNotificationsPermissionUpgrade } from "./migrate-helpers/leave-notifications-upgrade";
 import { applyBillingPermissionUpgrade } from "./migrate-helpers/billing-upgrade";
 import { applyBillingCreatePermissionUpgrade } from "./migrate-helpers/billing-create-upgrade";
+import { applyWorkflowsViewUpgrade } from "./migrate-helpers/workflows-view-upgrade";
+import { applyWorkflowsClientKindsUpgrade } from "./migrate-helpers/workflows-client-kinds-upgrade";
+import { applyWorkflowsNavReconcile } from "./migrate-helpers/workflows-nav-reconcile";
 import { bootstrapRolePermissions } from "./migrate-helpers/roles-bootstrap";
 import { planGoogleSources } from "./seed-google";
 import { seedNavigation } from "./seed-navigation";
+import { KIND_RESOURCE } from "../src/modules/workflows/policy";
 
 const prisma = new PrismaClient();
 
@@ -74,6 +78,15 @@ async function main() {
   // 3e. 업그레이드-once — 대금청구 UI가 요구하는 workflows.billing:create를 기존 DB의 pm에 별도 플래그로 멱등 grant.
   await prisma.$transaction((tx) => applyBillingCreatePermissionUpgrade(tx, roleIdByKey, permissionIdByKey));
 
+  // 3f. 업그레이드-once(D13) — 기존 DB에서 임의 workflows.<kind>:view 보유 role에 집계 workflows:view를 reconcile.
+  //     nav flip(5b)보다 **먼저** 실행(안 그러면 기존 notification/billing-only role이 메뉴 상실, R5·F1).
+  const workflowsKindViewKeys = Object.values(KIND_RESOURCE).map((r) => `${r}:view`);
+  await prisma.$transaction((tx) => applyWorkflowsViewUpgrade(tx, permissionIdByKey, workflowsKindViewKeys));
+
+  // 3f-2. 업그레이드-once(R3·F1) — 기존 DB에 신규 client kind view/create를 reconcile(fresh ROLE_ALLOW와 동일 결과).
+  //       bootstrap이 기존 role을 스킵하므로 client kind가 OWNER 외엔 보이지도 예약되지도 않는 divergence 해소.
+  await prisma.$transaction((tx) => applyWorkflowsClientKindsUpgrade(tx, roleIdByKey, permissionIdByKey));
+
   // 3e. WorkflowType(BILLING) — kind 기준 upsert(J3). seed-demo가 id="wf-billing"으로 만든 행과 kind 충돌 없이
   //     templatePath/name/recurrence를 신규 저장소 규약(Template/대금청구)으로 정규화한다.
   await prisma.workflowType.upsert({
@@ -83,6 +96,30 @@ async function main() {
       id: "billing", kind: "BILLING", name: "대금청구", templatePath: "Template/대금청구",
       recurrence: "monthly", isActive: true,
     },
+  });
+
+  // 3g. WorkflowType — 생성 가능한 나머지 kind(주간보고 본부/알림톡청구/고객사 주간·월간). kind 기준 upsert(멱등).
+  //     메인 seed엔 BILLING만 있어 일반화 모달이 offer하는 create가 prod에서 403이 되던 갭을 폐쇄(SC-11).
+  //     templatePath=플레이스홀더(생성기 없어 미판독). seed-demo(dev)의 kind 충돌 없음(upsert by kind).
+  await prisma.workflowType.upsert({
+    where: { kind: "WEEKLY_REPORT" },
+    update: { name: "주간보고(본부)", templatePath: "Template/주간보고-본부", recurrence: "weekly" },
+    create: { id: "weekly-report", kind: "WEEKLY_REPORT", name: "주간보고(본부)", templatePath: "Template/주간보고-본부", recurrence: "weekly", isActive: true },
+  });
+  await prisma.workflowType.upsert({
+    where: { kind: "NOTIFICATION_BILLING" },
+    update: { name: "알림톡청구", templatePath: "Template/알림톡청구", recurrence: "monthly" },
+    create: { id: "notification-billing", kind: "NOTIFICATION_BILLING", name: "알림톡청구", templatePath: "Template/알림톡청구", recurrence: "monthly", isActive: true },
+  });
+  await prisma.workflowType.upsert({
+    where: { kind: "WEEKLY_REPORT_CLIENT" },
+    update: { name: "주간보고(고객사)", templatePath: "Template/주간보고-고객사", recurrence: "weekly" },
+    create: { id: "weekly-report-client", kind: "WEEKLY_REPORT_CLIENT", name: "주간보고(고객사)", templatePath: "Template/주간보고-고객사", recurrence: "weekly", isActive: true },
+  });
+  await prisma.workflowType.upsert({
+    where: { kind: "MONTHLY_REPORT_CLIENT" },
+    update: { name: "월간보고(고객사)", templatePath: "Template/월간보고-고객사", recurrence: "monthly" },
+    create: { id: "monthly-report-client", kind: "MONTHLY_REPORT_CLIENT", name: "월간보고(고객사)", templatePath: "Template/월간보고-고객사", recurrence: "monthly", isActive: true },
   });
 
   // 4. Admin (PM, OWNER). 특권 계정은 약한/기본 비밀번호로 만들지 않는다 — 미설정/짧으면 즉시 중단(E1).
@@ -122,6 +159,10 @@ async function main() {
   //    미존재 시에만 NAV 값으로 create. 권한 미해석이면 fail-closed throw. 부모→자식 parentId 연결.
   const resolveNavPermissionId = async (key: string) => permissionIdByKey.get(key) ?? null;
   await seedNavigation(prisma, NAV_CATALOG, resolveNavPermissionId);
+
+  // 5b. nav rename+게이팅 flip(D11·D13) — seedNavigation은 편집보존이라 기존 행 미갱신. 1회 멱등 reconcile.
+  //     3f grant 이후에 실행되어야 함(순서 보장 — grant→flip).
+  await prisma.$transaction((tx) => applyWorkflowsNavReconcile(tx, permissionIdByKey.get("workflows:view")));
 
   // 6. CalendarSource — 공휴일(Google 공휴일 캘린더) + 설정된 Google 캘린더(best-effort)
   const HOLIDAY_CAL_ID = "ko.south_korea#holiday@group.v.calendar.google.com";

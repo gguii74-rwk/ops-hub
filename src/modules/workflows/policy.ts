@@ -15,6 +15,9 @@ export const TRANSITIONS: Record<WorkflowKind, Partial<Record<WorkflowStatus, Wo
     REVIEWED: ["HQ_REQUESTED"],
     HQ_REQUESTED: ["FINAL_SENT"],
   },
+  // 신규 client 2종 — 생성기 없어 실질은 예약(PENDING)+취소. 골격은 WEEKLY_REPORT 재사용(D2).
+  WEEKLY_REPORT_CLIENT: { PENDING: ["GENERATED", "CANCELLED"], GENERATED: ["SENT", "CANCELLED"] },
+  MONTHLY_REPORT_CLIENT: { PENDING: ["GENERATED", "CANCELLED"], GENERATED: ["SENT", "CANCELLED"] },
 };
 
 // 권한 검사용 리소스 매핑.
@@ -22,6 +25,8 @@ export const KIND_RESOURCE: Record<WorkflowKind, string> = {
   WEEKLY_REPORT: "workflows.weekly",
   BILLING: "workflows.billing",
   NOTIFICATION_BILLING: "workflows.notification",
+  WEEKLY_REPORT_CLIENT: "workflows.weeklyClient",
+  MONTHLY_REPORT_CLIENT: "workflows.monthlyClient",
 };
 
 // 다운로드 가능 상태 = 산출물 생성 이후·미취소 상태(PENDING 미생성·CANCELLED 취소 제외).

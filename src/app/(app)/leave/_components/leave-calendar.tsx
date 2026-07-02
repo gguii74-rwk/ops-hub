@@ -44,7 +44,7 @@ export function LeaveCalendar({ canCreate, canManage }: { canCreate: boolean; ca
   const startKey = toKstDateKey(winStart);
   const endKey = toKstDateKey(new Date(winEnd.getTime() - 1)); // winEnd는 exclusive(+42일) → 마지막 점유 날
 
-  const { data } = useQuery({
+  const { data, isError } = useQuery({
     queryKey: ["leave", "calendar", startKey, endKey, selectedJob],
     queryFn: async (): Promise<CalendarResponse> => {
       const jobParam = selectedJob === "ALL" ? "" : `&job=${selectedJob}`;
@@ -180,6 +180,11 @@ export function LeaveCalendar({ canCreate, canManage }: { canCreate: boolean; ca
           </div>
         )}
       />
+
+      {/* 조회 실패 에러상태(SC-13) — 빈 캘린더 위장 금지. 정본=calendar-view line 125. */}
+      {isError && (
+        <p className="text-sm text-destructive">연차 캘린더를 불러오지 못했습니다.</p>
+      )}
 
       {creating !== null && (
         <CreateLeaveModal defaultDate={creating || undefined} onClose={() => setCreating(null)} />

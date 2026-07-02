@@ -22,21 +22,25 @@ export const ROLE_ALLOW: Record<string, Cell[]> = {
     "workflows.notification:view", "leave.request:view",
     "leave.request:create", "leave.request:cancel", "workflows.weekly:create", "workflows.weekly:generate",
     "workflows.notification:create",
+    "workflows.weeklyClient:view", "workflows.monthlyClient:view", "workflows:view",
   ],
   "contractor-developer": [
     "dashboard:view", "calendar.work:view", "calendar.leave:view", "calendar.personal:view",
     "workflows.weekly:view", "workflows.notification:view", "leave.request:view",
     "leave.request:create", "leave.request:cancel", "workflows.weekly:create", "workflows.notification:create",
+    "workflows.weeklyClient:view", "workflows.monthlyClient:view", "workflows:view",
   ],
   "contractor-content": [
     "dashboard:view", "calendar.work:view", "calendar.leave:view", "calendar.personal:view",
     "workflows.weekly:view", "workflows.notification:view", "leave.request:view",
     "leave.request:create", "leave.request:cancel", "workflows.weekly:create", "workflows.notification:create",
+    "workflows.weeklyClient:view", "workflows.monthlyClient:view", "workflows:view",
   ],
   "contractor-civil-response": [
     "dashboard:view", "calendar.work:view", "calendar.leave:view", "calendar.personal:view",
     "workflows.notification:view", "leave.request:view",
     "leave.request:create", "leave.request:cancel", "workflows.notification:create",
+    "workflows:view",
   ],
 };
 

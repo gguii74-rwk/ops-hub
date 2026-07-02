@@ -36,6 +36,32 @@ describe("kindClass", () => {
   });
 });
 
+// 신규 workflow kind 5종이 중립 폴백이 아닌 고유 색을 가져야 함(D7).
+const WORKFLOW_KINDS = ["BILLING", "NOTIFICATION_BILLING", "WEEKLY_REPORT", "WEEKLY_REPORT_CLIENT", "MONTHLY_REPORT_CLIENT"];
+const NEUTRAL_SOFT = "bg-accent text-accent-foreground ring-1 ring-border";
+
+describe("kindClass — workflow kind 색(D7)", () => {
+  it("5 workflow kind 모두 soft/bold가 중립 폴백이 아니다", () => {
+    for (const k of WORKFLOW_KINDS) {
+      expect(kindClass(k, "soft")).not.toBe(NEUTRAL_SOFT);
+      expect(kindClass(k, "bold")).not.toBe(NEUTRAL_SOFT);
+    }
+  });
+
+  it("각 kind 색이 서로 다르다(식별성)", () => {
+    const softs = WORKFLOW_KINDS.map((k) => kindClass(k, "soft"));
+    expect(new Set(softs).size).toBe(WORKFLOW_KINDS.length);
+  });
+
+  it("D7 팔레트 계열 — 대금청구=주황·알림톡청구=청록·주간(본부)=인디고·주간(고객사)=보라·월간(고객사)=핑크", () => {
+    expect(kindClass("BILLING", "soft")).toContain("orange");
+    expect(kindClass("NOTIFICATION_BILLING", "soft")).toContain("cyan");
+    expect(kindClass("WEEKLY_REPORT", "soft")).toContain("indigo");
+    expect(kindClass("WEEKLY_REPORT_CLIENT", "soft")).toContain("violet");
+    expect(kindClass("MONTHLY_REPORT_CLIENT", "soft")).toContain("pink");
+  });
+});
+
 describe("statusOverlay (색과 직교, 형태만)", () => {
   it("PENDING = 점선 테두리 + 대기색(주황 배경·진한 노랑 점선)", () => {
     const cls = statusOverlay("PENDING");
